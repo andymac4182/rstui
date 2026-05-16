@@ -70,8 +70,9 @@ use crate::run::{DEFAULT_COMMAND_BUDGET, Settled, settle};
 /// Drives an [`App`] over an in-memory [`TestBackend`] with no terminal.
 ///
 /// Construct with [`Harness::new`], drive it with [`handle`](Harness::handle),
-/// [`message`](Harness::message), or [`resize`](Harness::resize), then assert
-/// on [`app`](Harness::app) and [`snapshot`](Harness::snapshot).
+/// [`message`](Harness::message), [`resize`](Harness::resize), or
+/// [`tick`](Harness::tick) (an explicit, clock-free elapsed-timer step), then
+/// assert on [`app`](Harness::app) and [`snapshot`](Harness::snapshot).
 #[derive(Debug)]
 pub struct Harness<A: App> {
     app: A,
@@ -153,6 +154,34 @@ impl<A: App> Harness<A> {
         // `Terminal::draw` autoresizes from the backend and forces a full
         // repaint; routing the event through `handle` also lets the app react.
         self.handle(Event::Resize(rstui_core::Size::new(width, height)));
+    }
+
+    /// Delivers one elapsed timer tick to the app: [`on_tick`](App::on_tick),
+    /// then [`update`](App::update) for any message it produces, then a
+    /// re-render — the deterministic twin of the live loop's
+    /// [`tick_rate`](App::tick_rate) wake.
+    ///
+    /// The live [`run`](crate::run) loop calls this same `on_tick` → `update`
+    /// → `settle` → render path when a real timer elapses; the harness exposes
+    /// it as an explicit step so a test advances time **by calling `tick`**,
+    /// with no wall clock. One `tick()` is exactly one elapsed period: assert a
+    /// spinner advanced one frame, a countdown decremented once. A no-op once
+    /// the app has quit, and (like a real idle tick) it still re-renders even
+    /// when `on_tick` produced no message.
+    ///
+    /// [`tick_rate`](App::tick_rate) itself is never consulted here — cadence
+    /// is the live loop's concern; determinism means the *test* decides when
+    /// ticks happen. Read it directly via [`app`](Harness::app) if a test wants
+    /// to assert the app's declared cadence.
+    pub fn tick(&mut self) {
+        if !self.running {
+            return;
+        }
+        if let Some(message) = self.app.on_tick() {
+            let cmd = self.app.update(message);
+            self.settle(cmd);
+        }
+        self.render();
     }
 
     /// A shared reference to the app, for asserting on its state.
@@ -355,5 +384,124 @@ mod tests {
         // init() returned quit, so the app is not running after construction.
         let harness = Harness::new(Boot, 2, 1);
         assert!(!harness.is_running());
+    }
+
+    /// A spinner whose frame advances on each tick while animating and stops
+    /// (drops its tick rate) on `s` — exercises `tick_rate`/`on_tick` and the
+    /// reducer turning ticking off by state.
+    struct Spinner {
+        frame: usize,
+        animating: bool,
+    }
+
+    enum SpinMsg {
+        Advance,
+        Stop,
+    }
+
+    impl App for Spinner {
+        type Message = SpinMsg;
+
+        fn tick_rate(&self) -> Option<std::time::Duration> {
+            self.animating.then(|| std::time::Duration::from_millis(80))
+        }
+
+        fn on_tick(&self) -> Option<SpinMsg> {
+            self.animating.then_some(SpinMsg::Advance)
+        }
+
+        fn on_event(&self, event: Event) -> Option<SpinMsg> {
+            match event.as_key_press()?.code {
+                KeyCode::Char('s') => Some(SpinMsg::Stop),
+                _ => None,
+            }
+        }
+
+        fn update(&mut self, message: SpinMsg) -> Cmd<SpinMsg> {
+            match message {
+                SpinMsg::Advance => {
+                    self.frame += 1;
+                    Cmd::none()
+                }
+                SpinMsg::Stop => {
+                    self.animating = false;
+                    Cmd::none()
+                }
+            }
+        }
+
+        fn view(&self, frame: &mut rstui_core::Frame<'_>) {
+            let pos = frame.area().position();
+            frame
+                .buffer_mut()
+                .set_str(pos, &format!("f={}", self.frame), Style::new());
+        }
+    }
+
+    #[test]
+    fn tick_advances_state_deterministically_with_no_clock() {
+        let mut harness = Harness::new(
+            Spinner {
+                frame: 0,
+                animating: true,
+            },
+            4,
+            1,
+        );
+        assert_eq!(harness.snapshot(), "f=0 \n");
+        // Each explicit tick is exactly one elapsed period — no wall clock.
+        harness.tick();
+        assert_eq!(harness.app().frame, 1);
+        harness.tick();
+        harness.tick();
+        assert_eq!(harness.app().frame, 3);
+        // It re-rendered on every tick, like a real idle wake.
+        assert_eq!(harness.snapshot(), "f=3 \n");
+        // The declared cadence is readable through the app for assertions.
+        assert_eq!(
+            harness.app().tick_rate(),
+            Some(std::time::Duration::from_millis(80))
+        );
+    }
+
+    #[test]
+    fn an_event_can_stop_ticking_and_further_ticks_are_inert() {
+        let mut harness = Harness::new(
+            Spinner {
+                frame: 0,
+                animating: true,
+            },
+            4,
+            1,
+        );
+        harness.tick();
+        assert_eq!(harness.app().frame, 1);
+
+        // `s` flips animating off: tick_rate becomes None and on_tick stops
+        // producing messages, so subsequent ticks change nothing.
+        harness.handle(Event::from(KeyEvent::char('s')));
+        assert_eq!(harness.app().tick_rate(), None);
+        harness.tick();
+        harness.tick();
+        assert_eq!(harness.app().frame, 1, "ticks are inert once stopped");
+    }
+
+    #[test]
+    fn tick_is_a_noop_after_quit_and_renders_when_on_tick_is_silent() {
+        // `Counter` overrides neither tick_rate nor on_tick (both default to
+        // None), so `tick()` must be a pure re-render — proving the feature is
+        // strictly opt-in and existing apps are unaffected.
+        let mut harness = Harness::new(Counter::default(), 6, 1);
+        harness.message(Msg::Inc);
+        assert_eq!(harness.snapshot(), "n=1   \n");
+        harness.tick(); // on_tick() == None: state untouched, still re-renders
+        assert_eq!(harness.app().value, 1);
+        assert_eq!(harness.snapshot(), "n=1   \n");
+
+        // After quit, tick is a no-op like handle/message.
+        harness.handle(Event::from(KeyEvent::char('q')));
+        assert!(!harness.is_running());
+        harness.tick();
+        assert_eq!(harness.app().value, 1);
     }
 }

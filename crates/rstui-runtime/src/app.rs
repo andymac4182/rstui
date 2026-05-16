@@ -77,6 +77,8 @@
 //! assert_eq!(harness.snapshot(), "count: 1  \n");
 //! ```
 
+use std::time::Duration;
+
 use rstui_core::{Event, Frame};
 
 use crate::cmd::Cmd;
@@ -114,6 +116,47 @@ pub trait App {
     /// Defaults to ignoring all input, for apps driven only by [`Cmd`]s.
     fn on_event(&self, event: Event) -> Option<Self::Message> {
         let _ = event;
+        None
+    }
+
+    /// How often the runtime should wake itself to [`tick`](App::on_tick) when
+    /// no input is arriving, or [`None`] to only ever wake on input.
+    ///
+    /// This is the one seam that turns the otherwise input-driven loop into an
+    /// animation/clock loop: a spinner, a countdown, a progress poll. It takes
+    /// `&self`, so the cadence is a pure function of state — return
+    /// `Some(Duration::from_millis(80))` while an animation is running and
+    /// `None` when it finishes and the loop should go back to blocking purely
+    /// on input. Defaulting to `None` keeps every input-only app behaving
+    /// exactly as before (the live loop blocks on input with no clock at all).
+    ///
+    /// The cadence is steady wall-clock pacing in the live loop, *independent*
+    /// of input: an event arriving does not reset the tick clock, so an
+    /// animation stays smooth under typing. Missed ticks coalesce (a slow frame
+    /// never schedules a catch-up storm). The headless
+    /// [`Harness`](crate::Harness) ignores this entirely and instead exposes an
+    /// explicit [`Harness::tick`](crate::Harness::tick) so tests advance time
+    /// deterministically with no real clock — the shared command-settling core
+    /// is unchanged, so a ticking app is as testable as any other.
+    fn tick_rate(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Translates a periodic timer wake into an application message, or [`None`]
+    /// to let the wake pass without changing state.
+    ///
+    /// The temporal dual of [`on_event`](App::on_event): `on_event` maps
+    /// *input* to intent, `on_tick` maps the *passage of time* to intent (the
+    /// next animation frame, a re-poll). It takes `&self` for the same reason —
+    /// deciding what a tick *means* may depend on state but must not change it;
+    /// every mutation still goes through [`update`](App::update). A tick is
+    /// deliberately **not** an [`Event`] variant: terminal input and runtime
+    /// timing are different concepts and never share a type.
+    ///
+    /// Only consulted when [`tick_rate`](App::tick_rate) is `Some`; the default
+    /// ignores ticks, which is why an app that overrides neither is byte-for-
+    /// byte the old input-only loop.
+    fn on_tick(&self) -> Option<Self::Message> {
         None
     }
 
