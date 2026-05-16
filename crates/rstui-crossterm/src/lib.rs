@@ -9,9 +9,38 @@
 //!
 //! The crate's eventual responsibilities are the `Backend` implementation over
 //! an [`std::io::Write`], a panic-safe RAII terminal-lifecycle guard, and the
-//! crossterm input source. This slice delivers the first of them: a pure,
-//! terminal-free translation from crossterm's native input into rstui's owned
-//! event model.
+//! crossterm input source. Two of them have landed: the pure, terminal-free
+//! input translation ([`from_crossterm`]) and the
+//! [`CrosstermBackend`] drawing seam. The panic-safe lifecycle guard is the
+//! remaining slice.
+//!
+//! # Output: the backend
+//!
+//! [`CrosstermBackend`] implements `rstui-core`'s
+//! [`Backend`](rstui_core::backend::Backend) over any [`std::io::Write`]. Every
+//! escape sequence it emits is queued (never `execute!`d) and asserted in
+//! memory with no TTY (ADR 0001 testing layer L4b); only `size`/
+//! `cursor_position` query the real terminal. See the
+//! [`backend`] module for the full rationale.
+//!
+//! ```
+//! use rstui_core::backend::Backend;
+//! use rstui_core::buffer::Cell;
+//! use rstui_core::geometry::Position;
+//! use rstui_core::style::Color;
+//! use rstui_crossterm::CrosstermBackend;
+//!
+//! // A real backend wraps `std::io::stdout()`; here, an in-memory buffer so
+//! // the emitted ANSI is assertable without a terminal.
+//! let mut backend = CrosstermBackend::new(Vec::new());
+//!
+//! let mut cell = Cell::new('R');
+//! cell.fg = Color::Red;
+//! backend.draw([(Position::new(1, 0), &cell)]).unwrap();
+//! backend.flush().unwrap();
+//!
+//! assert!(!backend.writer().is_empty());
+//! ```
 //!
 //! # Event translation
 //!
@@ -56,6 +85,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod backend;
 pub mod event;
 
+pub use backend::CrosstermBackend;
 pub use event::from_crossterm;

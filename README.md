@@ -13,10 +13,10 @@ while staying idiomatic to Rust.
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
 > model, the `Widget` abstraction with the foundational `Block` container, the
 > styled-text model (`Span`/`Line`/`Text`), the Elm-style
-> `App`/`Cmd`/`Harness` runtime, and the crossterm input-translation layer of
-> the real terminal driver exist and are tested; the rest of the crossterm
-> backend (its `Backend` impl and panic-safe lifecycle guard), a broader
-> component set, and the plugin host are not built yet.
+> `App`/`Cmd`/`Harness` runtime, and the crossterm terminal driver's input
+> translation **and `Backend` implementation** exist and are tested; the
+> driver's panic-safe lifecycle guard, a broader component set, and the plugin
+> host are not built yet.
 
 ## Workspace
 
@@ -27,12 +27,12 @@ only when there is enough real API surface to justify the boundary.
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget, text |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
-| `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. Currently the crossterm → `rstui-core` event translation |
+| `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation and the `Backend` impl over `io::Write` |
 
 The `rstui-crossterm` crate now exists ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md));
-its crossterm → `rstui-core` event-translation layer has landed and its
-`Backend` implementation over `io::Write` plus a panic-safe terminal
-lifecycle guard are the next slices. Other planned boundaries as the
+its crossterm → `rstui-core` event-translation layer and its `Backend`
+implementation over `io::Write` have landed, and a panic-safe terminal
+lifecycle guard is the next slice. Other planned boundaries as the
 framework grows: a broader component set (the `Widget` trait lives in core;
 concrete widgets beyond `Block` will graduate to their own crate once there
 are enough to justify it), more examples, and a permissioned plugin host
@@ -110,8 +110,16 @@ vocabulary, so the backend stays swappable.
   (Kitty-only lock/media/modifier keys, the `HYPER`/`META` modifiers, lock
   state) is dropped rather than stubbed, matching the core's "defer, do not
   stub" discipline.
-- Next: the `Backend` implementation over `io::Write` and a panic-safe RAII
-  terminal-lifecycle guard.
+- `CrosstermBackend<W: io::Write>` — the `rstui-core` `Backend` impl. Every
+  escape is *queued* (never `execute!`d) and flushed once per frame, a
+  deliberate divergence from ratatui made possible because rstui's `Terminal`
+  owns the loop; an empty diff emits zero bytes. The cell diff drives the
+  proven minimal-output algorithm (cursor moved only on a discontinuity,
+  colors/attributes re-emitted only on change). Generic over any writer, so
+  the full ANSI output is asserted in-memory with no TTY (ADR 0001 testing
+  layer L4b); only `size`/`cursor_position` query the real terminal (L4c).
+- Next: a panic-safe RAII terminal-lifecycle guard (raw mode, alternate
+  screen, mouse/paste/focus capture, restore-on-panic).
 
 ## Architecture decisions
 
