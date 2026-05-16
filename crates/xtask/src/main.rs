@@ -2,12 +2,19 @@
 //! endorsed by ADR 0003 §7 as the home for project-specific gates that
 //! don't fit clippy or rustdoc).
 //!
-//! Today it hosts one task: `lint-names`, the vague-generic-naming
-//! guardrail from the iteration-19 steering note. Run it with
-//! `cargo xtask lint-names` (the alias is in `.cargo/config.toml`) or
-//! `cargo run -p xtask -- lint-names`. The convention itself is documented
-//! in `docs/conventions/naming.md`.
+//! Tasks:
+//!
+//! - `ci` — run the whole project gate sequence (fmt, naming, clippy,
+//!   rustdoc, test) with one command, fail-fast, exactly as CI runs it.
+//!   This is the loop every contributor and agent stream runs before a
+//!   commit; see `docs/development.md`.
+//! - `lint-names` — the vague-generic-naming guardrail from the
+//!   iteration-19 steering note; see `docs/conventions/naming.md`.
+//!
+//! Run via `cargo xtask <task>` (the alias is in `.cargo/config.toml`) or
+//! `cargo run -p xtask -- <task>`.
 
+mod ci;
 mod naming;
 
 use std::path::{Path, PathBuf};
@@ -17,6 +24,8 @@ const USAGE: &str = "\
 Usage: cargo xtask <TASK>
 
 Tasks:
+  ci           Run every project gate (fmt, lint-names, clippy, doc, test)
+               fail-fast, exactly as CI does. See docs/development.md.
   lint-names   Fail if any crate name, source path, module, or public
                item uses a banned vague generic name. The default task.
                See docs/conventions/naming.md.
@@ -24,6 +33,7 @@ Tasks:
 
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
+        Some("ci") => ci::run(&workspace_root()),
         Some("lint-names") | None => lint_names(),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
@@ -48,28 +58,9 @@ fn workspace_root() -> PathBuf {
 }
 
 fn lint_names() -> ExitCode {
-    let violations = naming::scan(&workspace_root());
-    if violations.is_empty() {
-        println!(
-            "xtask lint-names: OK — no banned vague generic names in crate \
-             names, source paths, modules, or public items."
-        );
-        return ExitCode::SUCCESS;
+    if naming::check_and_report(&workspace_root()) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
-    eprintln!(
-        "xtask lint-names: {} banned vague generic name(s) found.\n\
-         The convention and how to register a documented exception: \
-         docs/conventions/naming.md\n",
-        violations.len()
-    );
-    for v in &violations {
-        eprintln!(
-            "  {} [{}] `{}` contains banned generic segment `{}`",
-            v.location,
-            v.kind.label(),
-            v.name,
-            v.banned
-        );
-    }
-    ExitCode::FAILURE
 }

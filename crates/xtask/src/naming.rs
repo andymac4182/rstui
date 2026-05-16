@@ -358,6 +358,40 @@ pub(crate) fn scan(root: &Path) -> Vec<Violation> {
     violations
 }
 
+/// Scan the workspace at `root`, print the human-readable report (the
+/// `OK` line or the violation list with the convention pointer), and return
+/// whether it is clean.
+///
+/// The single source of truth for the naming report's wording, shared by the
+/// `lint-names` task and the `ci` task's in-process naming gate so the two
+/// can never drift apart.
+pub(crate) fn check_and_report(root: &Path) -> bool {
+    let violations = scan(root);
+    if violations.is_empty() {
+        println!(
+            "xtask lint-names: OK — no banned vague generic names in crate \
+             names, source paths, modules, or public items."
+        );
+        return true;
+    }
+    eprintln!(
+        "xtask lint-names: {} banned vague generic name(s) found.\n\
+         The convention and how to register a documented exception: \
+         docs/conventions/naming.md\n",
+        violations.len()
+    );
+    for v in &violations {
+        eprintln!(
+            "  {} [{}] `{}` contains banned generic segment `{}`",
+            v.location,
+            v.kind.label(),
+            v.name,
+            v.banned
+        );
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
