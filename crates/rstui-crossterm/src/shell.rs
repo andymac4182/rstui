@@ -4,9 +4,10 @@
 //! `run_app` example used to hand-compose four things —
 //! [`CrosstermBackend`] over stdout, a
 //! [`TerminalGuard`], a
-//! [`CrosstermEventSource`], and
-//! [`rstui_runtime::run()`] — in every `main`. That composition is always the
-//! same, so this module owns it once:
+//! [`CrosstermEventSource`], and the runtime loop — in every `main`. That
+//! composition is always the same, so this module owns it once (and drives
+//! the off-loop [`rstui_runtime::run_threaded`] so a slow command never
+//! freezes a full-screen UI — see [`run_app`]):
 //!
 //! ```no_run
 //! use rstui_crossterm::run_app;
@@ -74,7 +75,7 @@ use std::io::{self, Write};
 use std::sync::Once;
 
 use crossterm::terminal::disable_raw_mode;
-use rstui_runtime::{App, RunError, run};
+use rstui_runtime::{App, RunError, run_threaded};
 
 use crate::backend::CrosstermBackend;
 use crate::event_source::CrosstermEventSource;
@@ -152,13 +153,31 @@ fn install_panic_restore_hook() {
 /// so the terminal is restored no matter how the process ends, then
 /// builds a [`CrosstermBackend`] over stdout wrapped
 /// in a [`TerminalGuard`], reads input through a
-/// [`CrosstermEventSource`], and drives the
-/// *identical* [`rstui_runtime::run()`] loop the headless
-/// [`Harness`](rstui_runtime::Harness) tests exercise. The app is therefore
-/// unchanged between `cargo test` and production.
+/// [`CrosstermEventSource`], and drives [`rstui_runtime::run_threaded`] with
+/// the *same reducer* the headless [`Harness`](rstui_runtime::Harness) tests
+/// exercise (see *Off-loop commands by default* below).
 ///
 /// Use [`run_app_with`] to choose a different [`LifecycleOptions`] preset
 /// (e.g. no mouse capture, or no alternate screen for an inline tool).
+///
+/// # Off-loop commands by default
+///
+/// `run_app` drives [`rstui_runtime::run_threaded`], **not** the inline
+/// [`run`](rstui_runtime::run()): a full-screen application must stay responsive,
+/// so a slow [`Cmd::perform`](rstui_runtime::Cmd::perform) (a file load, a
+/// network call) or a real [`Cmd::tick`](rstui_runtime::Cmd::tick) delay runs
+/// on its own thread instead of freezing input and rendering. This is the
+/// deliberate decision ADR 0008's follow-up left open — for the *live*
+/// full-screen entry point, off-loop is the right default; the headless
+/// [`Harness`](rstui_runtime::Harness) and the bare [`run`](rstui_runtime::run())
+/// stay inline so tests remain deterministic. The reducer (`update`) the
+/// harness drives is *identical* either way (ADR 0008: only effect dispatch
+/// differs), so an app is still unchanged between `cargo test` and production —
+/// it merely stops blocking the UI on slow work when run live.
+///
+/// The cost is one bound: `A::Message` must be `Send + 'static` (a command
+/// result crosses a thread boundary). Almost every message enum already is;
+/// it is the same bound `Cmd::perform`'s closure has always carried.
 ///
 /// # Errors
 ///
@@ -166,7 +185,10 @@ fn install_panic_restore_hook() {
 /// later render fails, or [`CrosstermRunError::Input`] if reading the terminal
 /// fails. On any return path the [`TerminalGuard`]'s
 /// [`Drop`] has already restored the terminal.
-pub fn run_app<A: App>(app: A) -> Result<A, CrosstermRunError> {
+pub fn run_app<A: App>(app: A) -> Result<A, CrosstermRunError>
+where
+    A::Message: Send + 'static,
+{
     run_app_with(app, LifecycleOptions::default())
 }
 
@@ -175,12 +197,16 @@ pub fn run_app<A: App>(app: A) -> Result<A, CrosstermRunError> {
 /// The panic-restore hook still restores the *full* preset regardless of
 /// `options` (over-restoring is harmless; see [`restore_terminal`]), so an app
 /// that opts out of, say, the alternate screen still cannot leave the terminal
-/// wedged on a panic.
+/// wedged on a panic. Like [`run_app`] it drives the off-loop
+/// [`rstui_runtime::run_threaded`] loop.
 ///
 /// # Errors
 ///
 /// Identical to [`run_app`].
-pub fn run_app_with<A: App>(app: A, options: LifecycleOptions) -> Result<A, CrosstermRunError> {
+pub fn run_app_with<A: App>(app: A, options: LifecycleOptions) -> Result<A, CrosstermRunError>
+where
+    A::Message: Send + 'static,
+{
     install_panic_restore_hook();
     // Closes the last restore gap the guard's `Drop` cannot: a termination
     // signal (`kill`, closed window) ends the process without unwinding, so no
@@ -196,7 +222,10 @@ pub fn run_app_with<A: App>(app: A, options: LifecycleOptions) -> Result<A, Cros
     let guard = TerminalGuard::with_options(backend, options).map_err(RunError::Backend)?;
     let mut events = CrosstermEventSource::new();
 
-    run(app, guard, &mut events)
+    // Off-loop commands: a slow load/timer must not freeze a full-screen UI.
+    // Same reducer as the headless harness (ADR 0008) — only effect dispatch
+    // differs — so the app is unchanged between `cargo test` and production.
+    run_threaded(app, guard, &mut events)
 }
 
 #[cfg(test)]

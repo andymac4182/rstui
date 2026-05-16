@@ -127,7 +127,9 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -258,11 +260,10 @@ fn until_next_multiple(period: Duration) -> Duration {
 /// [`every`](Cmd::every) timer) runs on its own thread; its message is sent
 /// back over a channel the [`run_threaded`] loop drains, so a slow load or a
 /// sleeping timer never blocks rendering or input. This is the spawn-per-
-/// command model Bubble Tea uses for goroutines; a bounded pool is a possible
-/// later refinement, deliberately not built yet (the `Send + 'static` bound on
-/// command closures already makes that non-breaking). Returning `None` from
-/// both methods is what tells [`settle`] the message is *not* folded this turn
-/// — it re-enters the loop later as a fresh `update`.
+/// command model Bubble Tea uses for goroutines; [`run_pooled`] is the
+/// bounded-concurrency alternative for command-heavy apps. Returning `None`
+/// from both methods is what tells [`settle`] the message is *not* folded this
+/// turn — it re-enters the loop later as a fresh `update`.
 pub(crate) struct ThreadCommandExecutor<M> {
     sender: mpsc::Sender<M>,
 }
@@ -295,6 +296,146 @@ impl<M: Send + 'static> CommandExecutor<M> for ThreadCommandExecutor<M> {
             let _ = sender.send(work());
         });
         None
+    }
+}
+
+/// One unit of pooled work: a boxed closure that computes a command's message
+/// and sends it on the result channel. Type-erased so a single queue carries
+/// every command regardless of `M`.
+type PoolJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// The pool's shared state: the pending-job queue plus a `closed` flag, behind
+/// one `Mutex` (so the worker wait-predicate is a single lock) with a
+/// [`Condvar`] workers park on. Textbook dependency-free pool — no crossbeam,
+/// no external channel.
+struct PoolShared {
+    /// `(queue, closed)`. `closed` is set on executor drop so idle workers
+    /// stop waiting and exit once the queue drains.
+    state: Mutex<(VecDeque<PoolJob>, bool)>,
+    /// Signalled on every push and on close, so a parked worker re-checks.
+    available: Condvar,
+}
+
+impl PoolShared {
+    /// Pushes a job and wakes one worker.
+    fn submit(&self, job: PoolJob) {
+        // A poisoned lock means a worker panicked mid-job; recover the guard
+        // and keep scheduling rather than poisoning the whole UI.
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.0.push_back(job);
+        drop(guard);
+        self.available.notify_one();
+    }
+}
+
+/// Runs jobs until the pool is closed *and* drained. One per worker thread.
+fn pool_worker(shared: &Arc<PoolShared>) {
+    loop {
+        let job = {
+            let mut guard = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if let Some(job) = guard.0.pop_front() {
+                    break Some(job);
+                }
+                if guard.1 {
+                    break None; // closed and empty: this worker is done.
+                }
+                guard = shared
+                    .available
+                    .wait(guard)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+        };
+        match job {
+            Some(job) => job(),
+            None => return,
+        }
+    }
+}
+
+/// A bounded-concurrency off-loop [`CommandExecutor`]: a fixed pool of
+/// `std::thread` workers drains a shared queue, so command-heavy apps cannot
+/// explode the thread count the way [`ThreadCommandExecutor`]'s spawn-per-
+/// command model can.
+///
+/// [`perform`](Cmd::perform) work is enqueued and runs on the next free
+/// worker. A [`tick`](Cmd::tick)/[`every`](Cmd::every) timer is **not** run on
+/// a worker — that would tie a pool thread up sleeping — instead a tiny
+/// dedicated thread does the (mostly idle) wait and then enqueues the real
+/// `work()` onto the pool, so the bound applies to *active work* concurrency,
+/// not to idle timers. Like [`ThreadCommandExecutor`] it returns `None`
+/// (the message arrives later on the result channel) and bounds threads, not
+/// queue depth: a flood enqueues quickly and the workers drain it at the pool
+/// width. Result ordering is not guaranteed (same as the unbounded executor).
+pub(crate) struct PooledCommandExecutor<M> {
+    sender: mpsc::Sender<M>,
+    shared: Arc<PoolShared>,
+}
+
+impl<M: Send + 'static> PooledCommandExecutor<M> {
+    /// Builds the executor and spawns `workers` detached worker threads.
+    fn new(sender: mpsc::Sender<M>, workers: NonZeroUsize) -> Self {
+        let shared = Arc::new(PoolShared {
+            state: Mutex::new((VecDeque::new(), false)),
+            available: Condvar::new(),
+        });
+        for i in 0..workers.get() {
+            let shared = Arc::clone(&shared);
+            // Detached, like `ThreadCommandExecutor`'s threads: they exit
+            // promptly once `Drop` closes the pool, so they are not leaked
+            // across repeated `run_pooled` calls in one process.
+            let _ = thread::Builder::new()
+                .name(format!("rstui-cmd-pool-{i}"))
+                .spawn(move || pool_worker(&shared));
+        }
+        Self { sender, shared }
+    }
+}
+
+impl<M: Send + 'static> CommandExecutor<M> for PooledCommandExecutor<M> {
+    fn perform(&mut self, work: Box<dyn FnOnce() -> M + Send + 'static>) -> Option<M> {
+        let sender = self.sender.clone();
+        self.shared.submit(Box::new(move || {
+            let _ = sender.send(work());
+        }));
+        None
+    }
+
+    fn timer(
+        &mut self,
+        delay: Duration,
+        aligned: bool,
+        work: Box<dyn FnOnce() -> M + Send + 'static>,
+    ) -> Option<M> {
+        let sender = self.sender.clone();
+        let shared = Arc::clone(&self.shared);
+        // The sleep gets its own ephemeral thread so it never occupies a pool
+        // worker; only the post-delay `work()` is pooled.
+        thread::spawn(move || {
+            let wait = if aligned {
+                until_next_multiple(delay)
+            } else {
+                delay
+            };
+            thread::sleep(wait);
+            shared.submit(Box::new(move || {
+                let _ = sender.send(work());
+            }));
+        });
+        None
+    }
+}
+
+impl<M> Drop for PooledCommandExecutor<M> {
+    fn drop(&mut self) {
+        // Close the pool and wake every worker so idle ones exit once the
+        // queue drains. Detached, so this returns without waiting on a slow
+        // in-flight job (its result send then fails silently — the loop is
+        // gone — exactly as for `ThreadCommandExecutor`).
+        if let Ok(mut guard) = self.shared.state.lock() {
+            guard.1 = true;
+        }
+        self.shared.available.notify_all();
     }
 }
 
@@ -424,6 +565,42 @@ where
     // `results` lives in this frame for the whole loop; `run_core` only drains
     // it, so it borrows rather than owns it (the channel's `Sender` lives in
     // `exec`, which also outlives the call).
+    run_core(app, backend, events, &mut exec, Some(&results))
+}
+
+/// Runs `app` like [`run_threaded`], but performs commands on a **bounded
+/// pool** of exactly `workers` threads instead of one thread per command.
+///
+/// Identical semantics to [`run_threaded`] (off-loop commands, the same
+/// reducer, stops on [`Cmd::quit`](crate::Cmd::quit)/error) — only the
+/// executor differs. Prefer this when an app can fire many commands at once
+/// (a file manager loading hundreds of entries, a fan-out of requests): the
+/// thread count is capped at `workers` instead of growing with command volume.
+/// For the typical handful of background tasks, [`run_threaded`]'s spawn-per-
+/// command model is simpler and never queues behind a busy worker; this trades
+/// that for a hard concurrency bound. Timers do not consume a worker — a tiny
+/// dedicated thread does the wait and then enqueues the work onto the pool.
+///
+/// `workers` is a [`NonZeroUsize`] so "zero workers" (a pool that never makes
+/// progress) is unrepresentable rather than a runtime panic.
+///
+/// # Errors
+///
+/// Identical to [`run`].
+pub fn run_pooled<A, B, S>(
+    app: A,
+    backend: B,
+    events: &mut S,
+    workers: NonZeroUsize,
+) -> Result<A, RunError<B::Error, S::Error>>
+where
+    A: App,
+    A::Message: Send + 'static,
+    B: Backend,
+    S: EventSource,
+{
+    let (sender, results) = mpsc::channel();
+    let mut exec = PooledCommandExecutor::new(sender, workers);
     run_core(app, backend, events, &mut exec, Some(&results))
 }
 
@@ -926,6 +1103,91 @@ mod tests {
         let app = run_threaded(Mixed::default(), TestBackend::new(2, 1), &mut input).unwrap();
         assert_eq!(app.keys, 1, "the scripted key was handled on the loop");
         assert!(app.loaded <= 1, "the off-loop result folded at most once");
+    }
+
+    #[test]
+    fn run_pooled_drains_a_command_flood_with_a_small_fixed_pool() {
+        // A burst of 64 off-loop performs through a pool of only 2 workers:
+        // every result must still fold (the pool drains the queue at width 2),
+        // proving bounded concurrency does not lose work. The 65th update quits
+        // so the outcome is deterministic even though scheduling is not.
+        #[derive(Default)]
+        struct Flood {
+            done: u32,
+        }
+        enum Msg {
+            Done,
+        }
+        const BURST: u32 = 64;
+        impl App for Flood {
+            type Message = Msg;
+            fn init(&mut self) -> Cmd<Msg> {
+                Cmd::batch((0..BURST).map(|_| Cmd::perform(|| Msg::Done)))
+            }
+            fn update(&mut self, _: Msg) -> Cmd<Msg> {
+                self.done += 1;
+                if self.done == BURST {
+                    Cmd::quit()
+                } else {
+                    Cmd::none()
+                }
+            }
+            fn view(&self, _: &mut rstui_core::Frame<'_>) {}
+        }
+        let mut input = TestEventSource::new();
+        let app = run_pooled(
+            Flood::default(),
+            TestBackend::new(2, 1),
+            &mut input,
+            NonZeroUsize::new(2).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(app.done, BURST, "the 2-worker pool drained every command");
+    }
+
+    #[test]
+    fn run_pooled_runs_a_timer_without_starving_its_single_worker() {
+        // One worker and a `Cmd::tick`: if the timer's sleep ran *on* the pool
+        // worker it could starve the follow-up perform. The timer thread is
+        // separate, so both the tick and the perform it schedules complete and
+        // the app quits — a deterministic outcome on a width-1 pool.
+        #[derive(Default)]
+        struct Timed {
+            ticked: bool,
+            worked: bool,
+        }
+        enum Msg {
+            Tick,
+            Worked,
+        }
+        impl App for Timed {
+            type Message = Msg;
+            fn init(&mut self) -> Cmd<Msg> {
+                Cmd::tick(Duration::from_millis(1), || Msg::Tick)
+            }
+            fn update(&mut self, message: Msg) -> Cmd<Msg> {
+                match message {
+                    Msg::Tick => {
+                        self.ticked = true;
+                        Cmd::perform(|| Msg::Worked)
+                    }
+                    Msg::Worked => {
+                        self.worked = true;
+                        Cmd::quit()
+                    }
+                }
+            }
+            fn view(&self, _: &mut rstui_core::Frame<'_>) {}
+        }
+        let mut input = TestEventSource::new();
+        let app = run_pooled(
+            Timed::default(),
+            TestBackend::new(2, 1),
+            &mut input,
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap();
+        assert!(app.ticked && app.worked, "tick fired then pooled work ran");
     }
 
     /// A `Backend` sharing its in-memory surface through an `Rc<RefCell<_>>`
