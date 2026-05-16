@@ -204,6 +204,7 @@ dependencies = [
  "crossterm",
  "rstui-core",
  "rstui-runtime",
+ "signal-hook",
 ]
 
 [[package]]

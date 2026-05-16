@@ -56,6 +56,19 @@
 //! byte-for-byte in memory, so the on-panic restore provably cannot drift from
 //! the normal one. The hook is installed exactly once per process (a
 //! [`Once`]), so repeated [`run_app`] calls never nest restore hooks.
+//!
+//! # The other restore gap: termination signals
+//!
+//! [`TerminalGuard`]'s [`Drop`] covers normal scope exit *and* panic
+//! unwinding. It cannot cover a **termination signal** (`kill`, a closed
+//! terminal window's `SIGHUP`, `Ctrl-C` when not in raw mode): the default
+//! disposition ends the process *without* unwinding, so no destructor runs and
+//! the terminal is left wedged. [`run_app`] also installs the
+//! [`signal`](crate::signal) module's hook for that case — a dedicated
+//! listener thread that runs the *same* [`restore_terminal`] then exits — so
+//! every way a full-screen rstui process can end now restores the terminal.
+//! See [`signal`](crate::signal) for why a thread (not an async-signal
+//! handler) and the raw-mode caveat on which signals actually arrive.
 
 use std::io::{self, Write};
 use std::sync::Once;
@@ -134,7 +147,9 @@ fn install_panic_restore_hook() {
 /// panic-safe restore, returning the final app state.
 ///
 /// One call replaces the four-seam hand-composition: it installs the
-/// [panic-restore hook](self#panic-policy-the-terminal-and-the-panic-message-both-survive),
+/// [panic-restore hook](self#panic-policy-the-terminal-and-the-panic-message-both-survive)
+/// *and* the [termination-signal restore hook](self#the-other-restore-gap-termination-signals)
+/// so the terminal is restored no matter how the process ends, then
 /// builds a [`CrosstermBackend`] over stdout wrapped
 /// in a [`TerminalGuard`], reads input through a
 /// [`CrosstermEventSource`], and drives the
@@ -167,6 +182,12 @@ pub fn run_app<A: App>(app: A) -> Result<A, CrosstermRunError> {
 /// Identical to [`run_app`].
 pub fn run_app_with<A: App>(app: A, options: LifecycleOptions) -> Result<A, CrosstermRunError> {
     install_panic_restore_hook();
+    // Closes the last restore gap the guard's `Drop` cannot: a termination
+    // signal (`kill`, closed window) ends the process without unwinding, so no
+    // destructor runs. Installed here, beside the panic hook, because both are
+    // process-global "restore before the normal path can" seams; idempotent, so
+    // repeated `run_app` calls never stack listeners.
+    crate::signal::install_signal_restore_hook();
 
     let backend = CrosstermBackend::new(io::stdout());
     // One panic-safe ownership chain: Terminal -> TerminalGuard ->

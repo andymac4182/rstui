@@ -65,6 +65,7 @@
 use rstui_core::{Event, Terminal, TestBackend};
 
 use crate::app::App;
+use crate::cmd::InlineExecutor;
 use crate::run::{DEFAULT_COMMAND_BUDGET, Settled, settle};
 
 /// Drives an [`App`] over an in-memory [`TestBackend`] with no terminal.
@@ -214,11 +215,14 @@ impl<A: App> Harness<A> {
     /// the work settles or the budget is exceeded.
     ///
     /// Delegates to the *exact* [`settle`](crate::run::settle) state machine
-    /// the live [`run`](crate::run()) loop uses, so the harness's semantics
-    /// cannot drift from production: the harness is that loop with a
+    /// the live [`run`](crate::run()) loop uses, with an
+    /// [`InlineExecutor`](crate::cmd::InlineExecutor): every
+    /// [`perform`](crate::Cmd::perform)/[`tick`](crate::Cmd::tick) runs now
+    /// with zero virtual delay, so the harness stays clock-free and
+    /// deterministic and cannot drift from production — it is that loop with a
     /// [`TestBackend`] and scripted input swapped in.
     fn settle(&mut self, cmd: crate::Cmd<A::Message>) {
-        if settle(&mut self.app, cmd, self.command_budget) == Settled::Quit {
+        if settle(&mut self.app, cmd, self.command_budget, &mut InlineExecutor) == Settled::Quit {
             self.running = false;
         }
     }

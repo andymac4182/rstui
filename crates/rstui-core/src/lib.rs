@@ -26,7 +26,10 @@
 //!   runtime, components, and focus routing all share.
 //! - [`event_source`]: the [`EventSource`] input boundary (the dual of
 //!   [`Backend`]) plus an in-memory [`TestEventSource`] so whole apps can be
-//!   driven by a scripted event stream without a TTY.
+//!   driven by a scripted event stream without a TTY, and a
+//!   [`ChannelEventSource`] another thread feeds over `std::sync::mpsc` —
+//!   a second production-shaped source proving the boundary is not
+//!   crossterm-only.
 //! - [`focus`]: the optional, caller-owned focus model — [`FocusId`] value
 //!   tokens and a pure, total [`FocusRing`] (with a model-owned modal
 //!   focus-scope stack: `push_scope`/`pop_scope`, validated capture/restore,
@@ -91,7 +94,7 @@ pub use buffer::{Buffer, Cell};
 pub use event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-pub use event_source::{EventSource, TestEventSource};
+pub use event_source::{ChannelEventSource, EventSource, TestEventSource};
 pub use focus::{FocusId, FocusRing};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Alignment, Constraint, Direction, Layout};
