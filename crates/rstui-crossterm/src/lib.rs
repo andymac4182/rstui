@@ -173,9 +173,11 @@ pub mod event;
 pub mod event_source;
 pub mod lifecycle;
 pub mod shell;
+pub mod signal;
 
 pub use backend::CrosstermBackend;
 pub use event::from_crossterm;
 pub use event_source::CrosstermEventSource;
 pub use lifecycle::{LifecycleOptions, TerminalGuard};
 pub use shell::{CrosstermRunError, restore_terminal, run_app, run_app_with};
+pub use signal::install_signal_restore_hook;

@@ -25,3 +25,13 @@ rstui-runtime = { path = "../rstui-runtime" }
 # decision; the sync input source uses only the always-on `events` feature, so
 # no feature change was needed for it (an async `event-stream` is a future opt).
 crossterm = "0.29"
+# Termination-signal terminal restore (see `signal`). `signal-hook` is already
+# *transitively* in the tree — crossterm's `events` feature pulls
+# `signal-hook-registry`/`signal-hook-mio` for its own SIGWINCH/resize handling
+# — but those are the low-level registry, not the safe blocking iterator. The
+# direct dep is scoped to exactly one concern (restore the terminal on
+# SIGTERM/SIGHUP/SIGINT/SIGQUIT), stays inside this ADR 0001 backend crate so
+# `rstui-core` keeps zero dependencies, and buys the `iterator::Signals` thread
+# API specifically so the restore runs *off* the async-signal handler with no
+# `unsafe` (the workspace forbids `unsafe_code`).
+signal-hook = "0.3"
