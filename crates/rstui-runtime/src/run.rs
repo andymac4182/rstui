@@ -15,28 +15,50 @@
 //!
 //! 1. [`init`](App::init), settle its command, render the first frame (so the
 //!    screen is correct before any input).
-//! 2. Block on [`poll_event(None)`](rstui_core::EventSource::poll_event) for
-//!    the next input. Map it through [`on_event`](App::on_event) →
-//!    [`update`](App::update), settle any follow-up commands, then repaint
-//!    (a no-op cell diff if nothing changed, so an unhandled key is cheap).
-//! 3. A [`Cmd::quit`](crate::Cmd::quit) stops the loop. So does end-of-input:
-//!    `poll_event(None)` returning `Ok(None)` means input is *permanently*
-//!    exhausted (the terminal closed, or a scripted source drained).
+//! 2. Wait for the next input, bounded by [`tick_rate`](App::tick_rate): block
+//!    on [`poll_event(None)`](rstui_core::EventSource::poll_event) when the app
+//!    declares no tick rate, or on `poll_event(Some(until_next_tick))` when it
+//!    does. Input maps through [`on_event`](App::on_event) →
+//!    [`update`](App::update); an elapsed tick maps through
+//!    [`on_tick`](App::on_tick) → [`update`](App::update). Either way the
+//!    follow-up commands settle through the *same* `settle` core, then a
+//!    repaint (a no-op cell diff if nothing changed, so an idle tick or an
+//!    unhandled key is cheap).
+//! 3. A [`Cmd::quit`](crate::Cmd::quit) stops the loop. So does end-of-input
+//!    *when the app is not ticking*: an unbounded `poll_event(None)` returning
+//!    `Ok(None)` means input is permanently exhausted. A ticking app is in
+//!    animation mode and a *bounded* `Ok(None)` is a tick, not end-of-input
+//!    (the [`EventSource`] contract's two meanings of `Ok(None)`,
+//!    disambiguated by whether the wait was bounded).
 //!
-//! ## What this slice deliberately does not do
+//! ## The periodic tick (this slice) and what is still deferred
+//!
+//! The tick is the Elm *subscription* analog, deliberately minimal:
+//! [`tick_rate`](App::tick_rate) declares the cadence as a pure function of
+//! state and [`on_tick`](App::on_tick) maps an elapsed timer to a message,
+//! exactly as [`on_event`](App::on_event) maps input. It rides the
+//! already-reserved `poll_event(Some(timeout))` seam, so `settle` is unchanged
+//! and the headless [`Harness`](crate::Harness) stays clock-free (it exposes
+//! [`Harness::tick`](crate::Harness::tick) so tests advance time explicitly).
+//!
+//! Still deferred, not stubbed:
 //!
 //! - **Commands run inline**, exactly as the harness runs them — a slow
 //!   [`Cmd::perform`](crate::Cmd::perform) blocks the loop. Offloading work to
 //!   a thread pool / async executor is the reason the closure is already
-//!   `Send + 'static`; it is a separable future slice, not a stub.
-//! - **No periodic tick.** The loop blocks on input
-//!   ([`poll_event(None)`](rstui_core::EventSource::poll_event)); the
-//!   `Some(timeout)` branch of the [`EventSource`] contract is reserved for a
-//!   future animation/tick slice. Deferred, not stubbed.
-//! - **No panic hook.** Restoring the terminal on a panic is the backend
-//!   guard's `Drop` (proven for the crossterm guard); making the panic
-//!   *message* visible afterwards belongs with runtime panic policy, a
-//!   distinct concern.
+//!   `Send + 'static`; it is a separable future slice.
+//! - **No `Cmd`-scheduled one-shot timer / wall-clock-aligned `Every`.** A
+//!   Bubble-Tea-style `Cmd::tick(duration, fn)` was considered; it cannot be
+//!   added without a non-inline command executor or a timer registry threaded
+//!   through the shared `settle` core (which would change the single source
+//!   `run` and `Harness` agree on). `tick_rate`/`on_tick` covers the
+//!   animation/clock/poll cases with zero new runtime state, so the
+//!   `Cmd`-timer is deferred until the async command slice that makes it
+//!   free.
+//! - **No panic hook here.** Restoring the terminal on panic is the backend
+//!   guard's `Drop`; making the panic *message* visible is the app shell's
+//!   panic policy (`rstui_crossterm::run_app`), a distinct concern that has
+//!   landed in the backend crate.
 //!
 //! # Example
 //!
@@ -99,6 +121,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::time::Instant;
 
 use rstui_core::{Backend, EventSource, Terminal};
 
@@ -258,8 +281,37 @@ where
     let mut running = settle(&mut app, init, DEFAULT_COMMAND_BUDGET) == Settled::Running;
     render(&mut terminal, &app).map_err(RunError::Backend)?;
 
+    // The next scheduled tick, armed only while the app asks to be ticked
+    // ([`App::tick_rate`] is `Some`). This `Instant` is the *live loop's* own
+    // wall clock — the same category as the real IO `run` already does. It
+    // never reaches the shared `settle` core or the headless
+    // [`Harness`](crate::Harness); both stay clock-free (the harness drives
+    // ticks explicitly via [`Harness::tick`](crate::Harness::tick) instead), so
+    // "headless tests and live runs share one reducer" stays true by
+    // construction even with ticks.
+    let mut next_tick: Option<Instant> = None;
+
     while running {
-        match events.poll_event(None).map_err(RunError::Input)? {
+        // Cadence is a pure function of state, re-read every iteration so an
+        // app can start, stop, or retune animation purely by what
+        // `tick_rate` returns. `None` is exactly the pre-tick loop: block on
+        // input with no clock, so end-of-input is still observed.
+        let rate = app.tick_rate();
+        let timeout = match rate {
+            Some(rate) => {
+                let deadline = *next_tick.get_or_insert_with(|| Instant::now() + rate);
+                // A deadline already in the past (a frame slower than the rate)
+                // yields `ZERO`: poll without blocking, then tick. Missed ticks
+                // coalesce — a slow frame never schedules a catch-up storm.
+                Some(deadline.saturating_duration_since(Instant::now()))
+            }
+            None => {
+                next_tick = None;
+                None
+            }
+        };
+
+        match events.poll_event(timeout).map_err(RunError::Input)? {
             Some(event) => {
                 // `on_event` (&self) decides intent; `update` (&mut self) is
                 // the sole mutation; `settle` folds any follow-up commands.
@@ -275,8 +327,30 @@ where
                 // and sends zero cells when nothing actually changed).
                 render(&mut terminal, &app).map_err(RunError::Backend)?;
             }
-            // Unbounded wait returning `None` => input ended for good: stop.
-            None => running = false,
+            None => match rate {
+                // A *bounded* wait returned `None`: the timer elapsed (or the
+                // source had nothing this tick). Re-arm from now so missed
+                // ticks coalesce, then route the tick through the **same**
+                // `update`/`settle` path as input — `on_tick` is the temporal
+                // dual of `on_event`, and `settle` is untouched.
+                Some(rate) => {
+                    next_tick = Some(Instant::now() + rate);
+                    if let Some(message) = app.on_tick() {
+                        let cmd = app.update(message);
+                        if settle(&mut app, cmd, DEFAULT_COMMAND_BUDGET) == Settled::Quit {
+                            running = false;
+                        }
+                    }
+                    render(&mut terminal, &app).map_err(RunError::Backend)?;
+                }
+                // An *unbounded* wait returned `None` => input ended for good
+                // (terminal closed / scripted source drained): stop. Only
+                // reachable when the app is not ticking — a ticking app is in
+                // "animation mode" and stops via `Cmd::quit` or an error, which
+                // mirrors Bubble Tea (a program with a ticker runs until quit)
+                // and the `EventSource` contract's two meanings of `Ok(None)`.
+                None => running = false,
+            },
         }
     }
 
@@ -391,6 +465,127 @@ mod tests {
         let mut input = TestEventSource::with_events([key('d'), key('q')]);
         let app = run(Counter::default(), TestBackend::new(8, 1), &mut input).unwrap();
         assert_eq!(app.value, 2);
+    }
+
+    /// An app that ticks: every elapsed tick bumps a counter and quits at the
+    /// limit. `Duration::ZERO` keeps the test instant — `TestEventSource`
+    /// ignores the timeout, so each bounded poll returns `Ok(None)` at once.
+    struct TickToLimit {
+        ticks: u32,
+        limit: u32,
+    }
+
+    impl App for TickToLimit {
+        type Message = ();
+        fn tick_rate(&self) -> Option<Duration> {
+            Some(Duration::ZERO)
+        }
+        fn on_tick(&self) -> Option<()> {
+            Some(())
+        }
+        fn update(&mut self, (): ()) -> Cmd<()> {
+            self.ticks += 1;
+            if self.ticks >= self.limit {
+                Cmd::quit()
+            } else {
+                Cmd::none()
+            }
+        }
+        fn view(&self, _: &mut rstui_core::Frame<'_>) {}
+    }
+
+    #[test]
+    fn live_loop_ticks_until_a_ticking_app_quits() {
+        // No input at all: every bounded poll times out (`Ok(None)`) and the
+        // loop takes the tick arm, proving the live loop delivers `on_tick`
+        // and that a ticking app stops via `Cmd::quit` (not end-of-input).
+        let mut input = TestEventSource::new();
+        let app = run(
+            TickToLimit { ticks: 0, limit: 5 },
+            TestBackend::new(2, 1),
+            &mut input,
+        )
+        .unwrap();
+        assert_eq!(app.ticks, 5);
+    }
+
+    #[test]
+    fn live_loop_interleaves_input_and_ticks_through_one_settle_core() {
+        // The scripted keys drain first (a `TestEventSource` yields them
+        // before `Ok(None)`); then bounded `Ok(None)` becomes ticks. Both fold
+        // through the *same* update/settle, so ticks are the temporal dual of
+        // input, not a second reducer.
+        struct Mixed {
+            keys: u32,
+            ticks: u32,
+        }
+        enum MixedMsg {
+            Key,
+            Tick,
+        }
+        impl App for Mixed {
+            type Message = MixedMsg;
+            fn tick_rate(&self) -> Option<Duration> {
+                Some(Duration::ZERO)
+            }
+            fn on_tick(&self) -> Option<MixedMsg> {
+                Some(MixedMsg::Tick)
+            }
+            fn on_event(&self, event: Event) -> Option<MixedMsg> {
+                event.as_key_press().map(|_| MixedMsg::Key)
+            }
+            fn update(&mut self, message: MixedMsg) -> Cmd<MixedMsg> {
+                match message {
+                    MixedMsg::Key => {
+                        self.keys += 1;
+                        Cmd::none()
+                    }
+                    MixedMsg::Tick => {
+                        self.ticks += 1;
+                        if self.ticks >= 3 {
+                            Cmd::quit()
+                        } else {
+                            Cmd::none()
+                        }
+                    }
+                }
+            }
+            fn view(&self, _: &mut rstui_core::Frame<'_>) {}
+        }
+        let mut input = TestEventSource::with_events([key('a'), key('b')]);
+        let app = run(
+            Mixed { keys: 0, ticks: 0 },
+            TestBackend::new(2, 1),
+            &mut input,
+        )
+        .unwrap();
+        assert_eq!(app.keys, 2, "both scripted keys were handled first");
+        assert_eq!(app.ticks, 3, "then ticks drove it to quit");
+    }
+
+    #[test]
+    fn a_tick_capable_app_returning_no_rate_still_stops_on_end_of_input() {
+        // The backward-compat contract: when `tick_rate` is `None` the loop
+        // takes the *unbounded* poll and `Ok(None)` is permanent end-of-input.
+        // `on_tick` would loop forever if it were (wrongly) consulted here, so
+        // this test hanging would be the failure signal.
+        struct Idle;
+        impl App for Idle {
+            type Message = ();
+            fn tick_rate(&self) -> Option<Duration> {
+                None
+            }
+            fn on_tick(&self) -> Option<()> {
+                Some(())
+            }
+            fn update(&mut self, (): ()) -> Cmd<()> {
+                Cmd::none()
+            }
+            fn view(&self, _: &mut rstui_core::Frame<'_>) {}
+        }
+        let mut input = TestEventSource::new();
+        // Returns promptly rather than hanging: `None` rate keeps EOF stop.
+        run(Idle, TestBackend::new(2, 1), &mut input).unwrap();
     }
 
     /// A `Backend` sharing its in-memory surface through an `Rc<RefCell<_>>`
