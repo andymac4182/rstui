@@ -9,9 +9,10 @@
 //!
 //! The crate's eventual responsibilities are the `Backend` implementation over
 //! an [`std::io::Write`], a panic-safe RAII terminal-lifecycle guard, and the
-//! crossterm input source. Two of them have landed: the pure, terminal-free
-//! input translation ([`from_crossterm`]) and the
-//! [`CrosstermBackend`] drawing seam. The panic-safe lifecycle guard is the
+//! crossterm input source. Three have landed: the pure, terminal-free input
+//! translation ([`from_crossterm`]), the [`CrosstermBackend`] drawing seam, and
+//! the [`TerminalGuard`] panic-safe lifecycle guard. The crossterm input
+//! source (sync `poll`/`read`, then a feature-gated async stream) is the
 //! remaining slice.
 //!
 //! # Output: the backend
@@ -81,12 +82,40 @@
 //! )))
 //! .is_none());
 //! ```
+//!
+//! # Lifecycle: the panic-safe RAII guard
+//!
+//! [`TerminalGuard`] enables the requested terminal modes (raw mode, alternate
+//! screen, mouse/paste/focus reporting — see [`LifecycleOptions`]) on
+//! construction and restores exactly those on drop, **including while
+//! unwinding from a panic**. It wraps a [`CrosstermBackend`] and is itself a
+//! [`Backend`](rstui_core::backend::Backend), so it drops straight into
+//! [`Terminal`](rstui_core::Terminal), giving one panic-safe ownership chain.
+//! A deliberate divergence from ratatui (free `init`/`restore` + a manual
+//! panic hook), affordable because rstui owns the loop. See the [`lifecycle`]
+//! module for the proven ordering and the in-memory testability.
+//!
+//! ```
+//! use rstui_crossterm::{CrosstermBackend, LifecycleOptions, TerminalGuard};
+//!
+//! // raw mode off + in-memory writer => no terminal required.
+//! let backend = CrosstermBackend::new(Vec::new());
+//! let opts = LifecycleOptions {
+//!     raw_mode: false,
+//!     ..LifecycleOptions::default()
+//! };
+//! let guard = TerminalGuard::with_options(backend, opts).unwrap();
+//! assert!(!guard.backend().writer().is_empty()); // enter sequence sent
+//! drop(guard); // matching disable sequence sent (here, and on panic unwind)
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod backend;
 pub mod event;
+pub mod lifecycle;
 
 pub use backend::CrosstermBackend;
 pub use event::from_crossterm;
+pub use lifecycle::{LifecycleOptions, TerminalGuard};
