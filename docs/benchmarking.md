@@ -109,6 +109,18 @@ cargo xtask bench
 and update the `min` column (round to two significant figures — finer
 precision is noise).
 
+### Refresh cadence
+
+Refresh **opportunistically**, in the same slice that deliberately changes a
+hot path the table covers (a `Buffer`/`Layout` change, a new scenario) — that
+slice already has the numbers in hand and the diff explains the move.
+Otherwise leave it static: it is *indicative, not a gate*, so a stale entry
+costs nothing and a number that drifts on its own (machine, toolchain) is
+noise, not signal. There is deliberately no scheduled refresh and no CI job
+that regenerates it — that would be churn against a value ADR 0003 minimises.
+If the table looks obviously wrong on a glance, re-run `cargo xtask bench`
+and update it as its own one-line slice.
+
 ## The scenarios
 
 All scenarios run against a fixed **160×48** frame (a large-but-ordinary

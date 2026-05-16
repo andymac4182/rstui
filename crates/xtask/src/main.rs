@@ -19,7 +19,12 @@
 
 mod bench;
 mod ci;
+mod merge_check;
 mod naming;
+// Release-readiness drift guards: `#[test]`s only, so compiled solely under
+// test (no runtime task, no dead code in the shipped binary).
+#[cfg(test)]
+mod release;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -36,6 +41,9 @@ Tasks:
   bench [F]    Build and run the rstui-bench hot-path benchmarks in
                release (F = scenario substring filter). NOT a ci gate —
                the fast loop stays fast. See docs/benchmarking.md.
+  merge-check  Preflight before the serialized merge-back: on a stream
+               branch, clean tree, rebased on origin/main, every gate
+               green. GO/NO-GO; never pushes. See docs/merging.md.
   help         Show this message.";
 
 fn main() -> ExitCode {
@@ -45,6 +53,7 @@ fn main() -> ExitCode {
             let extra: Vec<String> = std::env::args().skip(2).collect();
             bench::run(&workspace_root(), &extra)
         }
+        Some("merge-check") => merge_check::run(&workspace_root()),
         Some("lint-names") | None => lint_names(),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");

@@ -18,6 +18,23 @@ lands, a `redundant_explicit_links` that only fires once another stream's
 nothing about `main` after the merge. Re-validate after the merge, in the
 main checkout, every time.
 
+## One-command preflight
+
+Before the steps below, run:
+
+```sh
+cargo xtask merge-check
+```
+
+It enforces the worktree half of "the one rule" as a single GO/NO-GO that
+cannot be half-done: you are on a stream branch, the tree is clean, the
+branch is **rebased on the latest `origin/main`**, and **every** gate is
+green (the full `cargo xtask ci`, `doc` included — the gate the old partial
+list skipped). It deliberately does *not* take the lock, touch the main
+checkout, or push: GO means "now do the serialized merge-back below"; the
+merged-main re-validation in step 5 is still mandatory and still yours to
+judge. NO-GO names the one thing to fix.
+
 ## Checklist
 
 Set up:
@@ -125,6 +142,8 @@ them locally — which is exactly why step 5 exists.
 
 ## See also
 
+- `cargo xtask merge-check` — the one-command preflight for everything
+  above except the lock/push (which need judgment, never automation).
 - [`docs/development.md`](development.md) — the fast inner loop
   (`cargo xtask ci`) this checklist guards.
 - [`docs/benchmarking.md`](benchmarking.md) — the non-gating slow loop.

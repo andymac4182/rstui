@@ -1,0 +1,53 @@
+# cargo-deny — the supply-chain gate (ADR 0003 §7, Phase 3).
+#
+# Local:  cargo deny check
+# CI:     the `supply-chain` job (.github/workflows/ci.yml). Per ADR 0003 §7
+#         licenses / bans / sources are the *hard* gate; advisories run
+#         non-blocking initially (a fresh CVE must not red-wall every stream
+#         mid-flight) and are promoted to gating in a later, deliberate slice.
+
+[graph]
+# Match what CI builds (`--all-features`), so the gate sees the real graph.
+all-features = true
+
+[advisories]
+version = 2
+# RustSec DB. A yanked crate is a real supply-chain signal — fail on it.
+# Vulnerability handling is non-blocking *in CI* via a separate
+# continue-on-error step, not by weakening this file; that keeps the local
+# `cargo deny check` honest and the promotion a one-line CI change.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# The exact set present in the dependency graph, surveyed with
+# `cargo deny list`. rstui itself is Apache-2.0; dependencies add MIT, the
+# Apache LLVM exception, and Unicode-3.0 (unicode-ident). No copyleft is
+# present and none is allowed: a new dependency under any other license
+# fails the gate until the license is reviewed and added here — that review
+# is exactly the point of the gate.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate transitive versions are usually benign; surface them without
+# failing the gate (a hard deny here is brittle churn — ADR 0003's explicit
+# non-goal). Genuine wildcard version requirements are denied; workspace
+# path dependencies legitimately have none.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Supply-chain core: every crate must resolve from crates.io. An unknown
+# registry or any git dependency fails the gate until explicitly vetted.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

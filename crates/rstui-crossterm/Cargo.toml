@@ -12,13 +12,16 @@ description = "The crossterm-backed terminal driver for the rstui TUI framework:
 workspace = true
 
 [dependencies]
-rstui-core = { path = "../rstui-core" }
+# `version` + `path` so this crate is publishable (a bare path dep makes a
+# public crate unpublishable); kept = workspace version by the
+# `crate_dep_versions_match_workspace` xtask guard.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
 # The full-screen app shell (`run_app`) composes `rstui_runtime::run` with the
 # guard + backend + event source, so the runtime is a normal dependency, not
 # just a dev one. This is acyclic by design — `rstui-runtime` depends only on
 # `rstui-core`, never on `rstui-crossterm` — so the backend crate is free to
 # sit on top of the runtime and own the terminal-specific entry point.
-rstui-runtime = { path = "../rstui-runtime" }
+rstui-runtime = { path = "../rstui-runtime", version = "0.0.1" }
 # The single external dependency in the workspace, deliberately isolated here
 # per ADR 0001 so `rstui-core` stays dependency-free. Default features (incl.
 # `windows`) are kept on for the cross-platform support that motivated the

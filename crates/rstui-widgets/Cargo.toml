@@ -14,8 +14,10 @@ workspace = true
 [dependencies]
 # Widgets depend only on the dependency-free primitives crate (ADR 0002):
 # `Widget` trait, `Buffer`/`Cell`, geometry, style, layout, the text model.
-# Any third-party widget crate has exactly this shape.
-rstui-core = { path = "../rstui-core" }
+# Any third-party widget crate has exactly this shape. `version` + `path`
+# so this crate is publishable; kept = workspace version by the
+# `crate_dep_versions_match_workspace` xtask guard.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
 
 [dev-dependencies]
 # Examples only: the Harness-driven `input_demo` composes the widget with the

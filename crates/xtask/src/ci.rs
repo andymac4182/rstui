@@ -127,9 +127,11 @@ fn run_cargo(cargo: &str, root: &Path, args: &[&str], env: &[(&str, &str)]) -> b
     }
 }
 
-/// Run the full gate sequence rooted at `root`, fail-fast. Returns
-/// [`ExitCode::SUCCESS`] only if every gate passes.
-pub(crate) fn run(root: &Path) -> ExitCode {
+/// Run the full gate sequence rooted at `root`, fail-fast. `true` only if
+/// every gate passes. Output is identical to what a contributor expects from
+/// `cargo xtask ci`; the `bool` lets callers (the `ci` task wrapper, and
+/// `merge-check`) branch without `ExitCode` (which is not comparable).
+pub(crate) fn run_all(root: &Path) -> bool {
     let cargo = cargo_bin();
     let total = Instant::now();
     let count = STEPS.len();
@@ -161,7 +163,7 @@ pub(crate) fn run(root: &Path) -> ExitCode {
                  fail-fast.)",
                 idx + 1
             );
-            return ExitCode::FAILURE;
+            return false;
         }
     }
 
@@ -170,7 +172,16 @@ pub(crate) fn run(root: &Path) -> ExitCode {
          what CI enforces.",
         total.elapsed().as_secs_f64()
     );
-    ExitCode::SUCCESS
+    true
+}
+
+/// [`run_all`] as a process [`ExitCode`] — the `cargo xtask ci` entry point.
+pub(crate) fn run(root: &Path) -> ExitCode {
+    if run_all(root) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(test)]
