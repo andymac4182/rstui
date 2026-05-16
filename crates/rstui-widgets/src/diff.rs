@@ -10,9 +10,11 @@
 //! own-crate split is reserved for *heavy, optional, conceptually alien*
 //! engines — never pre-emptively). A unified-diff *grammar* is none of those:
 //! it is a handful of line-oriented prefixes (`diff --git`, `--- `/`+++ `,
-//! `@@ … @@`, then a one-char body sign), and the only real algorithm — the
-//! word-level intra-line diff — is a textbook LCS over tokens, the same way
-//! [`Markdown`](crate::Markdown)'s parser is hand-written rather than pulling a
+//! `@@ … @@`, then a one-char body sign), and the two real algorithms — the
+//! word-level intra-line diff (a textbook LCS over tokens) and the optional
+//! generic syntax tokenizer (a small character classifier over string,
+//! number, comment and keyword runs) — are the same kind of hand-written
+//! scanning [`Markdown`](crate::Markdown)'s parser uses rather than pulling a
 //! CommonMark crate. So `Diff` is a plain [`Widget`]
 //! module here, zero new dependencies.
 //!
@@ -46,12 +48,23 @@
 //!   themed cells so rows stay aligned), context echoed on both sides, and
 //!   the same intra-line word highlight on the paired changed lines; file and
 //!   hunk headers span the full width in either layout
-//!
-//! Deliberately out of scope for this slice (each an additive follow-up that
-//! does not change this shape): syntax highlighting of the code itself,
-//! combined (merge, `@@@`) diffs, `git` `rename`/`copy`/`mode`/`index`
-//! metadata lines (they are simply ignored, not rendered), and binary-file
-//! patches.
+//! - opt-in **generic syntax highlighting** of the code itself via
+//!   [`Diff::syntax`] (default off): a dependency-free, language-agnostic,
+//!   deterministic tokenizer tints string literals (`"…"`, `'…'`,
+//!   `` `…` ``), numbers, line comments (`//`, `#`, `--`) and `/* … */`
+//!   block comments, and a curated common-keyword set (`fn`/`let`/`if`/…).
+//!   It is layered *under* the add/del row background and the intra-line
+//!   word highlight, so a changed word still wins
+//! - **combined merge diffs**: an `@@@ -a,b -c,d +e,f @@@` hunk header (one
+//!   `@` and one range per parent) and the matching N-column body sign
+//!   prefixes, rendered with an N-wide sign gutter
+//! - **`git` metadata rows** — `rename from`/`rename to`,
+//!   `copy from`/`copy to`, `old mode`/`new mode`, `similarity index N%`,
+//!   `index <oid>..<oid>[ <mode>]`, `new file mode`/`deleted file mode` —
+//!   parsed and rendered as themed header rows (shown, never dropped)
+//! - **binary patches**: a `Binary files a/x and b/y differ` line or a
+//!   `GIT binary patch` block renders as a clear themed "binary file
+//!   changed" row instead of being silently dropped
 //!
 //! Rendering is deterministic and width-aware: the same patch and area always
 //! produce the same cells, so output is snapshot-testable through
@@ -124,6 +137,24 @@ pub struct DiffTheme {
     pub word_added: Style,
     /// Painted on top of a deleted line's changed word runs.
     pub word_deleted: Style,
+    /// A themed `git` metadata row (`rename`/`copy`/`mode`/`similarity`/
+    /// `index`/`new file`/`deleted file`). Distinct from [`file`](Self::file)
+    /// so the path header still stands out above its metadata.
+    pub meta: Style,
+    /// A "binary file changed" row (a `Binary files … differ` line or a
+    /// `GIT binary patch` block). Loud enough not to be missed.
+    pub binary: Style,
+    /// A string literal (`"…"`, `'…'`, `` `…` ``) when [`Diff::syntax`] is on.
+    /// Layered *under* the row add/del background and the word highlight.
+    pub syntax_string: Style,
+    /// A numeric literal when [`Diff::syntax`] is on. Same under-layering.
+    pub syntax_number: Style,
+    /// A `//`/`#`/`--` line comment or a `/* … */` block comment when
+    /// [`Diff::syntax`] is on. Same under-layering.
+    pub syntax_comment: Style,
+    /// A common-keyword token (`fn`/`let`/`if`/…) when [`Diff::syntax`] is on.
+    /// Same under-layering.
+    pub syntax_keyword: Style,
 }
 
 impl Default for DiffTheme {
@@ -143,6 +174,14 @@ impl Default for DiffTheme {
                 .bg(Color::Red)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
+            meta: Style::new().fg(Color::Magenta).add_modifier(Modifier::DIM),
+            binary: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            syntax_string: Style::new().fg(Color::Green),
+            syntax_number: Style::new().fg(Color::Magenta),
+            syntax_comment: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+            syntax_keyword: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -203,6 +242,7 @@ pub struct Diff<'a> {
     scroll: u16,
     theme: DiffTheme,
     layout: DiffLayout,
+    syntax: bool,
 }
 
 impl<'a> Diff<'a> {
@@ -215,6 +255,7 @@ impl<'a> Diff<'a> {
             scroll: 0,
             theme: DiffTheme::default(),
             layout: DiffLayout::default(),
+            syntax: false,
         }
     }
 
@@ -264,6 +305,23 @@ impl<'a> Diff<'a> {
         self.layout(DiffLayout::Split)
     }
 
+    /// Toggles generic, language-agnostic syntax highlighting of the body
+    /// code. **Off by default** (so a patch reads exactly as `git diff`
+    /// without it, and existing snapshots are unaffected).
+    ///
+    /// When on, a small deterministic tokenizer tints, per character, string
+    /// literals (`"…"`/`'…'`/`` `…` ``), numbers, `//`/`#`/`--` line
+    /// comments, `/* … */` block comments, and a curated common-keyword set
+    /// ([`syntax_keyword`](DiffTheme::syntax_keyword) and friends). The
+    /// highlight is patched *under* the add/del row background and the
+    /// intra-line word emphasis, so a changed word still wins visually. It is
+    /// independent of [`DiffLayout`] (both layouts honour it).
+    #[must_use]
+    pub fn syntax(mut self, on: bool) -> Self {
+        self.syntax = on;
+        self
+    }
+
     /// Parses the source and lays it out to display rows for a content area
     /// `width` columns wide, honouring the active [`DiffLayout`]. Public so a
     /// host can measure a patch (its row count) for scroll math or a
@@ -280,8 +338,8 @@ impl<'a> Diff<'a> {
         let rows = parse_rows(self.source.as_ref());
         let width = width as usize;
         match self.layout {
-            DiffLayout::Unified => layout_rows(&rows, width, &self.theme),
-            DiffLayout::Split => layout_rows_split(&rows, width, &self.theme),
+            DiffLayout::Unified => layout_rows(&rows, width, &self.theme, self.syntax),
+            DiffLayout::Split => layout_rows_split(&rows, width, &self.theme, self.syntax),
         }
     }
 }
@@ -330,18 +388,32 @@ enum DiffRow {
     /// A file header: the path to show, and whether the *other* side is
     /// `/dev/null` (added/deleted file) — purely informational for the label.
     File { path: String },
+    /// A `git` metadata line that is not a path header — `rename`/`copy`,
+    /// `old`/`new mode`, `similarity index`, `index`, `new file mode`,
+    /// `deleted file mode`. Rendered as a themed row, never dropped.
+    Meta { text: String },
+    /// A binary-patch notice: a `Binary files … differ` line or the head of
+    /// a `GIT binary patch` block (its payload bytes are not displayable).
+    Binary { text: String },
     /// A hunk header with its starting line numbers and optional section.
+    /// `sign_cols` is 1 for an ordinary `@@` hunk and the parent count (≥ 2)
+    /// for a combined `@@@ … @@@` merge hunk, sizing the body sign gutter.
     Hunk {
         old_start: u32,
         new_start: u32,
         section: String,
+        sign_cols: usize,
     },
     /// A body line. `old_no`/`new_no` are the 1-based numbers that apply to
     /// this row (a deletion has no new number, an addition no old number).
+    /// `signs` is the raw leading sign column(s) — one char for an ordinary
+    /// hunk, `sign_cols` chars for a combined hunk — shown verbatim in the
+    /// gutter so a 3-way conflict's per-parent `+`/`-` is visible.
     Body {
         kind: ChangeKind,
         old_no: Option<u32>,
         new_no: Option<u32>,
+        signs: String,
         content: String,
     },
     /// The `\ No newline at end of file` marker line.
@@ -360,9 +432,11 @@ enum ChangeKind {
 }
 
 /// Splits `src` into classified [`DiffRow`]s, tracking line numbers across
-/// hunks. Line-oriented, single pass; an unrecognised line outside any hunk is
-/// ignored (e.g. `index`/`rename` git metadata), one inside renders as
-/// context so no content is ever silently dropped.
+/// hunks. Line-oriented, single pass. `git` metadata (`index`, `rename`,
+/// `mode`, …) and binary-patch notices become their own themed rows rather
+/// than being dropped; an unrecognised line inside a hunk renders as context
+/// so no content is ever silently lost. Combined (`@@@ … @@@`) merge hunks
+/// are recognised and their N-column body signs preserved verbatim.
 fn parse_rows(src: &str) -> Vec<DiffRow> {
     let mut lines: Vec<&str> = src
         .split('\n')
@@ -377,14 +451,23 @@ fn parse_rows(src: &str) -> Vec<DiffRow> {
     let mut old_no: u32 = 0;
     let mut new_no: u32 = 0;
     let mut in_hunk = false;
+    // 1 for an ordinary `@@` hunk, ≥ 2 for a combined `@@@` merge hunk.
+    let mut sign_cols = 1usize;
     let mut pending_minus: Option<&str> = None; // last `--- ` awaiting its `+++`
+    // A `GIT binary patch` line is followed by base85 payload chunks; skip
+    // them (they are bytes, not displayable text) until the next header.
+    let mut in_binary_payload = false;
 
     for line in lines {
-        if let Some(rest) = line.strip_prefix("diff --git ") {
-            // `diff --git a/x b/x` — start a file; the `--- `/`+++ ` pair that
-            // follows refines the path, so just note it and reset hunk state.
-            let _ = rest;
+        if line.starts_with("diff --git ")
+            || line.starts_with("diff --cc ")
+            || line.starts_with("diff --combined ")
+        {
+            // `diff --git a/x b/x` (or the combined-merge `diff --cc`/
+            // `diff --combined`) — start a file; the `--- `/`+++ ` pair that
+            // follows refines the path, so just reset hunk/binary state.
             in_hunk = false;
+            in_binary_payload = false;
             pending_minus = None;
             continue;
         }
@@ -392,6 +475,7 @@ fn parse_rows(src: &str) -> Vec<DiffRow> {
         if let Some(path) = line.strip_prefix("--- ") {
             pending_minus = Some(path);
             in_hunk = false;
+            in_binary_payload = false;
             continue;
         }
 
@@ -400,6 +484,7 @@ fn parse_rows(src: &str) -> Vec<DiffRow> {
             out.push(DiffRow::File { path: shown });
             pending_minus = None;
             in_hunk = false;
+            in_binary_payload = false;
             continue;
         }
 
@@ -407,12 +492,35 @@ fn parse_rows(src: &str) -> Vec<DiffRow> {
             old_no = h.old_start;
             new_no = h.new_start;
             in_hunk = true;
+            in_binary_payload = false;
+            sign_cols = h.sign_cols;
             out.push(DiffRow::Hunk {
                 old_start: h.old_start,
                 new_start: h.new_start,
                 section: h.section,
+                sign_cols: h.sign_cols,
             });
             continue;
+        }
+
+        // Binary-patch notices, in either of git's two forms. The
+        // `GIT binary patch` header is followed by base85 payload lines that
+        // are bytes, not text — note we are in that payload and skip them
+        // until the next header resets the state.
+        if !in_hunk {
+            if let Some(text) = binary_notice(line) {
+                in_binary_payload = line == "GIT binary patch";
+                out.push(DiffRow::Binary { text });
+                continue;
+            }
+            if in_binary_payload {
+                // base85 payload chunk of a `GIT binary patch` — skip.
+                continue;
+            }
+            if let Some(text) = git_metadata(line) {
+                out.push(DiffRow::Meta { text });
+                continue;
+            }
         }
 
         if line.starts_with('\\') {
@@ -425,49 +533,150 @@ fn parse_rows(src: &str) -> Vec<DiffRow> {
         }
 
         if in_hunk {
-            let (kind, content) = match line.chars().next() {
-                Some('+') => (ChangeKind::Addition, &line[1..]),
-                Some('-') => (ChangeKind::Deletion, &line[1..]),
-                Some(' ') => (ChangeKind::Context, &line[1..]),
-                // An empty line inside a hunk is an empty context line.
-                None => (ChangeKind::Context, ""),
-                // Anything else inside a hunk is treated as context so the
-                // text is preserved rather than dropped.
-                Some(_) => (ChangeKind::Context, line),
-            };
-            let (row_old, row_new) = match kind {
-                ChangeKind::Context => {
-                    let o = old_no;
-                    let n = new_no;
-                    old_no += 1;
-                    new_no += 1;
-                    (Some(o), Some(n))
+            let (kind, signs, content) = classify_body(line, sign_cols);
+            // Ordinary hunk: old advances on context/deletion, new on
+            // context/addition — the classic two-counter walk. Combined
+            // hunk: only the merge-result line number is meaningful, so the
+            // single number column tracks `new_no`, advancing for every line
+            // that survives into the result (anything not a pure deletion).
+            let (row_old, row_new) = if sign_cols == 1 {
+                match kind {
+                    ChangeKind::Context => {
+                        let o = old_no;
+                        let n = new_no;
+                        old_no += 1;
+                        new_no += 1;
+                        (Some(o), Some(n))
+                    }
+                    ChangeKind::Deletion => {
+                        let o = old_no;
+                        old_no += 1;
+                        (Some(o), None)
+                    }
+                    ChangeKind::Addition => {
+                        let n = new_no;
+                        new_no += 1;
+                        (None, Some(n))
+                    }
                 }
-                ChangeKind::Deletion => {
-                    let o = old_no;
-                    old_no += 1;
-                    (Some(o), None)
-                }
-                ChangeKind::Addition => {
-                    let n = new_no;
-                    new_no += 1;
-                    (None, Some(n))
-                }
+            } else if kind == ChangeKind::Deletion {
+                (None, None)
+            } else {
+                let n = new_no;
+                new_no += 1;
+                (None, Some(n))
             };
             out.push(DiffRow::Body {
                 kind,
                 old_no: row_old,
                 new_no: row_new,
+                signs,
                 content: content.to_owned(),
             });
             continue;
         }
 
-        // Outside any hunk and not a header we recognise: git metadata
-        // (`index`, `old mode`, `rename from`, …). Deliberately ignored.
+        // Outside any hunk and not a header we recognise: best-effort drop.
+        // (Every git metadata / binary form we know is handled above.)
     }
 
     out
+}
+
+/// Classifies one body line of a hunk into its [`ChangeKind`], the raw sign
+/// column(s) to show in the gutter, and the content after them.
+///
+/// `sign_cols` is 1 for an ordinary hunk and the parent count for a combined
+/// `@@@` merge hunk. For a combined line the kind is the *dominant* one — any
+/// `+` column makes it an addition, otherwise any `-` makes it a deletion,
+/// else context — so the row colour matches its net effect while the per-
+/// parent signs stay visible verbatim in the gutter.
+fn classify_body(line: &str, sign_cols: usize) -> (ChangeKind, String, &str) {
+    if sign_cols <= 1 {
+        return match line.chars().next() {
+            Some('+') => (ChangeKind::Addition, "+".to_owned(), &line[1..]),
+            Some('-') => (ChangeKind::Deletion, "-".to_owned(), &line[1..]),
+            Some(' ') => (ChangeKind::Context, " ".to_owned(), &line[1..]),
+            // An empty line inside a hunk is an empty context line.
+            None => (ChangeKind::Context, " ".to_owned(), ""),
+            // Anything else inside a hunk is treated as context so the text
+            // is preserved rather than dropped.
+            Some(_) => (ChangeKind::Context, " ".to_owned(), line),
+        };
+    }
+
+    // Combined hunk: the first `sign_cols` *characters* are the per-parent
+    // sign columns (each a `+`/`-`/` ` in well-formed input). Split on a char
+    // boundary — a malformed line whose lead is a multi-byte char must not
+    // panic — and pad a short line with spaces so the gutter stays aligned.
+    let split = line
+        .char_indices()
+        .nth(sign_cols)
+        .map_or(line.len(), |(byte, _)| byte);
+    let raw = &line[..split];
+    let taken = raw.chars().count();
+    let mut signs = String::with_capacity(sign_cols);
+    signs.push_str(raw);
+    for _ in taken..sign_cols {
+        signs.push(' ');
+    }
+    let content = &line[split..];
+    let kind = if signs.contains('+') {
+        ChangeKind::Addition
+    } else if signs.contains('-') {
+        ChangeKind::Deletion
+    } else {
+        ChangeKind::Context
+    };
+    (kind, signs, content)
+}
+
+/// Recognises a `git` metadata line (outside any hunk) that should render as
+/// its own themed row rather than be dropped, returning the text to show.
+///
+/// Covers `old mode`/`new mode`, `deleted file mode`/`new file mode`,
+/// `copy from`/`copy to`, `rename from`/`rename to`, `similarity index N%`,
+/// `dissimilarity index N%`, and `index <oid>..<oid>[ <mode>]`.
+fn git_metadata(line: &str) -> Option<String> {
+    const PREFIXES: &[&str] = &[
+        "old mode ",
+        "new mode ",
+        "deleted file mode ",
+        "new file mode ",
+        "copy from ",
+        "copy to ",
+        "rename from ",
+        "rename to ",
+        "rename old ",
+        "rename new ",
+        "similarity index ",
+        "dissimilarity index ",
+        "index ",
+    ];
+    if PREFIXES.iter().any(|p| line.starts_with(p)) {
+        Some(line.to_owned())
+    } else {
+        None
+    }
+}
+
+/// Recognises a binary-patch notice, returning a clear, fixed display label
+/// (the raw form is terse and, for `GIT binary patch`, followed by
+/// undisplayable base85 bytes the caller skips).
+///
+/// Handles the textual `Binary files a/x and b/y differ` (and the older
+/// `Binary files differ`) line and the `GIT binary patch` block header.
+fn binary_notice(line: &str) -> Option<String> {
+    if line == "GIT binary patch" {
+        return Some("(binary file changed)".to_owned());
+    }
+    let body = line.strip_prefix("Binary files ")?;
+    let inner = body.strip_suffix(" differ").unwrap_or(body);
+    if inner.is_empty() {
+        Some("(binary file changed)".to_owned())
+    } else {
+        Some(format!("(binary) {inner}"))
+    }
 }
 
 /// The label shown on a file-header row, given the raw `--- ` and `+++ `
@@ -507,34 +716,56 @@ fn is_dev_null(raw: &str) -> bool {
     path == "/dev/null"
 }
 
-/// A parsed `@@ … @@` hunk header.
+/// A parsed `@@ … @@` (or combined `@@@ … @@@`) hunk header.
 struct HunkHeader {
     old_start: u32,
     new_start: u32,
     section: String,
+    /// 1 for an ordinary hunk; the parent count (≥ 2) for a combined merge
+    /// hunk, which is also the body-line sign-column width.
+    sign_cols: usize,
 }
 
-/// Parses `@@ -<l>[,<s>] +<l>[,<s>] @@[ section]`. Omitted counts default to
-/// 1 (the unified-diff convention); the section label is the free text after
-/// the closing `@@`. Returns `None` if the shape does not match.
+/// Parses an ordinary `@@ -<l>[,<s>] +<l>[,<s>] @@[ section]` or a combined
+/// merge `@@@ -<l>[,<s>] -<l>[,<s>] +<l>[,<s>] @@@[ section]` header. The
+/// fence width (count of leading `@`) is `parents + 1`; a combined header
+/// carries one `-` range per parent and a single `+` range. Omitted counts
+/// default to 1; the section label is the free text after the closing fence.
+/// Returns `None` if the shape does not match (so a malformed header renders
+/// best-effort as context, never panicking).
 fn parse_hunk_header(line: &str) -> Option<HunkHeader> {
-    let rest = line.strip_prefix("@@ ")?;
-    let close = rest.find(" @@")?;
+    // Leading `@` run width: 2 for `@@`, 3 for `@@@`, … Each extra `@` past
+    // the first two adds a parent (a combined diff). One `@` is not a hunk.
+    let fence = line.bytes().take_while(|&b| b == b'@').count();
+    if fence < 2 {
+        return None;
+    }
+    let fence_str: &str = &line[..fence];
+    let rest = line[fence..].strip_prefix(' ')?;
+    let close_pat = format!(" {fence_str}");
+    let close = rest.find(&close_pat)?;
     let ranges = &rest[..close];
-    let section = rest[close + 3..].trim().to_owned();
+    let section = rest[close + close_pat.len()..].trim().to_owned();
 
+    // `parents` minus ranges then exactly one plus range.
+    let parents = fence - 1;
     let mut parts = ranges.split(' ');
-    let old = parts.next()?.strip_prefix('-')?;
-    let new = parts.next()?.strip_prefix('+')?;
+    let mut old_start = None;
+    for _ in 0..parents {
+        let minus = parts.next()?.strip_prefix('-')?;
+        let (start, _count) = parse_range(minus)?;
+        old_start.get_or_insert(start);
+    }
+    let plus = parts.next()?.strip_prefix('+')?;
+    let (new_start, _new_count) = parse_range(plus)?;
     if parts.next().is_some() {
         return None;
     }
-    let (old_start, _old_count) = parse_range(old)?;
-    let (new_start, _new_count) = parse_range(new)?;
     Some(HunkHeader {
-        old_start,
+        old_start: old_start.unwrap_or(new_start),
         new_start,
         section,
+        sign_cols: parents,
     })
 }
 
@@ -552,10 +783,35 @@ fn parse_range(s: &str) -> Option<(u32, u32)> {
 
 /// Lays the parsed rows out to display [`Line`]s for a content area `width`
 /// wide: computes the gutter width from the largest line number, pairs change
-/// groups for the intra-line word diff, then renders every row.
-fn layout_rows(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<Line<'static>> {
-    // Gutter width: the widest old/new number, min 1, so a no-number side
-    // still reserves a column and the sign stays aligned.
+/// groups for the intra-line word diff, then renders every row. `syntax`
+/// toggles the generic syntax-highlight overlay on body content.
+fn layout_rows(
+    rows: &[DiffRow],
+    width: usize,
+    theme: &DiffTheme,
+    syntax: bool,
+) -> Vec<Line<'static>> {
+    let num_w = number_width(rows);
+    // The widest body sign gutter: 1 for ordinary hunks, the parent count for
+    // a combined merge hunk. Sized once so every body row's content aligns.
+    let sign_w = sign_width(rows);
+
+    // Which body rows are part of a change group, paired for intra-line marks:
+    // index → the changed-char mask for that row (empty = no per-word marks).
+    let marks = intra_line_marks(rows);
+
+    let mut out = Vec::with_capacity(rows.len());
+    for (idx, row) in rows.iter().enumerate() {
+        out.push(render_row(
+            idx, row, num_w, sign_w, &marks, width, theme, syntax,
+        ));
+    }
+    out
+}
+
+/// The line-number column width: digits of the widest old/new number across
+/// all body rows, at least 1 so a no-number side still reserves a column.
+fn number_width(rows: &[DiffRow]) -> usize {
     let max_no = rows
         .iter()
         .filter_map(|r| match r {
@@ -566,17 +822,21 @@ fn layout_rows(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<Line<'s
         })
         .max()
         .unwrap_or(0);
-    let num_w = digits(max_no).max(1);
+    digits(max_no).max(1)
+}
 
-    // Which body rows are part of a change group, paired for intra-line marks:
-    // index → the changed-char mask for that row (empty = no per-word marks).
-    let marks = intra_line_marks(rows);
-
-    let mut out = Vec::with_capacity(rows.len());
-    for (idx, row) in rows.iter().enumerate() {
-        out.push(render_row(idx, row, num_w, &marks, width, theme));
-    }
-    out
+/// The body sign-column width: the widest `signs` string across all body
+/// rows (1 for an ordinary hunk, the parent count for a combined merge
+/// hunk), at least 1 so the sign always has a column.
+fn sign_width(rows: &[DiffRow]) -> usize {
+    rows.iter()
+        .filter_map(|r| match r {
+            DiffRow::Body { signs, .. } => Some(signs.chars().count()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// The decimal digit count of `n` (at least 1, for `0`).
@@ -585,93 +845,138 @@ fn digits(n: u32) -> usize {
 }
 
 /// Renders one parsed row into a display [`Line`], padding its content with
-/// trailing spaces so a row background spans the full `width`.
+/// trailing spaces so a row background spans the full `width`. `sign_w` is
+/// the sign-gutter width (1, or the parent count for a combined hunk);
+/// `syntax` toggles the generic highlight overlay on body content.
+#[allow(clippy::too_many_arguments)]
 fn render_row(
     idx: usize,
     row: &DiffRow,
     num_w: usize,
+    sign_w: usize,
     marks: &[Option<Vec<bool>>],
     width: usize,
     theme: &DiffTheme,
+    syntax: bool,
 ) -> Line<'static> {
     match row {
         DiffRow::File { path } => full_width_line(&format!("─── {path} "), width, theme.file),
+        DiffRow::Meta { text } => full_width_line(text, width, theme.meta),
+        DiffRow::Binary { text } => full_width_line(text, width, theme.binary),
         DiffRow::Hunk {
             old_start,
             new_start,
             section,
-        } => {
-            let mut head = format!("@@ -{old_start} +{new_start} @@");
-            if !section.is_empty() {
-                head.push(' ');
-                head.push_str(section);
-            }
-            full_width_line(&head, width, theme.hunk)
-        }
+            sign_cols,
+        } => full_width_line(
+            &hunk_head(*old_start, *new_start, section, *sign_cols),
+            width,
+            theme.hunk,
+        ),
         DiffRow::NoNewline { text } => full_width_line(text, width, theme.context),
         DiffRow::Body {
             kind,
             old_no,
             new_no,
+            signs,
             content,
         } => {
-            let (sign, row_style, word_style) = match kind {
-                ChangeKind::Addition => ('+', theme.addition, theme.word_added),
-                ChangeKind::Deletion => ('-', theme.deletion, theme.word_deleted),
-                ChangeKind::Context => (' ', theme.context, theme.context),
-            };
+            let (row_style, word_style) = body_styles(*kind, theme);
             let gutter = format!(
-                "{old:>w$} {new:>w$} {sign} ",
+                "{old:>w$} {new:>w$} {sign:<sw$} ",
                 old = num_str(*old_no),
                 new = num_str(*new_no),
+                sign = signs,
                 w = num_w,
+                sw = sign_w,
             );
             let gutter_w = gutter.chars().count();
+            let body_w = width.saturating_sub(gutter_w);
 
             let mut spans = vec![Span::styled(gutter, theme.gutter.patch(row_style))];
-
-            // Body content cells, with the per-word mask painted on top.
-            let body_w = width.saturating_sub(gutter_w);
-            let mask = marks.get(idx).and_then(Option::as_ref);
-            let mut col = 0usize;
-            let mut run = String::new();
-            let mut run_marked = false;
-            let chars: Vec<char> = content.chars().collect();
-            for (i, &ch) in chars.iter().enumerate() {
-                if col >= body_w {
-                    break;
-                }
-                let marked = mask.map(|m| m.get(i).copied().unwrap_or(false)) == Some(true);
-                if !run.is_empty() && marked != run_marked {
-                    spans.push(body_span(&run, run_marked, row_style, word_style));
-                    run.clear();
-                }
-                run.push(ch);
-                run_marked = marked;
-                col += 1;
-            }
-            if !run.is_empty() {
-                spans.push(body_span(&run, run_marked, row_style, word_style));
-            }
-
-            // Pad to full width so the row background reads as a block.
-            if col < body_w {
-                spans.push(Span::styled(" ".repeat(body_w - col), row_style));
-            }
+            let mask = marks.get(idx).and_then(Option::as_ref).map(Vec::as_slice);
+            spans.extend(content_spans(
+                content, body_w, mask, row_style, word_style, theme, syntax,
+            ));
             Line::from(spans).style(row_style)
         }
     }
 }
 
-/// A body content span: the changed-word emphasis layered on top of the row
-/// style when `marked`, otherwise just the row style.
-fn body_span(text: &str, marked: bool, row_style: Style, word_style: Style) -> Span<'static> {
-    let style = if marked {
-        row_style.patch(word_style)
+/// The hunk header text: `@@ -<old> +<new> @@[ section]` for an ordinary
+/// hunk, widened to the matching `@@@ … @@@` fence for a combined merge hunk
+/// so its origin reads at a glance.
+fn hunk_head(old_start: u32, new_start: u32, section: &str, sign_cols: usize) -> String {
+    let fence = "@".repeat(sign_cols + 1);
+    let mut head = format!("{fence} -{old_start} +{new_start} {fence}");
+    if !section.is_empty() {
+        head.push(' ');
+        head.push_str(section);
+    }
+    head
+}
+
+/// The (row, intra-line word) style pair for a body line of `kind`.
+fn body_styles(kind: ChangeKind, theme: &DiffTheme) -> (Style, Style) {
+    match kind {
+        ChangeKind::Addition => (theme.addition, theme.word_added),
+        ChangeKind::Deletion => (theme.deletion, theme.word_deleted),
+        ChangeKind::Context => (theme.context, theme.context),
+    }
+}
+
+/// The styled spans for one body line's content, clipped to `body_w` cells
+/// and padded with trailing spaces so the row background reads as a block.
+///
+/// Each char's style is the three-layer cascade: the row add/del/context
+/// style, then (if `syntax`) the generic syntax overlay, then (where the
+/// intra-line `mask` is set) the changed-word emphasis on top — so a changed
+/// word always wins over a keyword tint, which wins over the plain row. A run
+/// is emitted whenever any of those three layers changes.
+fn content_spans(
+    content: &str,
+    body_w: usize,
+    mask: Option<&[bool]>,
+    row_style: Style,
+    word_style: Style,
+    theme: &DiffTheme,
+    syntax: bool,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = content.chars().collect();
+    let overlay = if syntax {
+        syntax_overlay(content, theme)
     } else {
-        row_style
+        Vec::new()
     };
-    Span::styled(text.to_owned(), style)
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
+    let mut run = String::new();
+    let mut run_style = row_style;
+    for (i, &ch) in chars.iter().enumerate() {
+        if col >= body_w {
+            break;
+        }
+        let syn = overlay.get(i).copied().unwrap_or_else(Style::new);
+        let marked = mask.is_some_and(|m| m.get(i).copied().unwrap_or(false));
+        let mut style = row_style.patch(syn);
+        if marked {
+            style = style.patch(word_style);
+        }
+        if !run.is_empty() && style != run_style {
+            spans.push(Span::styled(std::mem::take(&mut run), run_style));
+        }
+        run.push(ch);
+        run_style = style;
+        col += 1;
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, run_style));
+    }
+    // Pad to the full body so the row background reads as a block.
+    if col < body_w {
+        spans.push(Span::styled(" ".repeat(body_w - col), row_style));
+    }
+    spans
 }
 
 /// A header row: `text` clipped to `width`, padded with trailing spaces so the
@@ -726,29 +1031,26 @@ struct SideCell<'r> {
 
 /// Lays the parsed rows out side by side for a content area `width` wide:
 /// old/deletions left, new/additions right, each with its own gutter, a `│`
-/// between them. File/hunk/`\ No newline` rows span the full width. An area
-/// too narrow to seat both gutters, a content column each, and the separator
-/// degrades to [`layout_rows`] (the unified layout) rather than producing an
-/// unreadable sliver — so the caller never has to special-case tiny areas.
-fn layout_rows_split(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<Line<'static>> {
-    let max_no = rows
-        .iter()
-        .filter_map(|r| match r {
-            DiffRow::Body { old_no, new_no, .. } => {
-                Some(old_no.unwrap_or(0).max(new_no.unwrap_or(0)))
-            }
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
-    let num_w = digits(max_no).max(1);
+/// between them. File/hunk/metadata/binary/`\ No newline` rows span the full
+/// width. An area too narrow to seat both gutters, a content column each, and
+/// the separator degrades to [`layout_rows`] (the unified layout) rather than
+/// producing an unreadable sliver — so the caller never has to special-case
+/// tiny areas. `syntax` toggles the generic highlight overlay.
+fn layout_rows_split(
+    rows: &[DiffRow],
+    width: usize,
+    theme: &DiffTheme,
+    syntax: bool,
+) -> Vec<Line<'static>> {
+    let num_w = number_width(rows);
+    let sign_w = sign_width(rows);
 
-    // Per side: `<num_w> <sign> ` gutter + at least one content column. Two
+    // Per side: `<num_w> <sign_w> ` gutter + at least one content column. Two
     // of those plus the 1-col separator is the minimum legible split.
-    let gutter_w = num_w + 3;
+    let gutter_w = num_w + sign_w + 2;
     let min_side = gutter_w + 1;
     if width < min_side * 2 + 1 {
-        return layout_rows(rows, width, theme);
+        return layout_rows(rows, width, theme, syntax);
     }
     let left_w = (width - 1) / 2;
     let right_w = width - 1 - left_w;
@@ -758,8 +1060,13 @@ fn layout_rows_split(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<L
     let mut i = 0;
     while i < rows.len() {
         match &rows[i] {
-            // Headers and the no-newline marker read across both columns.
-            DiffRow::File { .. } | DiffRow::Hunk { .. } | DiffRow::NoNewline { .. } => {
+            // Headers, metadata, binary, and the no-newline marker read
+            // across both columns.
+            DiffRow::File { .. }
+            | DiffRow::Meta { .. }
+            | DiffRow::Binary { .. }
+            | DiffRow::Hunk { .. }
+            | DiffRow::NoNewline { .. } => {
                 out.push(full_width_row(&rows[i], width, theme));
                 i += 1;
             }
@@ -781,9 +1088,11 @@ fn layout_rows_split(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<L
                         mask: None,
                     },
                     num_w,
+                    sign_w,
                     left_w,
                     right_w,
                     theme,
+                    syntax,
                 ));
                 i += 1;
             }
@@ -845,7 +1154,9 @@ fn layout_rows_split(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<L
                             mask: None,
                         }
                     };
-                    out.push(split_line(&left, &right, num_w, left_w, right_w, theme));
+                    out.push(split_line(
+                        &left, &right, num_w, sign_w, left_w, right_w, theme, syntax,
+                    ));
                 }
 
                 // A row that began neither a deletion nor an addition (only
@@ -863,9 +1174,11 @@ fn layout_rows_split(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<L
                             mask: None,
                         },
                         num_w,
+                        sign_w,
                         left_w,
                         right_w,
                         theme,
+                        syntax,
                     ));
                     i += 1;
                 }
@@ -876,22 +1189,23 @@ fn layout_rows_split(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<L
 }
 
 /// A full-width header [`Line`] for split mode, reusing the unified renderer
-/// so file/hunk/no-newline rows are styled identically in both layouts.
+/// so file/meta/binary/hunk/no-newline rows are styled identically in both
+/// layouts.
 fn full_width_row(row: &DiffRow, width: usize, theme: &DiffTheme) -> Line<'static> {
     match row {
         DiffRow::File { path } => full_width_line(&format!("─── {path} "), width, theme.file),
+        DiffRow::Meta { text } => full_width_line(text, width, theme.meta),
+        DiffRow::Binary { text } => full_width_line(text, width, theme.binary),
         DiffRow::Hunk {
             old_start,
             new_start,
             section,
-        } => {
-            let mut head = format!("@@ -{old_start} +{new_start} @@");
-            if !section.is_empty() {
-                head.push(' ');
-                head.push_str(section);
-            }
-            full_width_line(&head, width, theme.hunk)
-        }
+            sign_cols,
+        } => full_width_line(
+            &hunk_head(*old_start, *new_start, section, *sign_cols),
+            width,
+            theme.hunk,
+        ),
         DiffRow::NoNewline { text } => full_width_line(text, width, theme.context),
         // Body rows never reach here (the split walker handles them).
         DiffRow::Body { content, .. } => full_width_line(content, width, theme.context),
@@ -902,35 +1216,42 @@ fn full_width_row(row: &DiffRow, width: usize, theme: &DiffTheme) -> Line<'stati
 /// right column. The line's base style is the separator/blank style so the
 /// gap between the two columns and any empty padding inherit the widget base
 /// (and the framing block fill) rather than a diff color.
+#[allow(clippy::too_many_arguments)]
 fn split_line(
     left: &SideCell<'_>,
     right: &SideCell<'_>,
     num_w: usize,
+    sign_w: usize,
     left_w: usize,
     right_w: usize,
     theme: &DiffTheme,
+    syntax: bool,
 ) -> Line<'static> {
-    let mut spans = side_spans(left, num_w, left_w, theme);
+    let mut spans = side_spans(left, num_w, sign_w, left_w, theme, syntax);
     spans.push(Span::styled(SPLIT_SEP.to_string(), Style::new()));
-    spans.extend(side_spans(right, num_w, right_w, theme));
+    spans.extend(side_spans(right, num_w, sign_w, right_w, theme, syntax));
     Line::from(spans)
 }
 
-/// The spans for one column, exactly `side_w` cells wide: a `<num> <sign> `
-/// gutter then the content with its intra-line word marks, padded so the
-/// column's background spans the full slot. An empty slot (the short side of
-/// a paired change) is `side_w` blank cells with the inherit-everything
-/// style, so it reads as themed empty space, not a colored line.
+/// The spans for one column, exactly `side_w` cells wide: a
+/// `<num> <signs> ` gutter then the content with its syntax/word styling,
+/// padded so the column's background spans the full slot. An empty slot (the
+/// short side of a paired change) is `side_w` blank cells with the
+/// inherit-everything style, so it reads as themed empty space, not a
+/// colored line. `sign_w` is the (combined-aware) sign-column width.
 fn side_spans(
     cell: &SideCell<'_>,
     num_w: usize,
+    sign_w: usize,
     side_w: usize,
     theme: &DiffTheme,
+    syntax: bool,
 ) -> Vec<Span<'static>> {
     let Some(DiffRow::Body {
         kind,
         old_no,
         new_no,
+        signs,
         content,
     }) = cell.row
     else {
@@ -938,11 +1259,7 @@ fn side_spans(
         return vec![Span::styled(" ".repeat(side_w), Style::new())];
     };
 
-    let (sign, row_style, word_style) = match kind {
-        ChangeKind::Addition => ('+', theme.addition, theme.word_added),
-        ChangeKind::Deletion => ('-', theme.deletion, theme.word_deleted),
-        ChangeKind::Context => (' ', theme.context, theme.context),
-    };
+    let (row_style, word_style) = body_styles(*kind, theme);
     // A deletion has only an old number, an addition only a new one; a
     // context line has both, so the left column shows old, the right new.
     let shown_no = match cell.side {
@@ -950,39 +1267,20 @@ fn side_spans(
         Side::Right => *new_no,
     };
 
-    let gutter_w = num_w + 3;
+    let gutter_w = num_w + sign_w + 2;
     let body_w = side_w.saturating_sub(gutter_w);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let gutter = format!("{n:>num_w$} {sign} ", n = num_str(shown_no));
+    let gutter = format!(
+        "{n:>num_w$} {sign:<sw$} ",
+        n = num_str(shown_no),
+        sign = signs,
+        sw = sign_w,
+    );
     spans.push(Span::styled(gutter, theme.gutter.patch(row_style)));
-
-    // Content cells with the per-word mask painted on top (same cascade as
-    // the unified renderer's body).
-    let mut col = 0usize;
-    let mut run = String::new();
-    let mut run_marked = false;
-    for (i, ch) in content.chars().enumerate() {
-        if col >= body_w {
-            break;
-        }
-        let marked = cell
-            .mask
-            .is_some_and(|m| m.get(i).copied().unwrap_or(false));
-        if !run.is_empty() && marked != run_marked {
-            spans.push(body_span(&run, run_marked, row_style, word_style));
-            run.clear();
-        }
-        run.push(ch);
-        run_marked = marked;
-        col += 1;
-    }
-    if !run.is_empty() {
-        spans.push(body_span(&run, run_marked, row_style, word_style));
-    }
-    if col < body_w {
-        spans.push(Span::styled(" ".repeat(body_w - col), row_style));
-    }
+    spans.extend(content_spans(
+        content, body_w, cell.mask, row_style, word_style, theme, syntax,
+    ));
     spans
 }
 
@@ -1035,12 +1333,12 @@ fn intra_line_marks(rows: &[DiffRow]) -> Vec<Option<Vec<bool>>> {
                     Some(DiffRow::Body { content: d, .. }),
                     Some(DiffRow::Body { content: a, .. }),
                 ) = (rows.get(di), rows.get(ai))
+                    && d.len() <= INTRA_LINE_MAX
+                    && a.len() <= INTRA_LINE_MAX
                 {
-                    if d.len() <= INTRA_LINE_MAX && a.len() <= INTRA_LINE_MAX {
-                        let (dm, am) = word_diff(d, a);
-                        marks[di] = Some(dm);
-                        marks[ai] = Some(am);
-                    }
+                    let (dm, am) = word_diff(d, a);
+                    marks[di] = Some(dm);
+                    marks[ai] = Some(am);
                 }
             }
         }
@@ -1165,6 +1463,251 @@ fn mark(mask: &mut [bool], tok: &Token) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Generic syntax highlight
+// ---------------------------------------------------------------------------
+
+/// A curated, language-agnostic keyword set. Deliberately a *common* core
+/// shared across C-family, Rust, Python, JS/TS, Go, shell, SQL, … rather than
+/// any one grammar — the highlight is a reading aid, not a parser, so a word
+/// that is a keyword in *some* mainstream language is tinted. Sorted so the
+/// lookup can binary-search and the list stays easy to audit.
+const KEYWORDS: &[&str] = &[
+    "abstract",
+    "and",
+    "as",
+    "async",
+    "await",
+    "begin",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "class",
+    "const",
+    "continue",
+    "data",
+    "def",
+    "default",
+    "defer",
+    "del",
+    "do",
+    "double",
+    "elif",
+    "else",
+    "end",
+    "enum",
+    "except",
+    "export",
+    "extends",
+    "extern",
+    "false",
+    "final",
+    "finally",
+    "float",
+    "fn",
+    "for",
+    "from",
+    "func",
+    "function",
+    "go",
+    "goto",
+    "if",
+    "impl",
+    "implements",
+    "import",
+    "in",
+    "instanceof",
+    "int",
+    "interface",
+    "is",
+    "lambda",
+    "let",
+    "long",
+    "loop",
+    "match",
+    "mod",
+    "module",
+    "move",
+    "mut",
+    "namespace",
+    "new",
+    "nil",
+    "none",
+    "not",
+    "null",
+    "object",
+    "or",
+    "package",
+    "pass",
+    "private",
+    "protected",
+    "pub",
+    "public",
+    "raise",
+    "ref",
+    "return",
+    "select",
+    "self",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "str",
+    "struct",
+    "super",
+    "switch",
+    "template",
+    "then",
+    "this",
+    "throw",
+    "throws",
+    "trait",
+    "true",
+    "try",
+    "type",
+    "typedef",
+    "typeof",
+    "union",
+    "unsafe",
+    "unsigned",
+    "use",
+    "using",
+    "var",
+    "void",
+    "where",
+    "while",
+    "with",
+    "yield",
+];
+
+/// Whether `word` is in the curated common-keyword set ([`KEYWORDS`]).
+fn is_keyword(word: &str) -> bool {
+    KEYWORDS.binary_search(&word).is_ok()
+}
+
+/// Builds the per-character syntax-style overlay for one body line's content:
+/// `overlay[i]` is the [`Style`] patch for char *i* (an empty [`Style`] where
+/// nothing applies). Dependency-free, deterministic, single left-to-right
+/// pass over the chars.
+///
+/// Recognises, in priority order: line comments (`//`, `#`, `--`) to end of
+/// line, `/* … */` block comments, string literals delimited by `"`, `'` or
+/// `` ` `` (with `\`-escape inside double/back quotes), numeric literals
+/// (a digit run, optionally `0x…`/`0b…`/`0o…`, with `_` / `.` / a trailing
+/// exponent), and otherwise word runs matched against [`KEYWORDS`]. It is a
+/// reading aid, not a compiler: it never spans lines (a diff row is one line)
+/// and an unterminated string simply colours to end of line.
+fn syntax_overlay(content: &str, theme: &DiffTheme) -> Vec<Style> {
+    let chars: Vec<char> = content.chars().collect();
+    let mut overlay = vec![Style::new(); chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+
+        // Line comment: `//`, `--`, or `#` to end of line.
+        if (c == '/' && chars.get(i + 1) == Some(&'/'))
+            || (c == '-' && chars.get(i + 1) == Some(&'-'))
+            || c == '#'
+        {
+            paint(&mut overlay, i, chars.len(), theme.syntax_comment);
+            break;
+        }
+
+        // Block comment `/* … */` (single line; a diff row never spans lines).
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            let mut j = i + 2;
+            while j < chars.len() {
+                if chars[j] == '*' && chars.get(j + 1) == Some(&'/') {
+                    j += 2;
+                    break;
+                }
+                j += 1;
+            }
+            paint(&mut overlay, i, j, theme.syntax_comment);
+            i = j;
+            continue;
+        }
+
+        // String / char literal. `"` and `` ` `` honour a `\` escape; `'`
+        // does too (covers escaped char literals without misreading a lone
+        // apostrophe — an unterminated quote just colours to end of line).
+        if c == '"' || c == '\'' || c == '`' {
+            let quote = c;
+            let mut j = i + 1;
+            while j < chars.len() {
+                if chars[j] == '\\' {
+                    j += 2;
+                    continue;
+                }
+                if chars[j] == quote {
+                    j += 1;
+                    break;
+                }
+                j += 1;
+            }
+            let end = j.min(chars.len());
+            paint(&mut overlay, i, end, theme.syntax_string);
+            i = end;
+            continue;
+        }
+
+        // Numeric literal: a digit (optionally a `0x`/`0o`/`0b` radix), then
+        // the run of digits / hex letters / `_` / `.`, plus an `e±` exponent.
+        if c.is_ascii_digit() {
+            let mut j = i + 1;
+            if c == '0' && matches!(chars.get(j), Some('x' | 'X' | 'o' | 'O' | 'b' | 'B')) {
+                j += 1;
+            }
+            while j < chars.len() {
+                let d = chars[j];
+                // A hex/decimal digit, `_` separator, or a `.` that is
+                // followed by another digit (so a method call like `1.foo`
+                // does not absorb the dot) extends the literal.
+                let extends = d.is_ascii_alphanumeric()
+                    || d == '_'
+                    || (d == '.' && chars.get(j + 1).is_some_and(char::is_ascii_digit));
+                if !extends {
+                    break;
+                }
+                j += 1;
+            }
+            paint(&mut overlay, i, j, theme.syntax_number);
+            i = j;
+            continue;
+        }
+
+        // Word run: a keyword gets the keyword style; any other identifier is
+        // left to the row/word styling underneath.
+        if c.is_alphanumeric() || c == '_' {
+            let start = i;
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            let word: String = chars[start..j].iter().collect();
+            if is_keyword(&word) {
+                paint(&mut overlay, start, j, theme.syntax_keyword);
+            }
+            i = j;
+            continue;
+        }
+
+        i += 1;
+    }
+    overlay
+}
+
+/// Applies `style` as the syntax overlay for char positions `start..end`
+/// (clamped to the slice), used by [`syntax_overlay`].
+fn paint(overlay: &mut [Style], start: usize, end: usize, style: Style) {
+    for slot in overlay.iter_mut().take(end).skip(start) {
+        *slot = style;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1213,6 +1756,7 @@ mod tests {
                 old_start: 1,
                 new_start: 1,
                 section: String::new(),
+                sign_cols: 1,
             }
         );
         assert!(matches!(
@@ -1235,6 +1779,7 @@ mod tests {
                 old_start: 10,
                 new_start: 12,
                 section: "fn render(&self)".to_owned(),
+                sign_cols: 1,
             }
         );
         let out = lines(Diff::new("@@ -10,3 +12,4 @@ fn render"), 24, 1);
@@ -1417,7 +1962,7 @@ diff --git a/two.rs b/two.rs
     }
 
     #[test]
-    fn git_metadata_lines_outside_a_hunk_are_ignored() {
+    fn git_index_metadata_line_renders_as_its_own_themed_row() {
         let patch = "\
 diff --git a/f.rs b/f.rs
 index e69de29..4b825dc 100644
@@ -1427,12 +1972,26 @@ index e69de29..4b825dc 100644
 -a
 +b";
         let rows = parse_rows(patch);
-        // No row carries the `index …` metadata line.
+        // The `index …` line is now a Meta row, never folded into Body text.
         assert!(!rows.iter().any(|r| matches!(
             r,
             DiffRow::Body { content, .. } if content.contains("index")
         )));
-        assert!(matches!(rows[0], DiffRow::File { .. }));
+        assert_eq!(
+            rows[0],
+            DiffRow::Meta {
+                text: "index e69de29..4b825dc 100644".to_owned(),
+            }
+        );
+        assert!(matches!(rows[1], DiffRow::File { .. }));
+        // And it is drawn (themed `meta`), not dropped: the row text appears.
+        let out = lines(Diff::new(patch), 34, 4);
+        assert!(
+            out.lines()
+                .next()
+                .unwrap()
+                .starts_with("index e69de29..4b825dc 100644")
+        );
     }
 
     #[test]
@@ -1605,5 +2164,341 @@ index e69de29..4b825dc 100644
             Diff::new(patch).layout(DiffLayout::Unified).lines(28),
             Diff::new(patch).lines(28),
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Generic syntax highlight
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn syntax_is_off_by_default_so_existing_output_is_unchanged() {
+        // The same patch with and without the default `.syntax(false)` must
+        // be byte-identical (no overlay, the documented default).
+        let patch = "@@ -1 +1 @@\n-let n = 1; // c\n+let n = 2; // c";
+        assert_eq!(
+            Diff::new(patch).lines(40),
+            Diff::new(patch).syntax(false).lines(40),
+        );
+        // And turning it on does not change the *glyphs* (only styling).
+        assert_eq!(
+            lines(Diff::new(patch), 40, 3),
+            lines(Diff::new(patch).syntax(true), 40, 3),
+        );
+    }
+
+    #[test]
+    fn syntax_overlay_classifies_keyword_number_string_comment() {
+        let theme = DiffTheme::default();
+        let ov = syntax_overlay("let x = \"hi\"; // tail", &theme);
+        let at = |s: &str, off: usize| ov[s.chars().count() - 1 + off];
+        // `let` → keyword (chars 0..3).
+        assert_eq!(ov[0], theme.syntax_keyword);
+        assert_eq!(ov[2], theme.syntax_keyword);
+        // `x` is a plain identifier → no overlay.
+        assert_eq!(ov[4], Style::new());
+        // The `"hi"` literal (incl. both quotes) → string.
+        let q = "let x = ".chars().count();
+        assert_eq!(ov[q], theme.syntax_string); // opening "
+        assert_eq!(ov[q + 3], theme.syntax_string); // closing "
+        // The `// tail` run → comment, to end of line.
+        let c = "let x = \"hi\"; ".chars().count();
+        assert_eq!(ov[c], theme.syntax_comment);
+        assert_eq!(at("let x = \"hi\"; // tail", 0), theme.syntax_comment);
+    }
+
+    #[test]
+    fn syntax_overlay_handles_numbers_hash_and_dash_comments_and_block() {
+        let t = DiffTheme::default();
+        // Hex / float / underscore numbers.
+        let ov = syntax_overlay("0xFF + 3.14 + 1_000", &t);
+        assert_eq!(ov[0], t.syntax_number); // 0
+        assert_eq!(ov[3], t.syntax_number); // F (last of 0xFF)
+        assert_eq!(ov[7], t.syntax_number); // 3 of 3.14
+        assert_eq!(ov[9], t.syntax_number); // 1 of 1_000-ish
+        // A `#` line comment (shell/python) to end of line.
+        let ov = syntax_overlay("x # note", &t);
+        assert_eq!(ov[2], t.syntax_comment);
+        assert_eq!(ov[ov.len() - 1], t.syntax_comment);
+        // A `--` line comment (SQL/Lua/Haskell).
+        let ov = syntax_overlay("v -- sql note", &t);
+        assert_eq!(ov[2], t.syntax_comment);
+        // A single-line `/* … */` block comment, code after it un-styled.
+        let ov = syntax_overlay("a /* mid */ b", &t);
+        let s = "a ".chars().count();
+        let e = "a /* mid */".chars().count();
+        assert_eq!(ov[s], t.syntax_comment);
+        assert_eq!(ov[e - 1], t.syntax_comment);
+        assert_eq!(ov[e], Style::new()); // the trailing ` b` is plain
+    }
+
+    #[test]
+    fn syntax_highlight_is_layered_under_the_add_background_and_word_mark() {
+        // `+let v = 2;` — `let` is a keyword. The addition row fg is green;
+        // the keyword overlay re-tints the fg, but the row is unchanged. On
+        // a *paired* change the changed word's emphasis must still win.
+        let patch = "@@ -1 +1 @@\n-let v = 1;\n+let v = 2;";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 24, 3));
+        Diff::new(patch).syntax(true).render(buf.area(), &mut buf);
+        // Gutter `  1 + ` is 6 cols; content begins at col 6: `let`=6..9.
+        let kw = buf.get(Position::new(6, 2)).unwrap(); // 'l' of let
+        assert_eq!(kw.symbol, 'l');
+        // Keyword fg (blue) overlaid on the addition row.
+        assert_eq!(kw.fg, Color::Blue);
+        // The changed digit `2` (col 14) keeps the changed-word background —
+        // the word mark out-ranks the syntax tint.
+        let changed = buf.get(Position::new(14, 2)).unwrap();
+        assert_eq!(changed.symbol, '2');
+        assert_eq!(changed.bg, Color::Green);
+    }
+
+    #[test]
+    fn syntax_highlight_works_in_the_split_layout_too() {
+        let patch = "@@ -1 +1 @@\n-fn a() {}\n+fn b() {}";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 2));
+        Diff::new(patch)
+            .side_by_side()
+            .syntax(true)
+            .render(buf.area(), &mut buf);
+        // Left column gutter `1 - ` (4 cols); `fn` keyword at cols 4..6.
+        let kw = buf.get(Position::new(4, 1)).unwrap();
+        assert_eq!(kw.symbol, 'f');
+        assert_eq!(kw.fg, Color::Blue);
+    }
+
+    // -----------------------------------------------------------------------
+    // Combined (merge, `@@@`) diffs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn combined_hunk_header_parses_with_two_sign_columns() {
+        let rows = parse_rows("@@@ -1,2 -1,2 +1,3 @@@ fn merge()");
+        assert_eq!(
+            rows[0],
+            DiffRow::Hunk {
+                old_start: 1,
+                new_start: 1,
+                section: "fn merge()".to_owned(),
+                sign_cols: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn combined_diff_three_way_conflict_snapshot() {
+        // A real conflict-style combined hunk (2 parents → 2 sign columns).
+        // ` -` = removed in parent 2, `- ` = removed in parent 1, `++` =
+        // added relative to both parents, `  ` = common context. The body
+        // sign gutter is two cells wide, and only result lines (anything not
+        // a pure deletion) carry a new-file number.
+        let patch = "\
+diff --cc merged.rs
+index 1111111,2222222..3333333
+--- a/merged.rs
++++ b/merged.rs
+@@@ -1,2 -1,2 +1,3 @@@
+  fn keep() {}
+- let a = 1;
+ -let a = 2;
+++let a = 3;";
+        let out = lines(Diff::new(patch), 32, 7);
+        // Gutter is `{old:>1} {new:>1} {sign:<2} ` (7 cells): the conflict
+        // deletions carry neither number (they are not in the merge result),
+        // the context and the `++` addition do.
+        assert_eq!(
+            out,
+            concat!(
+                "index 1111111,2222222..3333333  \n",
+                "─── merged.rs                   \n",
+                "@@@ -1 +1 @@@                   \n",
+                "  1    fn keep() {}             \n",
+                "    -  let a = 1;               \n",
+                "     - let a = 2;               \n",
+                "  2 ++ let a = 3;               \n",
+            )
+        );
+    }
+
+    #[test]
+    fn combined_diff_body_signs_and_kinds_are_two_wide() {
+        let patch = "\
+@@@ -1,2 -1,2 +1,3 @@@
+  ctx
+- a
+ -b
+++c";
+        let rows = parse_rows(patch);
+        // [Hunk, ctx, "- a", " -b", "++c"].
+        assert!(matches!(rows[0], DiffRow::Hunk { sign_cols: 2, .. }));
+        let signs: Vec<(&str, ChangeKind)> = rows[1..]
+            .iter()
+            .filter_map(|r| match r {
+                DiffRow::Body { signs, kind, .. } => Some((signs.as_str(), *kind)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            signs,
+            vec![
+                ("  ", ChangeKind::Context),
+                ("- ", ChangeKind::Deletion),
+                (" -", ChangeKind::Deletion),
+                ("++", ChangeKind::Addition),
+            ]
+        );
+        // A 2-wide sign gutter: ctx new-no 1, the `++` addition new-no 2;
+        // the two single-parent deletions have no result-line number.
+        let out = lines(Diff::new(patch), 16, 5);
+        assert_eq!(
+            out,
+            concat!(
+                "@@@ -1 +1 @@@   \n",
+                "  1    ctx      \n",
+                "    -  a        \n",
+                "     - b        \n",
+                "  2 ++ c        \n",
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // git metadata rows (rendered, not dropped)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn git_rename_copy_mode_similarity_rows_are_parsed_and_rendered() {
+        let patch = "\
+diff --git a/old.rs b/new.rs
+old mode 100644
+new mode 100755
+similarity index 86%
+rename from old.rs
+rename to new.rs
+index 1234567..89abcde 100755
+@@ -1 +1 @@
+-a
++b";
+        let rows = parse_rows(patch);
+        let metas: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                DiffRow::Meta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            metas,
+            vec![
+                "old mode 100644",
+                "new mode 100755",
+                "similarity index 86%",
+                "rename from old.rs",
+                "rename to new.rs",
+                "index 1234567..89abcde 100755",
+            ]
+        );
+        // They render (none silently dropped); the first row is the rename.
+        let out = lines(Diff::new(patch), 24, 9);
+        assert!(out.lines().next().unwrap().starts_with("old mode 100644"));
+    }
+
+    #[test]
+    fn new_and_deleted_file_mode_metadata_rows_render() {
+        let added = parse_rows(
+            "diff --git a/n.rs b/n.rs\nnew file mode 100644\n--- /dev/null\n+++ b/n.rs\n@@ -0,0 +1 @@\n+x",
+        );
+        assert_eq!(
+            added[0],
+            DiffRow::Meta {
+                text: "new file mode 100644".to_owned(),
+            }
+        );
+        let gone = parse_rows(
+            "diff --git a/g.rs b/g.rs\ndeleted file mode 100644\n--- a/g.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-x",
+        );
+        assert_eq!(
+            gone[0],
+            DiffRow::Meta {
+                text: "deleted file mode 100644".to_owned(),
+            }
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Binary patches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn textual_binary_files_differ_line_renders_a_binary_row() {
+        let rows = parse_rows(
+            "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ",
+        );
+        assert_eq!(
+            rows[0],
+            DiffRow::Binary {
+                text: "(binary) a/logo.png and b/logo.png".to_owned(),
+            }
+        );
+        let out = lines(
+            Diff::new("diff --git a/x.bin b/x.bin\nBinary files a/x.bin and b/x.bin differ"),
+            40,
+            1,
+        );
+        assert_eq!(out, "(binary) a/x.bin and b/x.bin            \n");
+    }
+
+    #[test]
+    fn git_binary_patch_block_renders_one_row_and_skips_the_payload() {
+        let patch = "\
+diff --git a/blob b/blob
+index 0000000..1111111 100644
+GIT binary patch
+literal 8
+McmZQ$U|?V8000R80RR91
+literal 0
+HcmV?d00001
+";
+        let rows = parse_rows(patch);
+        // The `index` line is Meta, the `GIT binary patch` is one Binary row,
+        // and the base85 payload lines are skipped entirely (never Body).
+        assert_eq!(
+            rows,
+            vec![
+                DiffRow::Meta {
+                    text: "index 0000000..1111111 100644".to_owned(),
+                },
+                DiffRow::Binary {
+                    text: "(binary file changed)".to_owned(),
+                },
+            ]
+        );
+        let out = lines(Diff::new(patch), 26, 2);
+        assert_eq!(
+            out,
+            concat!(
+                "index 0000000..1111111 100\n",
+                "(binary file changed)     \n",
+            )
+        );
+    }
+
+    #[test]
+    fn malformed_combined_header_does_not_panic_and_is_not_a_hunk() {
+        // Missing the closing `@@@`: best-effort, never a Hunk, no panic.
+        let rows = parse_rows("@@@ -1 -1 +1\n++x");
+        assert!(!rows.iter().any(|r| matches!(r, DiffRow::Hunk { .. })));
+        let _ = lines(Diff::new("@@@ -1 -1 +1\n++x"), 8, 2);
+    }
+
+    #[test]
+    fn combined_body_line_with_multibyte_lead_does_not_panic() {
+        // A malformed combined body line whose first chars are multi-byte
+        // (not the expected ASCII signs) must split on a char boundary, not
+        // panic. `sign_cols` 2, the line leads with a 3-byte glyph.
+        let patch = "@@@ -1 -1 +1,2 @@@\n€ rest of line";
+        let rows = parse_rows(patch);
+        // The lead two chars become the (verbatim) sign string, the rest is
+        // content — and rendering it is panic-free.
+        assert!(matches!(rows.get(1), Some(DiffRow::Body { .. })));
+        let _ = lines(Diff::new(patch), 20, 2);
     }
 }

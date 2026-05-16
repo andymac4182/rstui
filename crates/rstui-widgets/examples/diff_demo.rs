@@ -1,13 +1,18 @@
-//! Renders a realistic multi-hunk diff through [`Diff`] inside a [`Block`]: a
-//! file header, two hunks with section labels, context/added/deleted lines,
-//! an intra-line word edit, and a "no newline at end of file" marker — the
-//! supported subset exercised end to end, drawn first in the default unified
-//! layout and then in the opt-in side-by-side layout via
-//! [`Diff::side_by_side`] so the two renderings can be eyeballed against the
-//! same patch.
+//! Renders realistic diffs through [`Diff`] inside a [`Block`], exercising
+//! the whole supported surface end to end so it can be eyeballed and doubles
+//! as a deterministic, TTY-free snapshot smoke test:
 //!
-//! Running over a [`TestBackend`] keeps it TTY-free, so it doubles as a
-//! deterministic snapshot smoke test of the diff layer:
+//! 1. a multi-hunk patch with `git` metadata (`old/new mode`, `similarity`,
+//!    `rename`, `index`), a file header, two hunks with section labels,
+//!    context/added/deleted lines and an intra-line word edit, drawn in the
+//!    default unified layout and then the opt-in side-by-side layout via
+//!    [`Diff::side_by_side`];
+//! 2. the same patch with generic syntax highlighting on via
+//!    [`Diff::syntax`] (keywords / strings / numbers / comments tinted under
+//!    the diff colours);
+//! 3. a combined (merge, `@@@`) conflict-style hunk with a 2-wide sign
+//!    gutter; and
+//! 4. a binary-file patch rendered as a clear "binary file changed" row.
 //!
 //! ```text
 //! cargo run -p rstui-widgets --example diff_demo
@@ -19,10 +24,18 @@ use rstui_core::{Terminal, TestBackend};
 use rstui_widgets::diff::DiffLayout;
 use rstui_widgets::{Block, Diff};
 
+/// A real-world patch: a rename with mode/similarity/index metadata, two
+/// hunks with section labels, an intra-line edit, and the no-newline marker.
 const PATCH: &str = "\
-diff --git a/src/render.rs b/src/render.rs
+diff --git a/src/render.rs b/src/paint.rs
+old mode 100644
+new mode 100755
+similarity index 94%
+rename from src/render.rs
+rename to src/paint.rs
+index 1a2b3c4..5d6e7f8 100755
 --- a/src/render.rs
-+++ b/src/render.rs
++++ b/src/paint.rs
 @@ -1,4 +1,4 @@ fn paint(area: Rect)
  use crate::buffer::Buffer;
 -let title = \"old report\";
@@ -36,10 +49,38 @@ diff --git a/src/render.rs b/src/render.rs
 +self.present();
 \\ No newline at end of file";
 
-/// Draws `patch` through [`Diff`] in `layout`, framed and titled, over a
-/// fresh [`TestBackend`] of `width`×`height`, and returns the rendered frame
-/// as text. The wider area for the split layout gives each column room.
-fn frame(patch: &str, layout: DiffLayout, title: &str, width: u16, height: u16) -> String {
+/// A combined (merge) diff: two parents, so `@@@ … @@@` and 2-wide body sign
+/// columns — `- ` removed in parent 1, ` -` in parent 2, `++` added vs both.
+const MERGE_PATCH: &str = "\
+diff --cc src/merge.rs
+index aaaaaaa,bbbbbbb..ccccccc
+--- a/src/merge.rs
++++ b/src/merge.rs
+@@@ -1,3 -1,3 +1,4 @@@ fn resolve()
+  const LIMIT: usize = 64;
+- let mode = Mode::Fast; // ours
+ -let mode = Mode::Safe; // theirs
+++let mode = Mode::Auto; // merged
+  return mode;";
+
+/// A binary-file change: never silently dropped, shown as a themed row.
+const BINARY_PATCH: &str = "\
+diff --git a/assets/logo.png b/assets/logo.png
+index 0000000..1111111 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ";
+
+/// Draws `patch` through [`Diff`] in `layout` (syntax highlight per
+/// `syntax`), framed and titled, over a fresh [`TestBackend`] of
+/// `width`×`height`, returning the rendered frame as text. The wider area
+/// for the split layout gives each column room.
+fn frame(
+    patch: &str,
+    layout: DiffLayout,
+    syntax: bool,
+    title: &str,
+    width: u16,
+    height: u16,
+) -> String {
     let mut terminal =
         Terminal::new(TestBackend::new(width, height)).expect("TestBackend is infallible");
     terminal
@@ -47,6 +88,7 @@ fn frame(patch: &str, layout: DiffLayout, title: &str, width: u16, height: u16) 
             f.render_widget(
                 Diff::new(patch)
                     .layout(layout)
+                    .syntax(syntax)
                     .block(Block::bordered().title(title)),
                 f.area(),
             );
@@ -56,15 +98,53 @@ fn frame(patch: &str, layout: DiffLayout, title: &str, width: u16, height: u16) 
 }
 
 fn main() {
-    // The default unified layout: one column, the change sign in the gutter.
+    // The default unified layout: one column, the change sign in the gutter,
+    // the rename/mode/index metadata rows above the file header.
     print!(
         "{}",
-        frame(PATCH, DiffLayout::Unified, "diff (unified)", 56, 16)
+        frame(PATCH, DiffLayout::Unified, false, "diff (unified)", 60, 18)
     );
     // The opt-in side-by-side layout: old left, new right, a `│` between,
     // change groups paired row-for-row. Wider so both columns breathe.
     print!(
         "{}",
-        frame(PATCH, DiffLayout::Split, "diff (side-by-side)", 84, 16)
+        frame(
+            PATCH,
+            DiffLayout::Split,
+            false,
+            "diff (side-by-side)",
+            88,
+            18
+        )
+    );
+    // The same patch with generic syntax highlighting on (keywords/strings/
+    // numbers/comments tinted under the add/del colours).
+    print!(
+        "{}",
+        frame(PATCH, DiffLayout::Unified, true, "diff (syntax on)", 60, 18)
+    );
+    // A combined (merge) conflict-style hunk: `@@@ … @@@`, 2-wide signs.
+    print!(
+        "{}",
+        frame(
+            MERGE_PATCH,
+            DiffLayout::Unified,
+            true,
+            "diff (combined merge)",
+            56,
+            10
+        )
+    );
+    // A binary patch: a clear themed "binary file changed" row.
+    print!(
+        "{}",
+        frame(
+            BINARY_PATCH,
+            DiffLayout::Unified,
+            false,
+            "diff (binary)",
+            56,
+            5
+        )
     );
 }
