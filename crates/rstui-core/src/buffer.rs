@@ -169,6 +169,22 @@ impl Buffer {
         Position::new(x, position.y)
     }
 
+    /// Writes `symbol` at `position` and patches its [`Style`], skipping an
+    /// out-of-bounds `position`.
+    ///
+    /// The single-cell sibling of [`set_str`](Self::set_str): the one
+    /// bounds-safe path a [`Widget`](crate::Widget) stamps an individual glyph
+    /// through. Writing past the edge is silently ignored, so a widget clips
+    /// simply by drawing out of bounds. This is the public cell-stamping
+    /// contract third-party widget crates build on, exactly as the first-party
+    /// `rstui-widgets` crate does.
+    pub fn set_cell(&mut self, position: Position, symbol: char, style: Style) {
+        if let Some(cell) = self.get_mut(position) {
+            cell.symbol = symbol;
+            cell.apply_style(style);
+        }
+    }
+
     /// Applies `style` to every cell in `area` that overlaps this buffer.
     pub fn set_style(&mut self, area: Rect, style: Style) {
         for position in area.intersection(self.area).positions() {
@@ -268,6 +284,21 @@ mod tests {
         let cell = buf.get(Position::new(0, 0)).unwrap();
         assert_eq!(cell.fg, Color::Red);
         assert!(cell.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn set_cell_writes_one_glyph_and_skips_out_of_bounds() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 1));
+        let style = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
+        buf.set_cell(Position::new(1, 0), 'Z', style);
+        let cell = buf.get(Position::new(1, 0)).unwrap();
+        assert_eq!(cell.symbol, 'Z');
+        assert_eq!(cell.fg, Color::Red);
+        assert!(cell.modifier.contains(Modifier::BOLD));
+
+        // Out of bounds: silently ignored, the buffer is untouched.
+        buf.set_cell(Position::new(9, 9), 'X', Style::new());
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, ' ');
     }
 
     #[test]

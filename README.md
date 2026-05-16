@@ -32,7 +32,8 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, widget, text |
+| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, the `Widget` trait, text |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block` and `Paragraph` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 
@@ -46,13 +47,13 @@ end: the `run_app` example runs an unmodified `App` on a real terminal via
 the *same* `run` the headless harness tests drive. A feature-gated async
 `EventStream` source is a future enhancement. Other planned
 boundaries as the framework grows: a broader component set (the `Widget`
-trait stays in core; the two concrete widgets — `Block` and `Paragraph` —
-move out to a single grouped `rstui-widgets` crate per
-[ADR 0002](docs/adr/0002-widget-crate-boundary.md), with `set_cell`
-promoted to a public `Buffer` method so third-party widgets share the
-authoring contract — the next slice is that mechanical relocation, done
-on its own once the move is the only change), more examples, and a
-permissioned plugin host built on process isolation.
+trait stays in core; concrete widgets live in the grouped `rstui-widgets`
+crate per [ADR 0002](docs/adr/0002-widget-crate-boundary.md), now extracted
+— `Block` and `Paragraph` ship there today, with `Buffer::set_cell` the
+public cell-stamping contract third-party widgets build on; `Alignment`
+stays in `rstui-core::layout` as the placement primitive the text model
+needs), more widgets and examples, and a permissioned plugin host built on
+process isolation.
 
 ### `rstui-core`
 
@@ -70,7 +71,10 @@ loop — so every layer above it can be unit tested without a TTY.
 - `layout` — `Layout`, `Direction`, and the `Constraint` vocabulary
   (`Length`/`Percentage`/`Ratio`/`Min`/`Max`/`Fill`) for dividing a `Rect`
   into contiguous regions. A deterministic, integer-only divider (no Cassowary
-  solver, no floats) that always tiles the area exactly.
+  solver, no floats) that always tiles the area exactly. Also `Alignment`
+  (left/center/right) — the placement primitive the text model and widgets
+  share, kept in core so the text model never reaches back into a widget crate
+  (matching `ratatui_core::layout::Alignment`).
 - `buffer` — `Cell` and the immediate-mode `Buffer` grid widgets draw into and
   renderers `diff` against.
 - `backend` — the `Backend` trait (the screen boundary that consumes a
@@ -90,22 +94,38 @@ loop — so every layer above it can be unit tested without a TTY.
   apps are drivable end-to-end with no TTY. The real terminal input source
   lives in the backend crate; the trait and the test source stay here.
 - `widget` — the `Widget` trait (`render(self, area, buf)`) every component
-  implements, blanket impls for `&str`/`String`/`Option<W>`, and the
-  foundational `Block` container: `Borders`, `BorderType`, `Padding`, a styled
-  fill, and a clipped title that is a full `Line` (per-span styles and its own
-  alignment, cascading over block-level `title_style`/`title_alignment`), with
-  `Block::inner` handing the remaining area to the content drawn inside.
-  Also `Paragraph`: the multi-line text widget adding soft word `Wrap`
-  (`trim` controls leading-whitespace handling; over-wide words hard split), a
-  `Position` scroll offset, per-block alignment, and an optional framing
-  `Block` — none of which leak into the text primitives.
-  `Frame::render_widget` is the entry point.
+  implements, plus blanket impls for `&str`/`String`/`Option<W>`. Only the
+  trait lives here; the concrete widget set is the separate `rstui-widgets`
+  crate so core stays primitives-only ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)).
+  `Frame::render_widget` is the entry point, and `Buffer::set_cell` is the
+  public, bounds-safe cell-stamping contract a custom widget draws through.
 - `text` — the styled-text model: `Span` (a styled run), `Line` (a row of
   spans with optional alignment), and `Text` (a block of lines). One
   committed, data-driven model with a predictable text→line→span `Style`
   cascade; `Cow<str>` content keeps literals allocation-free. Width is a
   `char` count, matching the single-`char` `Cell`; wrap/scroll live in the
   `Paragraph` widget, not these primitives.
+
+### `rstui-widgets`
+
+The concrete widget set, kept out of `rstui-core` so the universally
+depended-on primitives crate stays small and slow-moving
+([ADR 0002](docs/adr/0002-widget-crate-boundary.md)). One grouped crate,
+**one module per widget** (not one crate per widget), depending only on
+`rstui-core`. Because it uses nothing but `rstui-core`'s public API
+(`impl rstui_core::Widget`, stamp through `Buffer::set_cell`, snapshot-test
+against `TestBackend`), it is the worked reference a third-party widget
+crate copies.
+
+- `block` — `Block`: the foundational container — `Borders`, `BorderType`,
+  `BorderSet`, `Padding`, a styled fill, and a clipped title that is a full
+  `Line` (per-span styles and its own alignment, cascading over block-level
+  `title_style`/`title_alignment`), with `Block::inner` handing the remaining
+  area to the content drawn inside.
+- `paragraph` — `Paragraph`: the multi-line text widget adding soft word
+  `Wrap` (`trim` controls leading-whitespace handling; over-wide words hard
+  split), a `Position` scroll offset, per-block alignment, and an optional
+  framing `Block` — none of which leak into the core text primitives.
 
 ### `rstui-runtime`
 
@@ -211,9 +231,9 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -p rstui-core --example buffer_demo
 cargo run -p rstui-core --example terminal_loop
-cargo run -p rstui-core --example block_demo
-cargo run -p rstui-core --example text_demo
-cargo run -p rstui-core --example paragraph_demo
+cargo run -p rstui-widgets --example block_demo
+cargo run -p rstui-widgets --example text_demo
+cargo run -p rstui-widgets --example paragraph_demo
 cargo run -p rstui-runtime --example counter
 ```
 

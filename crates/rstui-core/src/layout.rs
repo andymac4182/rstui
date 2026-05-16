@@ -49,6 +49,24 @@
 
 use crate::geometry::{Margin, Rect};
 
+/// Horizontal placement of content within an available span.
+///
+/// A primitive shared by the [`text`](crate::text) model ([`Line`](crate::Line)
+/// and [`Text`](crate::Text) alignment) and by widgets (a framing block's
+/// title, a paragraph's rows). It lives in `layout` because placement within a
+/// span is a layout concern, not a property of any one widget — matching
+/// ratatui, where `Alignment` is also a core layout type.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Alignment {
+    /// Flush with the start of the span.
+    #[default]
+    Left,
+    /// Centered, with any odd remainder biased toward the start.
+    Center,
+    /// Flush with the end of the span.
+    Right,
+}
+
 /// The axis along which a [`Layout`] arranges its segments.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {

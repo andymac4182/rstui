@@ -6,12 +6,13 @@
 //! deterministic snapshot smoke test of the text layer:
 //!
 //! ```text
-//! cargo run -p rstui-core --example text_demo
+//! cargo run -p rstui-widgets --example text_demo
 //! ```
 
 use rstui_core::{
-    Block, Color, Constraint, Layout, Line, Modifier, Span, Style, Terminal, TestBackend, Text,
+    Color, Constraint, Layout, Line, Modifier, Span, Style, Terminal, TestBackend, Text,
 };
+use rstui_widgets::Block;
 
 fn main() {
     let mut terminal = Terminal::new(TestBackend::new(34, 7)).expect("TestBackend is infallible");

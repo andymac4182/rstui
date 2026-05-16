@@ -94,11 +94,12 @@ impl Frame<'_> {
 
     /// Draws `widget` into `area` of this frame.
     ///
-    /// The ergonomic entry point a view reaches for: `frame.render_widget(
-    /// Block::bordered().title("Logs"), area)`. It is exactly
+    /// The ergonomic entry point a view reaches for. It is exactly
     /// [`Widget::render`] against this frame's buffer — widgets compose by
-    /// rendering into [`Block::inner`](crate::Block::inner) sub-areas carved
-    /// out with [`Layout`](crate::Layout).
+    /// rendering sub-widgets into sub-areas carved out with
+    /// [`Layout`](crate::Layout). Any `W: Widget` works: the concrete widget
+    /// set lives in the `rstui-widgets` crate, and a custom widget plugs in
+    /// here identically.
     pub fn render_widget<W: Widget>(&mut self, widget: W, area: Rect) {
         widget.render(area, self.buffer);
     }
@@ -406,17 +407,18 @@ mod tests {
 
     #[test]
     fn render_widget_draws_into_the_frame_buffer() {
-        use crate::widget::Block;
-
+        // Drives the `Widget` seam with the core `&str` blanket impl (concrete
+        // widgets now live in `rstui-widgets`); the point is that whatever
+        // `render_widget` is handed lands in this frame's buffer.
         let mut terminal = Terminal::new(TestBackend::new(4, 3)).unwrap();
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                frame.render_widget(Block::bordered(), area);
+                frame.render_widget("hi", area);
             })
             .unwrap();
 
-        assert_eq!(format!("{}", terminal.backend()), "┌──┐\n│  │\n└──┘\n");
+        assert_eq!(format!("{}", terminal.backend()), "hi  \n    \n    \n");
     }
 
     #[test]

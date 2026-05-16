@@ -20,11 +20,12 @@ Project direction:
 6. Make third-party component and widget authoring a first-class design goal. Public APIs should be composable, documented, and easy for application developers and agents to use when building custom TUIs.
 7. Provide an agent-friendly iteration loop for building TUIs: deterministic examples, snapshots, headless render output, and eventually a kitchen-sink/demo app that makes visual and interaction regressions easy to inspect.
 8. Make benchmarking and profiling first-class project capabilities so rendering, layout, runtime loops, memory use, and CPU cost stay fast and stable as the framework grows.
-9. If the repository is still empty, first create a minimal Rust 2024 workspace foundation with README, CI, crate layout, and a tiny runnable example. Keep the foundation small and useful.
-10. Plan the workspace around real boundaries: core runtime, renderer/layout/style primitives, components, examples, and plugin host/runtime. Introduce crates when there is enough real API surface to justify the boundary; avoid empty placeholder crates.
-11. Use current stable crates where they clearly help, but do not add dependencies speculatively. Prefer simple, testable Rust APIs and keep public names coherent.
-12. Add focused tests or examples for each new public capability. For behavior that is hard to test directly, add a small deterministic model or snapshot-style check.
-13. Run the appropriate validation before reporting success. For Rust code, prefer cargo fmt --all --check, cargo clippy --all-targets --all-features -- -D warnings, and cargo test --all-features once those commands exist.
-14. Update notes.md with the slice completed, upstream facts learned, and the next likely surface to build.
+9. Ban vague generic naming such as helpers, utils, common, misc, shared, and similar buckets in source paths, module names, crate names, public APIs, and docs; prefer precise responsibility names and add a custom check to enforce this convention.
+10. If the repository is still empty, first create a minimal Rust 2024 workspace foundation with README, CI, crate layout, and a tiny runnable example. Keep the foundation small and useful.
+11. Plan the workspace around real boundaries: core runtime, renderer/layout/style primitives, components, examples, and plugin host/runtime. Introduce crates when there is enough real API surface to justify the boundary; avoid empty placeholder crates.
+12. Use current stable crates where they clearly help, but do not add dependencies speculatively. Prefer simple, testable Rust APIs and keep public names coherent.
+13. Add focused tests or examples for each new public capability. For behavior that is hard to test directly, add a small deterministic model or snapshot-style check.
+14. Run the appropriate validation before reporting success. For Rust code, prefer cargo fmt --all --check, cargo clippy --all-targets --all-features -- -D warnings, and cargo test --all-features once those commands exist.
+15. Update notes.md with the slice completed, upstream facts learned, and the next likely surface to build.
 
 Do not copy code blindly from the reference projects. Use them to understand proven API shapes and architecture, then implement idiomatic Rust that fits rstui.

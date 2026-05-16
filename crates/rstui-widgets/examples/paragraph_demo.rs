@@ -7,10 +7,11 @@
 //! deterministic snapshot smoke test of the paragraph layer:
 //!
 //! ```text
-//! cargo run -p rstui-core --example paragraph_demo
+//! cargo run -p rstui-widgets --example paragraph_demo
 //! ```
 
-use rstui_core::{Block, Color, Constraint, Layout, Paragraph, Style, Terminal, TestBackend, Wrap};
+use rstui_core::{Color, Constraint, Layout, Style, Terminal, TestBackend};
+use rstui_widgets::{Block, Paragraph, Wrap};
 
 fn main() {
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("TestBackend is infallible");

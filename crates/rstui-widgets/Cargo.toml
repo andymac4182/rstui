@@ -1,0 +1,18 @@
+[package]
+name = "rstui-widgets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The concrete widget set for the rstui TUI framework: Block, Paragraph, and the components that follow, one module per widget."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Widgets depend only on the dependency-free primitives crate (ADR 0002):
+# `Widget` trait, `Buffer`/`Cell`, geometry, style, layout, the text model.
+# Any third-party widget crate has exactly this shape.
+rstui-core = { path = "../rstui-core" }

@@ -207,6 +207,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-widgets"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

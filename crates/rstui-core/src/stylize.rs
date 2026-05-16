@@ -37,12 +37,11 @@
 //!
 //! Only the text-carrying types get this in this slice. [`Cell`] stores its
 //! attributes as flat `fg`/`bg`/`modifier` fields rather than a [`Style`], and
-//! [`Block`] has *three* style fields (base, border, title), so "which one
-//! does `.red()` touch?" is a real design question — both are left to a
-//! focused follow-up rather than guessed at here.
+//! a bordered block widget has *three* style fields (base, border, title), so
+//! "which one does `.red()` touch?" is a real design question — both are left
+//! to a focused follow-up rather than guessed at here.
 //!
 //! [`Cell`]: crate::Cell
-//! [`Block`]: crate::Block
 
 use crate::style::{Color, Modifier, Style};
 use crate::text::{Line, Span, Text};

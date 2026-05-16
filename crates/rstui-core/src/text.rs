@@ -4,7 +4,7 @@
 //! UIs need *runs* of differently-styled text on a line (a green ` ✓ ` next to
 //! a default label), lines with their own alignment, and multi-line blocks.
 //! These three types are that model, and nearly every richer component
-//! (paragraphs, list rows, table cells, tab labels, styled [`Block`] titles)
+//! (paragraphs, list rows, table cells, tab labels, styled block titles)
 //! is built by composing them:
 //!
 //! - [`Span`] — one run of text sharing a single [`Style`]. The atom.
@@ -65,9 +65,10 @@
 use std::borrow::Cow;
 
 use crate::buffer::Buffer;
-use crate::geometry::Rect;
+use crate::geometry::{Position, Rect};
+use crate::layout::Alignment;
 use crate::style::Style;
-use crate::widget::{Alignment, Widget, set_cell};
+use crate::widget::Widget;
 
 /// A single run of text drawn with one [`Style`].
 ///
@@ -290,7 +291,7 @@ impl Widget for Line<'_> {
                 if x >= right {
                     return;
                 }
-                set_cell(buf, x, row, ch, style);
+                buf.set_cell(Position::new(x, row), ch, style);
                 x = x.saturating_add(1);
             }
         }

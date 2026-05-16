@@ -6,13 +6,13 @@
 //! deterministic smoke test of the widget layer:
 //!
 //! ```text
-//! cargo run -p rstui-core --example block_demo
+//! cargo run -p rstui-widgets --example block_demo
 //! ```
 
 use rstui_core::{
-    Alignment, Block, BorderType, Color, Constraint, Layout, Line, Modifier, Padding, Span, Style,
-    Terminal, TestBackend,
+    Alignment, Color, Constraint, Layout, Line, Modifier, Span, Style, Terminal, TestBackend,
 };
+use rstui_widgets::{Block, BorderType, Padding};
 
 fn main() {
     let mut terminal = Terminal::new(TestBackend::new(34, 9)).expect("TestBackend is infallible");
