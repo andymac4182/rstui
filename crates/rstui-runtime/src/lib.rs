@@ -86,6 +86,11 @@ pub use cmd::Cmd;
 pub use harness::Harness;
 pub use run::{DEFAULT_COMMAND_BUDGET, RunError, run, run_pooled, run_threaded};
 
+/// The tokio-backed off-loop entry point, available only with the `async`
+/// cargo feature (the default build stays dependency-free — ADR 0009).
+#[cfg(feature = "async")]
+pub use run::run_async;
+
 // Re-exported so an `App` implementor needs only `rstui_runtime` in scope for
 // the trait's own signatures.
 pub use rstui_core::{Event, Frame};

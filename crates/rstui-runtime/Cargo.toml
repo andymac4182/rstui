@@ -11,8 +11,24 @@ description = "The Elm-style App/Cmd runtime and deterministic headless harness 
 [lints]
 workspace = true
 
+[features]
+# Off by default: the synchronous runtime never depends on tokio (ADR 0001,
+# ADR 0009). Opt in with `--features async` to make `run_async` and the
+# tokio-backed `AsyncCommandExecutor` available; the default build, the
+# headless `Harness`, `run`, `run_threaded`, and `run_pooled` stay
+# dependency-free and unchanged.
+async = ["dep:tokio"]
+
 [dependencies]
 # `version` (not just `path`) so this crate is publishable to crates.io —
 # a bare path dep makes a public crate unpublishable. Kept equal to the
 # workspace version by the `crate_dep_versions_match_workspace` xtask guard.
 rstui-core = { path = "../rstui-core", version = "0.0.1" }
+# The single, OPTIONAL, scoped dependency — only compiled with `--features
+# async`. `rt` is the minimal feature set: `spawn_blocking` (the off-loop
+# command pool) + a current-thread runtime; no net/time/macros. The brief
+# forbids a *casual* broad async dep; this is feature-gated, justified, and
+# documented (ADR 0009), and the default build is untouched.
+tokio = { version = "1", optional = true, default-features = false, features = [
+    "rt",
+] }

@@ -439,6 +439,60 @@ impl<M> Drop for PooledCommandExecutor<M> {
     }
 }
 
+/// An off-loop [`CommandExecutor`] backed by a **tokio** runtime's blocking
+/// pool — available only with the `async` cargo feature.
+///
+/// Functionally [`ThreadCommandExecutor`]'s tokio twin: each
+/// [`perform`](Cmd::perform) closure and each [`tick`](Cmd::tick)/
+/// [`every`](Cmd::every) timer is handed to `tokio::task::spawn_blocking`
+/// instead of a raw `std::thread`, and its message returns on the same channel
+/// [`run_core`] drains. The win is for an app that *already* runs on tokio (a
+/// common backend pattern): command work then shares that runtime's managed,
+/// instrumented blocking pool rather than spawning unmanaged threads, with no
+/// change to the reducer or the loop. It deliberately does **not** introduce an
+/// async event loop or a future-valued `Cmd` — those stay deferred (ADR 0009);
+/// this is purely the executor seam proven to extend to tokio.
+#[cfg(feature = "async")]
+pub(crate) struct AsyncCommandExecutor<M> {
+    handle: tokio::runtime::Handle,
+    sender: mpsc::Sender<M>,
+}
+
+#[cfg(feature = "async")]
+impl<M: Send + 'static> CommandExecutor<M> for AsyncCommandExecutor<M> {
+    fn perform(&mut self, work: Box<dyn FnOnce() -> M + Send + 'static>) -> Option<M> {
+        let sender = self.sender.clone();
+        // `spawn_blocking` runs the sync closure on tokio's blocking pool; the
+        // `JoinHandle` is intentionally detached (like the std-thread
+        // executor's thread handle) — the result travels on the channel, not
+        // the handle. Explicit `drop` (not `let _ =`) because the handle is
+        // itself a `Future`.
+        drop(self.handle.spawn_blocking(move || {
+            let _ = sender.send(work());
+        }));
+        None
+    }
+
+    fn timer(
+        &mut self,
+        delay: Duration,
+        aligned: bool,
+        work: Box<dyn FnOnce() -> M + Send + 'static>,
+    ) -> Option<M> {
+        let sender = self.sender.clone();
+        drop(self.handle.spawn_blocking(move || {
+            let wait = if aligned {
+                until_next_multiple(delay)
+            } else {
+                delay
+            };
+            thread::sleep(wait);
+            let _ = sender.send(work());
+        }));
+        None
+    }
+}
+
 /// Why [`run`] stopped with an error.
 ///
 /// The loop straddles two fallible seams — rendering through a [`Backend`] and
@@ -601,6 +655,60 @@ where
 {
     let (sender, results) = mpsc::channel();
     let mut exec = PooledCommandExecutor::new(sender, workers);
+    run_core(app, backend, events, &mut exec, Some(&results))
+}
+
+/// Runs `app` like [`run_threaded`], but performs commands on a **tokio
+/// runtime's blocking pool** instead of one `std::thread` per command.
+/// Available only with the `async` cargo feature.
+///
+/// Same off-loop semantics, same reducer, same stop rules as
+/// [`run_threaded`]/[`run_pooled`] — only the executor differs. Reach for this
+/// when the app already runs on tokio and you want command work on that
+/// runtime's managed, instrumented blocking pool (shared limits, `tracing`,
+/// metrics) rather than unmanaged `std::thread`s; otherwise [`run_threaded`]
+/// (no dependency) is the simpler default and `rstui_crossterm::run_app` uses
+/// it. The reducer is the *same* `settle`, so behavior matches the headless
+/// `Harness` up to *when* (not whether) a command's message lands.
+///
+/// This owns a private current-thread tokio runtime, so the caller need not
+/// already be inside one. It is **not** an async event loop and adds no
+/// future-valued `Cmd`: the event loop stays synchronous and the default build
+/// stays tokio-free — see
+/// [ADR 0009](https://github.com/andymac4182/rstui/blob/main/docs/adr/0009-optional-async-runtime-policy.md)
+/// for the policy and exactly what remains deferred.
+///
+/// # Errors
+///
+/// Identical to [`run`].
+#[cfg(feature = "async")]
+pub fn run_async<A, B, S>(
+    app: A,
+    backend: B,
+    events: &mut S,
+) -> Result<A, RunError<B::Error, S::Error>>
+where
+    A: App,
+    A::Message: Send + 'static,
+    B: Backend,
+    S: EventSource,
+{
+    // The lightest runtime that still provides a `spawn_blocking` pool;
+    // constructing a current-thread runtime cannot meaningfully fail in a
+    // healthy process (the same pragmatic `expect` `Harness` uses for its
+    // infallible `TestBackend`).
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("rstui-runtime: tokio current-thread runtime construction");
+    let (sender, results) = mpsc::channel();
+    let mut exec = AsyncCommandExecutor {
+        handle: runtime.handle().clone(),
+        sender,
+    };
+    // `run_core` blocks the *caller* thread on `poll_event` — never a runtime
+    // worker — so this is sound: `spawn_blocking` uses tokio's separate
+    // blocking pool, which keeps working as long as `runtime` is alive (it is
+    // held in scope until this returns).
     run_core(app, backend, events, &mut exec, Some(&results))
 }
 
@@ -1188,6 +1296,52 @@ mod tests {
         )
         .unwrap();
         assert!(app.ticked && app.worked, "tick fired then pooled work ran");
+    }
+
+    /// `run_async` runs the *same* reducer off-loop on a tokio blocking pool:
+    /// `init`'s perform "fails" once, schedules a real `Cmd::tick` retry, then
+    /// succeeds and quits. Exercised only under `--features async` (the
+    /// workspace CI gate runs `--all-features`, so this is covered there while
+    /// the default build never compiles tokio). `run_async` owns its runtime,
+    /// so this is a plain `#[test]` — no `#[tokio::test]`, keeping the tokio
+    /// feature set minimal (`rt` only).
+    #[cfg(feature = "async")]
+    #[test]
+    fn run_async_drives_the_same_reducer_off_a_tokio_pool() {
+        #[derive(Default)]
+        struct AsyncApp {
+            attempts: u32,
+            done: bool,
+        }
+        enum Msg {
+            Failed,
+            Retry,
+            Done,
+        }
+        impl App for AsyncApp {
+            type Message = Msg;
+            fn init(&mut self) -> Cmd<Msg> {
+                Cmd::perform(|| Msg::Failed)
+            }
+            fn update(&mut self, message: Msg) -> Cmd<Msg> {
+                match message {
+                    Msg::Failed => {
+                        self.attempts += 1;
+                        Cmd::tick(Duration::from_millis(1), || Msg::Retry)
+                    }
+                    Msg::Retry => Cmd::perform(|| Msg::Done),
+                    Msg::Done => {
+                        self.done = true;
+                        Cmd::quit()
+                    }
+                }
+            }
+            fn view(&self, _: &mut rstui_core::Frame<'_>) {}
+        }
+        let mut input = TestEventSource::new();
+        let app = run_async(AsyncApp::default(), TestBackend::new(2, 1), &mut input).unwrap();
+        assert_eq!(app.attempts, 1, "the off-loop perform failed once");
+        assert!(app.done, "the tokio-pool tick retry then perform completed");
     }
 
     /// A `Backend` sharing its in-memory surface through an `Rc<RefCell<_>>`
