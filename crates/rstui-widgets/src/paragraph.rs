@@ -137,6 +137,25 @@ impl<'a> Paragraph<'a> {
     pub fn right_aligned(self) -> Self {
         self.alignment(Alignment::Right)
     }
+
+    /// The number of rows this paragraph composes into at content `width`.
+    ///
+    /// Exactly the count [`render`](Widget::render) lays out — both go through
+    /// the one [`compose_rows`] wrap path — so a caller that must size a box
+    /// to its wrapped text (the floating `Toast` stack is the first) does so
+    /// without a second wrap implementation. It counts the composed text only;
+    /// a framing [`block`](Self::block)'s rows are the caller's to add.
+    #[must_use]
+    pub fn line_count(&self, width: u16) -> usize {
+        compose_rows(
+            &self.text,
+            self.style,
+            self.wrap,
+            self.alignment,
+            width as usize,
+        )
+        .len()
+    }
 }
 
 /// One composed output row: its resolved glyph cells and alignment.
@@ -221,6 +240,38 @@ fn wrap_cells(
     flush_row(&mut cur, align, out);
 }
 
+/// Composes a paragraph's `text` into output rows at content `width`.
+///
+/// One row per source line, or several when wrapping; each row carries its
+/// source line's resolved alignment so a wrapped continuation stays aligned
+/// with it. Shared by [`Paragraph::render`](Widget::render) and
+/// [`Paragraph::line_count`] so the wrap is computed exactly one way.
+fn compose_rows(
+    text: &Text,
+    base: Style,
+    wrap: Option<Wrap>,
+    alignment: Option<Alignment>,
+    width: usize,
+) -> Vec<ParaRow> {
+    let text_base = base.patch(text.style);
+    let para_align = text.alignment.or(alignment);
+    let mut rows: Vec<ParaRow> = Vec::new();
+    for line in &text.lines {
+        let align = line.alignment.or(para_align).unwrap_or_default();
+        let line_base = text_base.patch(line.style);
+        let mut cells: Vec<(char, Style)> = Vec::new();
+        for span in &line.spans {
+            let span_style = line_base.patch(span.style);
+            cells.extend(span.content.chars().map(|ch| (ch, span_style)));
+        }
+        match wrap {
+            Some(w) => wrap_cells(&cells, width, w.trim, align, &mut rows),
+            None => rows.push(ParaRow { cells, align }),
+        }
+    }
+    rows
+}
+
 impl Widget for Paragraph<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
@@ -252,26 +303,11 @@ impl Widget for Paragraph<'_> {
         buf.set_style(inner, style);
 
         let width = inner.width as usize;
-        let text_base = style.patch(text.style);
-        let para_align = text.alignment.or(alignment);
 
-        // Compose every source line into output rows: one per source line, or
-        // several when wrapping. Each row carries its source line's resolved
-        // alignment so a wrapped continuation stays aligned with it.
-        let mut rows: Vec<ParaRow> = Vec::new();
-        for line in text.lines {
-            let align = line.alignment.or(para_align).unwrap_or_default();
-            let line_base = text_base.patch(line.style);
-            let mut cells: Vec<(char, Style)> = Vec::new();
-            for span in &line.spans {
-                let span_style = line_base.patch(span.style);
-                cells.extend(span.content.chars().map(|ch| (ch, span_style)));
-            }
-            match wrap {
-                Some(w) => wrap_cells(&cells, width, w.trim, align, &mut rows),
-                None => rows.push(ParaRow { cells, align }),
-            }
-        }
+        // Compose every source line into output rows (one per source line, or
+        // several when wrapping) through the single shared wrap path that
+        // [`Paragraph::line_count`] also uses.
+        let rows = compose_rows(&text, style, wrap, alignment, width);
 
         // Vertical scroll, then paint the visible window of rows.
         let top = inner.top();
