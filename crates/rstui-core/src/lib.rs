@@ -19,6 +19,8 @@
 //!   draw → diff → flush → swap loop a [`Frame`] at a time.
 //! - [`event`]: the keyboard/mouse/focus/resize [`Event`] vocabulary the
 //!   runtime, components, and focus routing all share.
+//! - [`widget`]: the [`Widget`] rendering abstraction plus the foundational
+//!   [`Block`] container (borders, fill, padding, title).
 //!
 //! Keeping these pieces dependency-free and panic-light makes them trivial to
 //! unit test without a real terminal, which is the property the rest of the
@@ -52,6 +54,7 @@ pub mod geometry;
 pub mod layout;
 pub mod style;
 pub mod terminal;
+pub mod widget;
 
 pub use backend::{Backend, TestBackend};
 pub use buffer::{Buffer, Cell};
@@ -62,3 +65,4 @@ pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Constraint, Direction, Layout};
 pub use style::{Color, Modifier, Style};
 pub use terminal::{CompletedFrame, Frame, Terminal};
+pub use widget::{Alignment, Block, BorderSet, BorderType, Borders, Padding, Widget};

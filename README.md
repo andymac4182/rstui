@@ -11,8 +11,10 @@ while staying idiomatic to Rust.
 > **Status:** early foundation. The rendering substrate, the terminal
 > `Backend` boundary, the double-buffered `Terminal` frame driver, the
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
-> model, and the Elm-style `App`/`Cmd`/`Harness` runtime exist and are tested;
-> a real terminal driver, components, and the plugin host are not built yet.
+> model, the `Widget` abstraction with the foundational `Block` container, and
+> the Elm-style `App`/`Cmd`/`Harness` runtime exist and are tested; a real
+> terminal driver, a broader component set, and the plugin host are not built
+> yet.
 
 ## Workspace
 
@@ -21,11 +23,13 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`    | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event |
+| `crates/rstui-core`    | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget |
 | `crates/rstui-runtime` | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
 
-Planned boundaries as the framework grows: a real terminal driver, a component
-set, more examples, and a permissioned plugin host built on process isolation.
+Planned boundaries as the framework grows: a real terminal driver, a broader
+component set (the `Widget` trait lives in core; concrete widgets beyond
+`Block` will graduate to their own crate once there are enough to justify it),
+more examples, and a permissioned plugin host built on process isolation.
 
 ### `rstui-core`
 
@@ -53,6 +57,11 @@ loop — so every layer above it can be unit tested without a TTY.
   paste) the runtime, components, and focus routing share. Pure data shaped
   like the de-facto crossterm model so a real backend bridges 1:1, but using
   rstui's own `Position`/`Size`.
+- `widget` — the `Widget` trait (`render(self, area, buf)`) every component
+  implements, blanket impls for `&str`/`String`/`Option<W>`, and the
+  foundational `Block` container: `Borders`, `BorderType`, `Padding`, a styled
+  fill, and a clipped aligned title, with `Block::inner` handing the remaining
+  area to the content drawn inside. `Frame::render_widget` is the entry point.
 
 ### `rstui-runtime`
 
@@ -78,6 +87,7 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -p rstui-core --example buffer_demo
 cargo run -p rstui-core --example terminal_loop
+cargo run -p rstui-core --example block_demo
 cargo run -p rstui-runtime --example counter
 ```
 

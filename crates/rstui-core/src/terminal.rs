@@ -45,6 +45,7 @@
 use crate::backend::Backend;
 use crate::buffer::Buffer;
 use crate::geometry::{Position, Rect, Size};
+use crate::widget::Widget;
 
 /// A single in-progress frame handed to the render closure.
 ///
@@ -89,6 +90,17 @@ impl Frame<'_> {
     /// The buffer this frame draws into.
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         self.buffer
+    }
+
+    /// Draws `widget` into `area` of this frame.
+    ///
+    /// The ergonomic entry point a view reaches for: `frame.render_widget(
+    /// Block::bordered().title("Logs"), area)`. It is exactly
+    /// [`Widget::render`] against this frame's buffer — widgets compose by
+    /// rendering into [`Block::inner`](crate::Block::inner) sub-areas carved
+    /// out with [`Layout`](crate::Layout).
+    pub fn render_widget<W: Widget>(&mut self, widget: W, area: Rect) {
+        widget.render(area, self.buffer);
     }
 
     /// Requests that the cursor be shown at `position` after this frame is
@@ -390,6 +402,21 @@ mod tests {
 
         terminal.draw(|_| {}).unwrap();
         assert!(!terminal.backend().cursor_visible());
+    }
+
+    #[test]
+    fn render_widget_draws_into_the_frame_buffer() {
+        use crate::widget::Block;
+
+        let mut terminal = Terminal::new(TestBackend::new(4, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(Block::bordered(), area);
+            })
+            .unwrap();
+
+        assert_eq!(format!("{}", terminal.backend()), "┌──┐\n│  │\n└──┘\n");
     }
 
     #[test]
