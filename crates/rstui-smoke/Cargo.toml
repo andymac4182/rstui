@@ -20,3 +20,6 @@ workspace = true
 rstui-core = { path = "../rstui-core" }
 rstui-runtime = { path = "../rstui-runtime" }
 rstui-widgets = { path = "../rstui-widgets" }
+# Only for the compile-time signature pin of the full-screen `run_app`
+# shell (it needs a real TTY, so it is never executed here).
+rstui-crossterm = { path = "../rstui-crossterm" }

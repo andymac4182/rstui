@@ -222,6 +222,7 @@ name = "rstui-smoke"
 version = "0.0.1"
 dependencies = [
  "rstui-core",
+ "rstui-crossterm",
  "rstui-runtime",
  "rstui-widgets",
 ]
