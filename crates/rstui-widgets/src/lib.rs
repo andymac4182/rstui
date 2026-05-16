@@ -21,6 +21,9 @@
 //!   [`Borders`], [`BorderType`], [`BorderSet`], and [`Padding`].
 //! - [`paragraph`]: [`Paragraph`] — the multi-line text widget with soft word
 //!   [`Wrap`], scroll, alignment, and an optional framing [`Block`].
+//! - [`list`]: [`List`] — a scrollable single-select column of [`ListItem`]
+//!   rows with a highlight bar/gutter, rendered as a pure projection of
+//!   caller-owned `selected`/`offset` state.
 //!
 //! # Example
 //!
@@ -37,7 +40,9 @@
 //! ```
 
 pub mod block;
+pub mod list;
 pub mod paragraph;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
+pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
