@@ -22,7 +22,10 @@ while staying idiomatic to Rust.
 > label and the exclusive-choice `Radio` control (the form-control
 > family, with a focus visual), the optional caller-owned `focus` model
 > (`FocusId` value tokens plus a pure, total, wrapping `FocusRing`) those
-> controls' `focused: bool` projects from, the styled-text
+> controls' `focused: bool` projects from, the optional caller-owned
+> single-line text-editing model (`TextEdit`, a pure, total
+> `String`+character-cursor value an `Input` widget will project), the
+> styled-text
 > model (`Span`/`Line`/`Text`) with the `Stylize` fluent shorthand
 > (`"x".green().bold()`, `.on_blue()`), the Elm-style
 > `App`/`Cmd`/`Harness` runtime **plus the live `run` loop (the production
@@ -41,7 +44,7 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text |
+| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit |
 | `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, and `Radio` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
@@ -125,6 +128,16 @@ loop — so every layer above it can be unit tested without a TTY.
   cascade; `Cow<str>` content keeps literals allocation-free. Width is a
   `char` count, matching the single-`char` `Cell`; wrap/scroll live in the
   `Paragraph` widget, not these primitives.
+- `text_edit` — the optional, caller-owned single-line editing model
+  ([ADR 0004](docs/adr/0004-focus-routing-architecture.md) Follow-up §2):
+  `TextEdit`, a pure value type (a `String` plus a **character-indexed**
+  cursor) that lives as a field in the app's model — `update` calls
+  `insert_char`/`insert_str`/`delete_backward`/`delete_forward`/`move_*`,
+  the pure `view` reads `value`/`cursor` to project it through an `Input`
+  widget. The editing-side dual of `FocusRing`: every method is **total**
+  (a multi-byte paste or an out-of-range `set_cursor` never panics or
+  strands the cursor mid-codepoint). Single-line by convention; not
+  required — an app may keep its own `String`+`usize`.
 
 ### `rstui-widgets`
 
@@ -337,11 +350,14 @@ context, the options weighed, the decision, and the evidence behind it.
   `Checkbox`/`Button`/`Radio` contract) is permanent; the optional,
   pure, model-resident `rstui_core::focus` primitive (`FocusId` +
   a total, wrapping `FocusRing`) that reduces the boilerplate has
-  landed (Follow-up §1). Terminal `FocusGained`/`FocusLost`
-  stay distinct from widget focus. The modal focus
-  capture/restore/declarative-trapping model is decided here and its
-  `Modal`/`FocusScope` mechanical landing is sequenced as a later
-  slice.
+  landed (Follow-up §1), as has its editing-side dual
+  `rstui_core::text_edit::TextEdit` (Follow-up §2's caller-owned,
+  total single-line text-edit model); the `Input` widget that
+  projects `TextEdit` + `focused` is the next slice. Terminal
+  `FocusGained`/`FocusLost` stay distinct from widget focus. The
+  modal focus capture/restore/declarative-trapping model is decided
+  here and its `Modal`/`FocusScope` mechanical landing is sequenced
+  as a later slice.
 
 ## Build & test
 
