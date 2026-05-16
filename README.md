@@ -44,10 +44,12 @@ while staying idiomatic to Rust.
 > [ADR 0007](docs/adr/0007-plugin-host-and-secure-execution.md)) is
 > functionally complete and end-to-end testable — manifest, capability
 > model, policy, fail-closed frame protocol, the host mediation loop, a
-> real `std::process` runner, and the plugin-side SDK
-> (`plugin_sdk::PluginConnection`) so both ends of the protocol have
-> first-class support — with the hook extension-point vocabulary the next
-> slice.
+> real `std::process` runner, the plugin-side SDK
+> (`plugin_sdk::PluginConnection`), a semver `api_version` gate,
+> deadline-bounded reads, real filesystem-write/network effects, and the
+> `before_capability` veto + lifecycle hook extension points (a hook can
+> only ever *narrow* authority) — both ends of the protocol have
+> first-class support.
 
 ## Workspace
 
@@ -86,11 +88,12 @@ needs), more widgets and examples, and the permissioned plugin host
 dependency-free, no-`unsafe` `rstui-plugin-host` crate (manifest, the
 closed capability model, the manifest-derived `PermissionPolicy`, the
 fail-closed frame codec, the `PluginHost` mediation loop, a real
-`std::process` runner, and the fakeable seams that make every security
+`std::process` runner, a semver `api_version` gate, deadline-bounded
+reads, real fs-write/network effects, the `before_capability` veto +
+lifecycle hooks, and the fakeable seams that make every security
 property a deterministic unit test, plus the plugin-side
 `plugin_sdk::PluginConnection`) is functionally complete with a
-runnable `permissioned_plugin` example; the hook extension-point
-vocabulary is the next slice.
+runnable `permissioned_plugin` example.
 
 ### `rstui-core`
 

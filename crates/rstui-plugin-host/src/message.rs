@@ -94,6 +94,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::capability::{CapabilityRequest, FsMode};
+use crate::hook::{HookKind, HookOutcome};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Variant tags
@@ -367,6 +368,79 @@ pub fn decode_response(bytes: &[u8]) -> Result<CapabilityResponse, MessageError>
     };
     r.expect_exhausted()?;
     Ok(resp)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Hook payloads (ADR 0007 §6 extension-point slice)
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// A `HookDispatch` frame's payload is `[1B HookKind][input bytes…]` — the
+// input is the kind-specific blob (for `BeforeCapability` it is exactly an
+// `encode_request` payload; for lifecycle hooks it is empty). It is *not*
+// length-framed: the protocol frame already delimits the payload, and the
+// single leading kind byte makes the split unambiguous.
+//
+// A `HookResult` frame's payload is `[1B HookOutcome][reason String?]` —
+// the reason `String` (u32-len + UTF-8) is present iff the outcome is
+// `Veto`. The discriminant bytes are owned by [`crate::hook`]; this codec
+// only frames the variable-length reason.
+
+/// Encode a `HookDispatch` payload: the kind byte followed by the raw,
+/// un-framed kind-specific input.
+#[must_use]
+pub fn encode_hook_dispatch(kind: HookKind, input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + input.len());
+    out.push(kind.to_byte());
+    out.extend_from_slice(input);
+    out
+}
+
+/// Decode a `HookDispatch` payload into `(kind, input)`.
+///
+/// # Errors
+///
+/// [`MessageError::Truncated`] if empty; [`MessageError::UnknownTag`] for
+/// an unrecognised kind byte (fail-closed — the host terminates the
+/// connection, ADR 0007 §4).
+pub fn decode_hook_dispatch(bytes: &[u8]) -> Result<(HookKind, Vec<u8>), MessageError> {
+    let (&first, rest) = bytes.split_first().ok_or(MessageError::Truncated)?;
+    let kind = HookKind::from_byte(first).ok_or(MessageError::UnknownTag(first))?;
+    Ok((kind, rest.to_vec()))
+}
+
+/// Encode a `HookResult` payload: the outcome byte, plus the reason string
+/// when (and only when) the outcome is [`HookOutcome::Veto`].
+#[must_use]
+pub fn encode_hook_result(outcome: &HookOutcome) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(outcome.to_byte());
+    if let HookOutcome::Veto { reason } = outcome {
+        push_str(&mut out, reason);
+    }
+    out
+}
+
+/// Decode a `HookResult` payload.
+///
+/// # Errors
+///
+/// [`MessageError::Truncated`] if empty/short; [`MessageError::UnknownTag`]
+/// for an unrecognised outcome byte; [`MessageError::BadUtf8`] for a
+/// non-UTF-8 veto reason; [`MessageError::TrailingBytes`] if extra bytes
+/// remain — every case fail-closed (ADR 0007 §4).
+pub fn decode_hook_result(bytes: &[u8]) -> Result<HookOutcome, MessageError> {
+    let mut r = Reader::new(bytes);
+    let tag = r.read_u8()?;
+    let outcome = match HookOutcome::from_byte(tag) {
+        Some(HookOutcome::Continue) => HookOutcome::Continue,
+        Some(HookOutcome::Veto { .. }) => {
+            let reason = read_string(&mut r)?;
+            HookOutcome::Veto { reason }
+        }
+        None => return Err(MessageError::UnknownTag(tag)),
+    };
+    r.expect_exhausted()?;
+    Ok(outcome)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -884,5 +958,55 @@ mod tests {
         use std::error::Error;
         let err: &dyn Error = &MessageError::Truncated;
         assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn hook_dispatch_round_trips_every_kind_with_input() {
+        for kind in [
+            HookKind::SessionStart,
+            HookKind::BeforeCapability,
+            HookKind::SessionEnd,
+        ] {
+            for input in [&b""[..], &b"some-encoded-request-bytes"[..]] {
+                let bytes = encode_hook_dispatch(kind, input);
+                let (k, got) = decode_hook_dispatch(&bytes).unwrap();
+                assert_eq!(k, kind);
+                assert_eq!(got, input);
+            }
+        }
+    }
+
+    #[test]
+    fn hook_result_round_trips_continue_and_veto() {
+        let cont = encode_hook_result(&HookOutcome::Continue);
+        assert_eq!(decode_hook_result(&cont).unwrap(), HookOutcome::Continue);
+
+        let veto = HookOutcome::Veto {
+            reason: "no — unicode ✗ ok".into(),
+        };
+        let bytes = encode_hook_result(&veto);
+        assert_eq!(decode_hook_result(&bytes).unwrap(), veto);
+    }
+
+    #[test]
+    fn hook_codec_is_fail_closed() {
+        // Empty dispatch payload.
+        assert_eq!(decode_hook_dispatch(&[]), Err(MessageError::Truncated));
+        // Unknown hook kind byte.
+        assert_eq!(
+            decode_hook_dispatch(&[0xEE]),
+            Err(MessageError::UnknownTag(0xEE))
+        );
+        // Empty result payload.
+        assert_eq!(decode_hook_result(&[]), Err(MessageError::Truncated));
+        // Unknown outcome byte.
+        assert_eq!(
+            decode_hook_result(&[0x7F]),
+            Err(MessageError::UnknownTag(0x7F))
+        );
+        // Trailing bytes after a complete Continue.
+        let mut buf = encode_hook_result(&HookOutcome::Continue);
+        buf.push(0x00);
+        assert_eq!(decode_hook_result(&buf), Err(MessageError::TrailingBytes));
     }
 }

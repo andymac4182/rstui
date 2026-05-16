@@ -32,7 +32,11 @@ use std::fmt;
 use std::io::{Read, Write};
 
 use crate::capability::CapabilityRequest;
-use crate::message::{CapabilityResponse, MessageError, decode_response, encode_request};
+use crate::hook::{HookKind, HookOutcome, HookReduction};
+use crate::message::{
+    CapabilityResponse, MessageError, decode_hook_dispatch, decode_response, encode_hook_result,
+    encode_request,
+};
 use crate::protocol::{Frame, MessageType, ProtocolError, read_frame, write_frame};
 
 /// A failure on the plugin side of the protocol.
@@ -100,7 +104,20 @@ pub struct PluginConnection<R: Read, W: Write> {
     writer: W,
     host_api_version: String,
     next_id: u64,
+    /// Invoked when the host dispatches a hook (ADR 0007 §6). The default
+    /// returns [`HookOutcome::Continue`] for everything, so a plugin that
+    /// does not care about hooks is unaffected — [`request`] transparently
+    /// services dispatches. Replace it with [`set_hook_handler`] to veto.
+    ///
+    /// [`request`]: PluginConnection::request
+    /// [`set_hook_handler`]: PluginConnection::set_hook_handler
+    hook_handler: HookHandler,
 }
+
+/// A plugin's hook callback: given the [`HookKind`] and its input bytes,
+/// return the [`HookOutcome`]. Boxed so it can be swapped at runtime;
+/// `Send` so a `PluginConnection` can move across threads.
+type HookHandler = Box<dyn FnMut(HookKind, &[u8]) -> HookOutcome + Send>;
 
 impl<R: Read, W: Write> fmt::Debug for PluginConnection<R, W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -141,7 +158,41 @@ impl<R: Read, W: Write> PluginConnection<R, W> {
             writer,
             host_api_version,
             next_id: 1,
+            hook_handler: Box::new(|_, _| HookOutcome::Continue),
         })
+    }
+
+    /// Replace the hook handler. It is called with the [`HookKind`] and the
+    /// hook's input bytes (for `before_capability` that is an encoded
+    /// [`CapabilityRequest`]) and returns the plugin's [`HookOutcome`].
+    /// Only `VetoChain` hooks consult the return value; for an `Observe`
+    /// hook the outcome is ignored (the host awaits no reply). A handler
+    /// can only ever *narrow* — returning [`HookOutcome::Veto`] denies an
+    /// already-policy-permitted call; it can never widen one (ADR 0007 §6).
+    pub fn set_hook_handler(
+        &mut self,
+        handler: impl FnMut(HookKind, &[u8]) -> HookOutcome + Send + 'static,
+    ) {
+        self.hook_handler = Box::new(handler);
+    }
+
+    /// Service one inbound `HookDispatch` frame: decode it, invoke the
+    /// handler, and — only for a `VetoChain` hook — reply `HookResult`
+    /// echoing the dispatch's correlation id. `Observe` hooks are one-way.
+    fn service_hook(&mut self, frame: &Frame) -> Result<(), SdkError> {
+        let (kind, input) = decode_hook_dispatch(&frame.payload)?;
+        let outcome = (self.hook_handler)(kind, &input);
+        if matches!(kind.reduction(), HookReduction::VetoChain) {
+            write_frame(
+                &mut self.writer,
+                &Frame::new(
+                    MessageType::HookResult,
+                    frame.correlation_id,
+                    encode_hook_result(&outcome),
+                ),
+            )?;
+        }
+        Ok(())
     }
 
     /// The host-protocol version the host announced in its `Initialize`
@@ -171,20 +222,33 @@ impl<R: Read, W: Write> PluginConnection<R, W> {
             &mut self.writer,
             &Frame::new(MessageType::CapabilityCall, id, encode_request(request)),
         )?;
-        let frame = read_frame(&mut self.reader)?;
-        if frame.message_type != MessageType::CapabilityResponse {
-            return Err(SdkError::UnexpectedFrame {
-                expected: "CapabilityResponse",
-                got: frame.message_type,
-            });
+        // The host may interleave a host-initiated `HookDispatch` (e.g.
+        // `before_capability` for *this* call) ahead of the response.
+        // Service every hook transparently, then return the matching
+        // `CapabilityResponse` (ADR 0007 §6).
+        loop {
+            let frame = read_frame(&mut self.reader)?;
+            match frame.message_type {
+                MessageType::HookDispatch => {
+                    self.service_hook(&frame)?;
+                }
+                MessageType::CapabilityResponse => {
+                    if frame.correlation_id != id {
+                        return Err(SdkError::UnexpectedFrame {
+                            expected: "CapabilityResponse with the matching correlation id",
+                            got: frame.message_type,
+                        });
+                    }
+                    return Ok(decode_response(&frame.payload)?);
+                }
+                got => {
+                    return Err(SdkError::UnexpectedFrame {
+                        expected: "CapabilityResponse",
+                        got,
+                    });
+                }
+            }
         }
-        if frame.correlation_id != id {
-            return Err(SdkError::UnexpectedFrame {
-                expected: "CapabilityResponse with the matching correlation id",
-                got: frame.message_type,
-            });
-        }
-        Ok(decode_response(&frame.payload)?)
     }
 
     /// Send a diagnostic log line to the host (delivered as a `Log`
@@ -404,5 +468,121 @@ mod tests {
         let r = CapabilityRequest::Env { key: "X".into() };
         assert!(conn.request(&r).is_ok());
         assert!(conn.request(&r).is_ok(), "second call uses the next id");
+    }
+
+    /// The SDK's first `request` uses correlation id `1` (counter starts
+    /// at 1, big-endian in the first 8 bytes).
+    fn first_request_id() -> [u8; 16] {
+        let mut id = [0u8; 16];
+        id[7] = 1;
+        id
+    }
+
+    #[test]
+    fn request_services_a_vetochain_hook_then_returns_the_host_response() {
+        // The host interleaves a `before_capability` HookDispatch ahead of
+        // the CapabilityResponse. The SDK must invoke the handler, reply
+        // HookResult (echoing the dispatch id), then return the response.
+        let hook_corr = {
+            let mut c = [0u8; 16];
+            c[7] = 42;
+            c
+        };
+        let inbound = host_says(&[
+            init(),
+            Frame::new(
+                MessageType::HookDispatch,
+                hook_corr,
+                crate::message::encode_hook_dispatch(HookKind::BeforeCapability, b"req-bytes"),
+            ),
+            Frame::new(
+                MessageType::CapabilityResponse,
+                first_request_id(),
+                crate::message::encode_response(&CapabilityResponse::Ok {
+                    payload: b"R".to_vec(),
+                }),
+            ),
+        ]);
+        let mut outbound = Vec::new();
+        let mut conn = PluginConnection::connect(Cursor::new(inbound), &mut outbound).unwrap();
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = std::sync::Arc::clone(&seen);
+        conn.set_hook_handler(move |kind, input| {
+            seen2.lock().unwrap().push((kind, input.to_vec()));
+            HookOutcome::Veto {
+                reason: "sdk says no".into(),
+            }
+        });
+
+        let resp = conn
+            .request(&CapabilityRequest::Env { key: "X".into() })
+            .unwrap();
+        assert_eq!(
+            resp,
+            CapabilityResponse::Ok {
+                payload: b"R".to_vec()
+            }
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(HookKind::BeforeCapability, b"req-bytes".to_vec())],
+            "handler invoked with the dispatched kind + input"
+        );
+
+        // Outbound: Ready, CapabilityCall, then a HookResult(Veto) echoing
+        // the dispatch's correlation id.
+        let mut c = Cursor::new(outbound);
+        assert_eq!(read_frame(&mut c).unwrap().message_type, MessageType::Ready);
+        assert_eq!(
+            read_frame(&mut c).unwrap().message_type,
+            MessageType::CapabilityCall
+        );
+        let hr = read_frame(&mut c).unwrap();
+        assert_eq!(hr.message_type, MessageType::HookResult);
+        assert_eq!(hr.correlation_id, hook_corr, "echoes the dispatch id");
+        assert_eq!(
+            crate::message::decode_hook_result(&hr.payload).unwrap(),
+            HookOutcome::Veto {
+                reason: "sdk says no".into()
+            }
+        );
+    }
+
+    #[test]
+    fn observe_hook_dispatch_is_serviced_without_a_reply() {
+        // SessionStart is Observe: the SDK invokes the handler but must NOT
+        // write a HookResult (the host awaits none).
+        let inbound = host_says(&[
+            init(),
+            Frame::new(
+                MessageType::HookDispatch,
+                [0u8; 16],
+                crate::message::encode_hook_dispatch(HookKind::SessionStart, &[]),
+            ),
+            Frame::new(
+                MessageType::CapabilityResponse,
+                first_request_id(),
+                crate::message::encode_response(&CapabilityResponse::Ok { payload: vec![] }),
+            ),
+        ]);
+        let mut outbound = Vec::new();
+        let mut conn = PluginConnection::connect(Cursor::new(inbound), &mut outbound).unwrap();
+        let _ = conn
+            .request(&CapabilityRequest::Env { key: "X".into() })
+            .unwrap();
+
+        // Exactly two outbound frames: Ready then CapabilityCall — no
+        // HookResult for the Observe hook.
+        let mut c = Cursor::new(outbound);
+        assert_eq!(read_frame(&mut c).unwrap().message_type, MessageType::Ready);
+        assert_eq!(
+            read_frame(&mut c).unwrap().message_type,
+            MessageType::CapabilityCall
+        );
+        assert!(
+            read_frame(&mut c).is_err(),
+            "no further frame — Observe hooks are one-way"
+        );
     }
 }

@@ -82,6 +82,7 @@
 pub mod capability;
 pub mod clock;
 pub mod effects;
+pub mod hook;
 pub mod host;
 pub mod manifest;
 pub mod message;
@@ -97,6 +98,7 @@ pub use clock::{Clock, FakeClock, SystemClock};
 pub use effects::{
     CapabilityOutcome, HostEffectError, HostEffects, RecordingHostEffects, SystemHostEffects,
 };
+pub use hook::{HookKind, HookOutcome, HookReduction};
 pub use host::{HostError, MediationRecord, PluginHost, PluginId, PluginRunReport};
 pub use manifest::{ManifestError, PluginManifest};
 pub use message::{
