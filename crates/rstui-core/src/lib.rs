@@ -22,9 +22,9 @@
 //! - [`event_source`]: the [`EventSource`] input boundary (the dual of
 //!   [`Backend`]) plus an in-memory [`TestEventSource`] so whole apps can be
 //!   driven by a scripted event stream without a TTY.
-//! - [`widget`]: the [`Widget`] rendering abstraction plus the foundational
-//!   [`Block`] container (borders, fill, padding, and a styled, aligned
-//!   [`Line`] title).
+//! - [`widget`]: the [`Widget`] rendering abstraction, the foundational
+//!   [`Block`] container (borders, fill, padding, a styled [`Line`] title),
+//!   and the [`Paragraph`] text widget (word [`Wrap`], scroll, alignment).
 //! - [`text`]: the styled-text model ([`Span`], [`Line`], [`Text`]) every
 //!   richer component composes, with a predictable text→line→span style
 //!   cascade.
@@ -76,4 +76,6 @@ pub use layout::{Constraint, Direction, Layout};
 pub use style::{Color, Modifier, Style};
 pub use terminal::{CompletedFrame, Frame, Terminal};
 pub use text::{Line, Span, Text};
-pub use widget::{Alignment, Block, BorderSet, BorderType, Borders, Padding, Widget};
+pub use widget::{
+    Alignment, Block, BorderSet, BorderType, Borders, Padding, Paragraph, Widget, Wrap,
+};

@@ -12,8 +12,9 @@ while staying idiomatic to Rust.
 > `Backend` boundary, the `EventSource` input boundary (with an in-memory
 > `TestEventSource`), the double-buffered `Terminal` frame driver, the
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
-> model, the `Widget` abstraction with the foundational `Block` container, the
-> styled-text model (`Span`/`Line`/`Text`), the Elm-style
+> model, the `Widget` abstraction with the foundational `Block` container and
+> the `Paragraph` text widget (word wrap, scroll, alignment), the styled-text
+> model (`Span`/`Line`/`Text`), the Elm-style
 > `App`/`Cmd`/`Harness` runtime **plus the live `run` loop (the production
 > twin of `Harness`, generic over any `Backend` + `EventSource`)**, and the
 > crossterm terminal driver's input translation, `Backend` implementation,
@@ -44,10 +45,11 @@ end: the `run_app` example runs an unmodified `App` on a real terminal via
 the *same* `run` the headless harness tests drive. A feature-gated async
 `EventStream` source is a future enhancement. Other planned
 boundaries as the framework grows: a broader component set (the `Widget`
-trait lives in core;
-concrete widgets beyond `Block` will graduate to their own crate once there
-are enough to justify it), more examples, and a permissioned plugin host
-built on process isolation.
+trait lives in core; core now has two concrete widgets — `Block` and
+`Paragraph` — so the next natural slice is extracting an `rstui-widgets`
+crate, a mechanical relocation done on its own once the move is the only
+change), more examples, and a permissioned plugin host built on process
+isolation.
 
 ### `rstui-core`
 
@@ -86,13 +88,17 @@ loop — so every layer above it can be unit tested without a TTY.
   fill, and a clipped title that is a full `Line` (per-span styles and its own
   alignment, cascading over block-level `title_style`/`title_alignment`), with
   `Block::inner` handing the remaining area to the content drawn inside.
+  Also `Paragraph`: the multi-line text widget adding soft word `Wrap`
+  (`trim` controls leading-whitespace handling; over-wide words hard split), a
+  `Position` scroll offset, per-block alignment, and an optional framing
+  `Block` — none of which leak into the text primitives.
   `Frame::render_widget` is the entry point.
 - `text` — the styled-text model: `Span` (a styled run), `Line` (a row of
   spans with optional alignment), and `Text` (a block of lines). One
   committed, data-driven model with a predictable text→line→span `Style`
   cascade; `Cow<str>` content keeps literals allocation-free. Width is a
-  `char` count, matching the single-`char` `Cell`; wrap/scroll are a future
-  `Paragraph` concern.
+  `char` count, matching the single-`char` `Cell`; wrap/scroll live in the
+  `Paragraph` widget, not these primitives.
 
 ### `rstui-runtime`
 
@@ -191,6 +197,7 @@ cargo run -p rstui-core --example buffer_demo
 cargo run -p rstui-core --example terminal_loop
 cargo run -p rstui-core --example block_demo
 cargo run -p rstui-core --example text_demo
+cargo run -p rstui-core --example paragraph_demo
 cargo run -p rstui-runtime --example counter
 ```
 
