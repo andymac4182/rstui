@@ -82,6 +82,12 @@
 //!   projection generalized to a caller-owned **flattened** `Vec` of
 //!   currently-visible rows (the reducer owns the tree, expansion, and
 //!   `selected`/`offset`; the widget only reads them).
+//! - [`select`]: [`Select`] — a single-line dropdown: a closed field that
+//!   drops an **opaque**, field-anchored option panel when the caller-owned
+//!   `open` flag is set; the first *floating* control. A pure projection of
+//!   caller-owned `open`/`selected`/`highlight`/`offset` that **reuses**
+//!   [`List`] for the panel and [`Modal`]'s clear-region opacity (but is
+//!   deliberately not a [`Modal`] — anchored, not modal/centred).
 //!
 //! # Example
 //!
@@ -108,6 +114,7 @@ pub mod modal;
 pub mod paragraph;
 pub mod radio;
 pub mod scrollbar;
+pub mod select;
 pub mod spinner;
 pub mod status_bar;
 pub mod table;
@@ -126,6 +133,7 @@ pub use modal::Modal;
 pub use paragraph::{Paragraph, Wrap};
 pub use radio::Radio;
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};
+pub use select::Select;
 pub use spinner::Spinner;
 pub use status_bar::StatusBar;
 pub use table::{Row, Table};
