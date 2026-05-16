@@ -118,6 +118,7 @@ impl ManifestPolicy {
     /// assert!(policy.check(&CapabilityRequest::Filesystem {
     ///     mode: FsMode::Read,
     ///     path: PathBuf::from("/srv/demo/data/notes.txt"),
+    ///     contents: Vec::new(),
     /// }).is_allowed());
     ///
     /// // ...a write is not (the grant was read-only), and the refusal
@@ -125,6 +126,7 @@ impl ManifestPolicy {
     /// let denied = policy.check(&CapabilityRequest::Filesystem {
     ///     mode: FsMode::Write,
     ///     path: PathBuf::from("/srv/demo/data/notes.txt"),
+    ///     contents: Vec::new(),
     /// });
     /// assert!(!denied.is_allowed());
     /// assert!(denied.denied_reason().is_some());
@@ -169,6 +171,9 @@ fn grant_permits(grant: &CapabilityGrant, request: &CapabilityRequest) -> bool {
             CapabilityRequest::Filesystem {
                 mode: request_mode,
                 path,
+                // Write data never widens authority: the policy scopes by
+                // path + mode only (ADR 0007 §3).
+                ..
             },
         ) => grant_mode == request_mode && is_within(root, path),
         (
@@ -206,7 +211,7 @@ fn grant_permits(grant: &CapabilityGrant, request: &CapabilityRequest) -> bool {
 /// A short, deterministic description of a request for a denial reason.
 fn describe(request: &CapabilityRequest) -> String {
     match request {
-        CapabilityRequest::Filesystem { mode, path } => {
+        CapabilityRequest::Filesystem { mode, path, .. } => {
             format!("{mode} of {}", path.display())
         }
         CapabilityRequest::Network { host, port } => format!("connect to {host}:{port}"),
@@ -296,6 +301,7 @@ mod tests {
                 .check(&CapabilityRequest::Filesystem {
                     mode: FsMode::Read,
                     path: PathBuf::from("/g/data/sub/file"),
+                    contents: Vec::new(),
                 })
                 .is_allowed()
         );
@@ -306,6 +312,7 @@ mod tests {
                 .check(&CapabilityRequest::Filesystem {
                     mode: FsMode::Write,
                     path: PathBuf::from("/g/data/sub/file"),
+                    contents: Vec::new(),
                 })
                 .is_allowed()
         );
@@ -314,6 +321,7 @@ mod tests {
         let escape = policy.check(&CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: PathBuf::from("/g/data/../secret"),
+            contents: Vec::new(),
         });
         assert!(!escape.is_allowed());
         assert!(escape.denied_reason().unwrap().contains("filesystem"));
@@ -324,6 +332,7 @@ mod tests {
                 .check(&CapabilityRequest::Filesystem {
                     mode: FsMode::Read,
                     path: PathBuf::from("/g/database/x"),
+                    contents: Vec::new(),
                 })
                 .is_allowed()
         );

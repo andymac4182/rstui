@@ -528,7 +528,11 @@ fn resolved_env(manifest: &PluginManifest) -> Vec<(String, String)> {
 /// unchanged.
 fn canonicalize(cwd: &Path, request: CapabilityRequest) -> CapabilityRequest {
     match request {
-        CapabilityRequest::Filesystem { mode, path } => {
+        CapabilityRequest::Filesystem {
+            mode,
+            path,
+            contents,
+        } => {
             let absolute = if path.is_absolute() {
                 path
             } else {
@@ -537,6 +541,7 @@ fn canonicalize(cwd: &Path, request: CapabilityRequest) -> CapabilityRequest {
             CapabilityRequest::Filesystem {
                 mode,
                 path: normalize_lexical(&absolute),
+                contents,
             }
         }
         other => other,
@@ -762,10 +767,12 @@ mod tests {
         let escape = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: PathBuf::from("data/../secret"),
+            contents: Vec::new(),
         };
         let inside = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: PathBuf::from("data/notes.txt"),
+            contents: Vec::new(),
         };
         let runner = Arc::new(FakeProcessRunner::new(FakePluginProcess::new(
             script(&[ready(), call(1, &escape), call(2, &inside)]),
@@ -790,6 +797,7 @@ mod tests {
             CapabilityRequest::Filesystem {
                 mode: FsMode::Read,
                 path: PathBuf::from("/work/secret"),
+                contents: Vec::new(),
             }
         );
         assert!(matches!(
@@ -802,6 +810,7 @@ mod tests {
             CapabilityRequest::Filesystem {
                 mode: FsMode::Read,
                 path: PathBuf::from("/work/data/notes.txt"),
+                contents: Vec::new(),
             }
         );
         assert_eq!(report.mediated[1].decision, Decision::Allow);

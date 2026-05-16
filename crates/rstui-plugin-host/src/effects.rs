@@ -47,10 +47,9 @@ use crate::capability::{CapabilityRequest, FsMode};
 /// - **`Env`**: the value of the environment variable, UTF-8 encoded.
 /// - **`Filesystem { mode: Read }`**: the raw file contents.
 /// - **`Command`**: the captured standard output of the child process.
-/// - **`Filesystem { mode: Write }` / `Network`**: these are not yet
-///   implemented in [`SystemHostEffects`] (they return
-///   [`HostEffectError::Unsupported`]); `payload` is unused for them in this
-///   slice.
+/// - **`Filesystem { mode: Write }` / `Network`**: empty — the effect
+///   (`std::fs::write` / a bounded TCP connect) produces no result data, so
+///   an empty `payload` on a non-error response *is* the success signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityOutcome {
     /// The raw bytes returned to the plugin. Callers interpret them according
@@ -63,18 +62,23 @@ pub struct CapabilityOutcome {
 /// An error from performing a permitted capability effect.
 ///
 /// `Io` carries a human-readable description of the OS/runtime failure.
-/// `Unsupported` signals that the capability kind's real effect has not been
-/// implemented in this slice yet — **the permission boundary is still enforced
-/// upstream regardless** (ADR 0007 §3: the policy runs before `run` is called;
-/// `Unsupported` is an effector gap, not a policy gap).
+/// `Unsupported` signals that *this effector* does not implement the
+/// capability kind. [`SystemHostEffects`] implements all four kinds and never
+/// returns it, but the variant remains part of the contract: a custom
+/// [`HostEffects`] (e.g. a sandbox that deliberately refuses `Command`) may
+/// return it, and test doubles use it via
+/// [`RecordingHostEffects::with_err`]. Either way **the permission boundary
+/// is enforced upstream regardless** (ADR 0007 §3: the policy runs before
+/// `run` is called; `Unsupported` is an effector concern, not a policy gap).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEffectError {
     /// The OS operation failed; `0` is a human-readable explanation including
     /// the original error and, for commands, the exit code and stderr.
     Io(String),
-    /// The capability kind's real effect is not yet implemented in this slice.
-    /// Write and Network effects are the deliberate deferral; the permission
-    /// decision still runs before any attempt to call `run`.
+    /// This effector does not implement the requested capability kind.
+    /// [`SystemHostEffects`] never returns this (it implements all four
+    /// kinds); it exists for alternative effectors and test doubles. The
+    /// permission decision still runs before any attempt to call `run`.
     Unsupported,
 }
 
@@ -83,7 +87,7 @@ impl fmt::Display for HostEffectError {
         match self {
             Self::Io(msg) => write!(f, "host effect IO error: {msg}"),
             Self::Unsupported => {
-                f.write_str("host effect not yet implemented for this capability kind")
+                f.write_str("host effect not supported for this capability kind by this effector")
             }
         }
     }
@@ -112,9 +116,10 @@ pub trait HostEffects: Send + Sync {
     /// # Errors
     ///
     /// Returns [`HostEffectError::Io`] when the OS operation fails (missing
-    /// file, non-zero exit, non-Unicode env value, etc.) and
-    /// [`HostEffectError::Unsupported`] when the capability kind's real effect
-    /// is not yet implemented in this slice.
+    /// file, non-zero exit, non-Unicode env value, refused connection, etc.)
+    /// and [`HostEffectError::Unsupported`] if the implementor does not
+    /// support the requested capability kind ([`SystemHostEffects`] supports
+    /// all four and never returns it).
     fn run(&self, request: &CapabilityRequest) -> Result<CapabilityOutcome, HostEffectError>;
 }
 
@@ -136,13 +141,40 @@ pub trait HostEffects: Send + Sync {
 /// |------|--------|---------|
 /// | `Env { key }` | `std::env::var(key)` | UTF-8 value bytes |
 /// | `Filesystem { mode: Read, path }` | `std::fs::read(path)` | Raw file bytes |
+/// | `Filesystem { mode: Write, path, contents }` | `std::fs::write(path, contents)` | Empty payload on success |
 /// | `Command { program, args }` | `std::process::Command::new(program).args(args).output()` | Stdout bytes on success |
-/// | `Filesystem { mode: Write, .. }` | — | `Err(Unsupported)` — later slice |
-/// | `Network { .. }` | — | `Err(Unsupported)` — later slice |
+/// | `Network { host, port }` | bounded `TcpStream::connect_timeout` (then closed) | Empty payload on success |
 ///
-/// Write and Network effects are a deliberately deferred later slice (ADR 0007
-/// Consequences). The permission boundary for those kinds is still enforced
-/// upstream; `Unsupported` is an effector implementation gap, not a policy gap.
+/// All four capability kinds are implemented. Write and Network produce no
+/// result data, so success is signalled by an empty `payload` plus a
+/// non-error response. As with every kind, the permission boundary is
+/// enforced *upstream* by the host (ADR 0007 §3) — `SystemHostEffects`
+/// performs no capability gating of its own.
+///
+/// ## Residual: a check→effect TOCTOU window (ADR 0007 §7)
+///
+/// The host canonicalises a path and the policy rules on it *lexically*
+/// ([`normalize_lexical`](crate::capability::normalize_lexical) is total
+/// and symlink-blind by design — see [`capability`](crate::capability)).
+/// The real `std::fs::write` / `TcpStream::connect_timeout` then run on
+/// that already-approved name. Between the check and the effect a
+/// **symlink swap** inside a granted directory can redirect the *write*
+/// outside the granted subtree, and a **DNS rebind** can move a granted
+/// host name to a different address before `connect`. The write case is
+/// strictly higher impact than the read residual already recorded in
+/// [`capability`](crate::capability) (it can *create/overwrite* outside
+/// the grant, not just read).
+///
+/// Closing this in-process needs `openat`/`O_NOFOLLOW`/`realpath`-after-
+/// open and address-pinned connects — all `unsafe` libc, which the
+/// workspace **forbids** (ADR 0007 driver 4 / §7). It is therefore a
+/// **named, accepted residual**, mitigated exactly as ADR 0007 §7
+/// prescribes for the whole `forbid(unsafe)` tier: run plugins under an
+/// operator-provided OS sandbox / mount namespace / container, and treat
+/// the manifest review as the authority on what paths and hosts a plugin
+/// may be granted in the first place. `SystemHostEffects` does not, and
+/// under the workspace constraints cannot, defeat it; that is a recorded
+/// decision, not an oversight.
 #[derive(Debug, Default)]
 pub struct SystemHostEffects;
 
@@ -168,10 +200,47 @@ impl HostEffects for SystemHostEffects {
             CapabilityRequest::Filesystem {
                 mode: FsMode::Read,
                 path,
+                ..
             } => {
                 let bytes = std::fs::read(path)
                     .map_err(|e| HostEffectError::Io(format!("read `{}`: {e}", path.display())))?;
                 Ok(CapabilityOutcome { payload: bytes })
+            }
+
+            CapabilityRequest::Filesystem {
+                mode: FsMode::Write,
+                path,
+                contents,
+            } => {
+                std::fs::write(path, contents)
+                    .map_err(|e| HostEffectError::Io(format!("write `{}`: {e}", path.display())))?;
+                // A write produces no result data; the empty payload plus a
+                // non-error response is the "succeeded" signal.
+                Ok(CapabilityOutcome {
+                    payload: Vec::new(),
+                })
+            }
+
+            CapabilityRequest::Network { host, port } => {
+                use std::net::{TcpStream, ToSocketAddrs};
+                use std::time::Duration;
+
+                let mut addrs = (host.as_str(), *port)
+                    .to_socket_addrs()
+                    .map_err(|e| HostEffectError::Io(format!("resolve `{host}:{port}`: {e}")))?;
+                let addr = addrs.next().ok_or_else(|| {
+                    HostEffectError::Io(format!("`{host}:{port}` resolved to no address"))
+                })?;
+                // A bounded TCP connect is the mediated network effect: it
+                // proves the host *would* let the plugin reach the granted
+                // endpoint. The connection is closed immediately (dropped);
+                // streaming a request/response over it is a later extension.
+                let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+                    .map_err(|e| HostEffectError::Io(format!("connect `{host}:{port}`: {e}")))?;
+                drop(stream);
+                Ok(CapabilityOutcome {
+                    payload: Vec::new(),
+                })
             }
 
             CapabilityRequest::Command { program, args } => {
@@ -194,15 +263,6 @@ impl HostEffects for SystemHostEffects {
                     )))
                 }
             }
-
-            // Write and Network effects are deliberately deferred to a later
-            // slice. The permission boundary still runs upstream for these
-            // kinds; Unsupported is an effector gap, not a policy gap.
-            CapabilityRequest::Filesystem {
-                mode: FsMode::Write,
-                ..
-            }
-            | CapabilityRequest::Network { .. } => Err(HostEffectError::Unsupported),
         }
     }
 }
@@ -402,6 +462,7 @@ mod tests {
         let req = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: path.clone(),
+            contents: Vec::new(),
         };
         let outcome = effector.run(&req).expect("fs read must succeed");
         assert_eq!(outcome.payload, expected);
@@ -417,6 +478,7 @@ mod tests {
         let req = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: PathBuf::from("/tmp/rstui_effects_definitely_absent_C2A7B1D4E3F5_no_such_file"),
+            contents: Vec::new(),
         };
         let result = effector.run(&req);
         assert!(
@@ -479,30 +541,120 @@ mod tests {
         }
     }
 
-    // ── SystemHostEffects — Unsupported kinds ─────────────────────────────────
+    // ── SystemHostEffects — Filesystem Write ──────────────────────────────────
 
-    /// Filesystem writes are a deliberately deferred later slice; the effector
-    /// returns `Unsupported`.
+    /// A `Filesystem { mode: Write }` writes `contents` to `path` and reports
+    /// success with an empty payload. Deterministic: a fresh, uniquely-named
+    /// file under the OS temp dir, written then read back and removed.
     #[test]
-    fn system_fs_write_returns_unsupported() {
+    fn system_fs_write_persists_contents() {
+        let mut path = std::env::temp_dir();
+        path.push("rstui_effects_test_write_C2A7B1D4.bin");
+        // Start clean so a stale file from an aborted prior run cannot mask a
+        // regression.
+        let _ = std::fs::remove_file(&path);
+
         let effector = SystemHostEffects::new();
         let req = CapabilityRequest::Filesystem {
             mode: FsMode::Write,
-            path: PathBuf::from("/tmp/does_not_matter"),
+            path: path.clone(),
+            contents: b"hello".to_vec(),
         };
-        assert_eq!(effector.run(&req), Err(HostEffectError::Unsupported));
+        let outcome = effector.run(&req).expect("fs write must succeed");
+        // A write produces no result data; success is the empty payload.
+        assert_eq!(outcome.payload, Vec::<u8>::new());
+
+        let written = std::fs::read(&path).expect("written file must be readable");
+        assert_eq!(written, b"hello");
+
+        // Clean up — best-effort; ignore failure.
+        let _ = std::fs::remove_file(&path);
     }
 
-    /// Network effects are a deliberately deferred later slice; the effector
-    /// returns `Unsupported`.
+    /// A `Filesystem { mode: Write }` whose parent directory does not exist
+    /// cannot be created by `std::fs::write`, so the effector surfaces
+    /// `Err(Io)` rather than silently succeeding.
     #[test]
-    fn system_network_returns_unsupported() {
+    fn system_fs_write_to_unwritable_path_returns_io_error() {
+        let mut path = std::env::temp_dir();
+        // A parent component that does not exist: write() will not mkdir -p.
+        path.push("rstui_effects_no_such_dir_C2A7B1D4E3F5");
+        path.push("inner");
+        path.push("target.bin");
+
+        let effector = SystemHostEffects::new();
+        let req = CapabilityRequest::Filesystem {
+            mode: FsMode::Write,
+            path: path.clone(),
+            contents: b"data".to_vec(),
+        };
+        let result = effector.run(&req);
+        assert!(
+            matches!(result, Err(HostEffectError::Io(_))),
+            "write under a missing parent must return Io error, got: {result:?}"
+        );
+        // The write must not have created anything.
+        assert!(!path.exists(), "no file should have been created");
+    }
+
+    // ── SystemHostEffects — Network ───────────────────────────────────────────
+
+    /// A `Network` connect to a listening localhost port succeeds with an
+    /// empty payload. Deterministic: we bind our own `TcpListener` on an
+    /// ephemeral port (`127.0.0.1:0`), read the assigned port, and have a
+    /// thread `accept()` exactly one connection. Localhost connect is
+    /// immediate, so the 5s connect timeout is never approached.
+    #[test]
+    fn system_network_connects_to_listening_port() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("read local addr").port();
+        let accepter = std::thread::spawn(move || {
+            // Accept exactly one connection then return; the stream is dropped
+            // immediately (the effector closes its end too).
+            let _ = listener.accept();
+        });
+
         let effector = SystemHostEffects::new();
         let req = CapabilityRequest::Network {
-            host: "example.com".into(),
-            port: 443,
+            host: "127.0.0.1".into(),
+            port,
         };
-        assert_eq!(effector.run(&req), Err(HostEffectError::Unsupported));
+        let outcome = effector
+            .run(&req)
+            .expect("connect to live port must succeed");
+        // A bounded connect produces no result data.
+        assert_eq!(outcome.payload, Vec::<u8>::new());
+
+        accepter.join().expect("accepter thread must not panic");
+    }
+
+    /// A `Network` connect to a closed localhost port is refused immediately
+    /// and surfaces `Err(Io)`. Deterministic: bind then drop a listener to
+    /// obtain a port guaranteed free, so the OS returns connection-refused
+    /// (no DNS, no timeout wait).
+    #[test]
+    fn system_network_connect_refused_returns_io_error() {
+        use std::net::TcpListener;
+
+        // Bind to learn a free port, then drop the listener so nothing is
+        // accepting on it: connect() gets ECONNREFUSED right away.
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("read local addr").port()
+        };
+
+        let effector = SystemHostEffects::new();
+        let req = CapabilityRequest::Network {
+            host: "127.0.0.1".into(),
+            port,
+        };
+        let result = effector.run(&req);
+        assert!(
+            matches!(result, Err(HostEffectError::Io(_))),
+            "connect to a closed port must return Io error, got: {result:?}"
+        );
     }
 
     // ── HostEffectError Display / Error ───────────────────────────────────────
@@ -546,6 +698,7 @@ mod tests {
         let req3 = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: PathBuf::from("/tmp/x"),
+            contents: Vec::new(),
         };
         recorder.run(&req1).unwrap();
         recorder.run(&req2).unwrap();

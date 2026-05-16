@@ -261,6 +261,7 @@ mod tests {
         let req = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: "/data/x".into(),
+            contents: Vec::new(),
         };
         // The host will reply on the same correlation id the SDK chooses
         // for its first request: counter 1.
