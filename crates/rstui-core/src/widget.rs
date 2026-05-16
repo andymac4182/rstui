@@ -482,7 +482,10 @@ impl Widget for Block {
 }
 
 /// Writes one glyph and patches its style, ignoring out-of-bounds positions.
-fn set_cell(buf: &mut Buffer, x: u16, y: u16, symbol: char, style: Style) {
+///
+/// Shared with [`text`](crate::text) so widgets and text primitives stamp
+/// cells through one bounds-safe path.
+pub(crate) fn set_cell(buf: &mut Buffer, x: u16, y: u16, symbol: char, style: Style) {
     if let Some(cell) = buf.get_mut(Position::new(x, y)) {
         cell.symbol = symbol;
         cell.apply_style(style);

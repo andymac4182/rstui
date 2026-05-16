@@ -11,10 +11,10 @@ while staying idiomatic to Rust.
 > **Status:** early foundation. The rendering substrate, the terminal
 > `Backend` boundary, the double-buffered `Terminal` frame driver, the
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
-> model, the `Widget` abstraction with the foundational `Block` container, and
-> the Elm-style `App`/`Cmd`/`Harness` runtime exist and are tested; a real
-> terminal driver, a broader component set, and the plugin host are not built
-> yet.
+> model, the `Widget` abstraction with the foundational `Block` container, the
+> styled-text model (`Span`/`Line`/`Text`), and the Elm-style
+> `App`/`Cmd`/`Harness` runtime exist and are tested; a real terminal driver,
+> a broader component set, and the plugin host are not built yet.
 
 ## Workspace
 
@@ -23,7 +23,7 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`    | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget |
+| `crates/rstui-core`    | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget, text |
 | `crates/rstui-runtime` | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
 
 Planned boundaries as the framework grows: a real terminal driver, a broader
@@ -62,6 +62,12 @@ loop — so every layer above it can be unit tested without a TTY.
   foundational `Block` container: `Borders`, `BorderType`, `Padding`, a styled
   fill, and a clipped aligned title, with `Block::inner` handing the remaining
   area to the content drawn inside. `Frame::render_widget` is the entry point.
+- `text` — the styled-text model: `Span` (a styled run), `Line` (a row of
+  spans with optional alignment), and `Text` (a block of lines). One
+  committed, data-driven model with a predictable text→line→span `Style`
+  cascade; `Cow<str>` content keeps literals allocation-free. Width is a
+  `char` count, matching the single-`char` `Cell`; wrap/scroll are a future
+  `Paragraph` concern.
 
 ### `rstui-runtime`
 
@@ -88,6 +94,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo run -p rstui-core --example buffer_demo
 cargo run -p rstui-core --example terminal_loop
 cargo run -p rstui-core --example block_demo
+cargo run -p rstui-core --example text_demo
 cargo run -p rstui-runtime --example counter
 ```
 
