@@ -37,7 +37,6 @@ echo "In Claude, run /goal and paste the clipboard contents."
 exec caffeinate -dimsu claude \
   --worktree "$worktree_name" \
   --tmux \
-  --add-dir "$repo" \
   --model claude-opus-4-7 \
   --effort max \
   --dangerously-skip-permissions

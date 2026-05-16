@@ -47,6 +47,10 @@ The relevant Claude switches are:
 - `--model claude-opus-4-7 --effort max`: use the requested model and thinking
   effort.
 
+The launchers intentionally do not add the main checkout with `--add-dir`.
+Claude should edit inside its current worktree only. The main checkout is only
+for the serialized git merge-back step.
+
 The detailed briefs in `scripts/claude-goals/*.md` intentionally repeat the
 shared rules. That keeps each Claude run self-contained after it reads the file
 from disk.

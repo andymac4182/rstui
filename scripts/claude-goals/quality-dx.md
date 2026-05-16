@@ -43,6 +43,10 @@ and the main checkout is dirty, stop and report the dirty files. Do not
 overwrite or stash user work. If the worktree path already exists, choose a new
 suffixed path. Do not delete existing worktrees.
 
+All source edits must happen in `$worktree`. Do not edit files under `$repo`
+directly. `$repo` is only the main-checkout merge target during the serialized
+merge-back protocol.
+
 ```sh
 mkdir -p "$worktree_root"
 git -C "$repo" worktree add -b "$branch" "$worktree" origin/main
