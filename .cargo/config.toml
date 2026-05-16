@@ -1,0 +1,6 @@
+# The cargo-xtask convention: `cargo xtask <task>` runs the workspace
+# automation crate. Keeps the local command identical to the one CI runs
+# (rstui values "what CI runs == what you run locally"). See
+# docs/conventions/naming.md and ADR 0003 §7.
+[alias]
+xtask = "run --quiet --package xtask --"

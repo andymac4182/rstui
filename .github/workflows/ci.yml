@@ -30,6 +30,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # ADR 0003 §7 / Phase 3: the iteration-19 vague-generic-naming
+      # check — the first rstui-specific lint, the one defect class
+      # clippy/rustdoc cannot see. Same command run locally
+      # (.cargo/config.toml alias). See docs/conventions/naming.md.
+      - name: Naming
+        run: cargo xtask lint-names
+
       # ADR 0003 §4 / Phase 1: the rustdoc gate. Closes the silent-failure
       # gap where broken intra-doc links and missing docs on new public
       # items previously passed CI. RUSTDOCFLAGS is scoped to this step so

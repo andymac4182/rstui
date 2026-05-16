@@ -39,6 +39,7 @@ only when there is enough real API surface to justify the boundary.
 | `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, and `Gauge` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
+| `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
 
 The `rstui-crossterm` crate ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md))
 is now complete for the synchronous path: its crossterm → `rstui-core`
@@ -251,9 +252,11 @@ context, the options weighed, the decision, and the evidence behind it.
   slice; `nursery`/`cargo`/`restriction` groups are never adopted
   wholesale; `unsafe_code`/`missing_docs` consolidate into
   `[workspace.lints.*]`; a `cargo doc` `-D warnings` gate closes the
-  rustdoc silent-failure gap; supply-chain (`cargo-deny`,
-  `cargo-machete`), an MSRV CI leg, and the vague-generic-naming
-  check are sequenced as later independent slices.
+  rustdoc silent-failure gap. Phase 3's vague-generic-naming check has
+  landed as the first rstui-specific lint (`cargo xtask lint-names`,
+  [convention](docs/conventions/naming.md)); supply-chain
+  (`cargo-deny`, `cargo-machete`) and an MSRV CI leg remain sequenced
+  as later independent slices.
 
 ## Build & test
 
@@ -261,6 +264,7 @@ context, the options weighed, the decision, and the evidence behind it.
 cargo test --all-features
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo xtask lint-names
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace
 cargo run -p rstui-core --example buffer_demo
 cargo run -p rstui-core --example terminal_loop
@@ -273,10 +277,12 @@ cargo run -p rstui-widgets --example gauge_demo
 cargo run -p rstui-runtime --example counter
 ```
 
-CI runs the same fmt, clippy, doc (`-D warnings`), and test gates on every
-push and pull request. Lint policy lives in one place — the
+CI runs the same fmt, clippy, naming, doc (`-D warnings`), and test gates
+on every push and pull request. Lint policy lives in one place — the
 `[workspace.lints.*]` tables in the root `Cargo.toml` — per
-[ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md).
+[ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md); the
+project-specific naming rule is in
+[`docs/conventions`](docs/conventions/naming.md).
 
 ## GNHF Claude Runner
 

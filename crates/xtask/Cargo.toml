@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "rstui workspace automation (cargo-xtask convention): the project-specific code-quality gates that don't fit clippy/rustdoc."
+
+[lints]
+workspace = true
+
+# Dependency-free by design (ADR 0003 §7 / objective §7): a naming guardrail
+# must not itself pull a dependency. std-only file walk + line scan.
+[dependencies]
