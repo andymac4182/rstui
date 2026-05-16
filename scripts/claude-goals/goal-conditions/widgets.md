@@ -21,6 +21,11 @@ test, commit, then merge yourself back to `main` using the serialized
 `main`, and push `main`. Repeat until no useful next widget slice remains or a
 real blocker appears.
 
+Use Claude Code agent teams/background agents to parallelize reference review,
+implementation, and verification inside this stream's ownership boundary. Move
+fast, integrate the agent work yourself, and do not let subagents edit other
+streams' owned areas.
+
 Keep widgets pure projections of caller-owned state, composable, documented,
 agent-friendly, total under tiny/narrow/empty inputs, and consistent with the
 existing ADRs/conventions. Maintain the vague-name ban. Run the strongest

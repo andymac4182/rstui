@@ -159,6 +159,14 @@ current tooling and run the equivalent project gate.
 
 ## Work Loop
 
+Use Claude Code agent teams/background agents aggressively inside this stream's
+ownership boundary. Parallelize independent work so the stream moves fast:
+one agent can inspect OpenTUI/Bubble Tea/ratatui runtime patterns, one can
+implement a focused runtime slice, and another can verify headless e2e tests,
+examples, and docs. Keep ownership clear and integrate all agent work in this
+stream worktree before committing. Do not spawn agents to edit other streams'
+owned areas.
+
 Repeat this loop until the goal is complete or you hit a real blocker:
 
 1. Pull the latest `main` into your stream branch.

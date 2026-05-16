@@ -159,6 +159,14 @@ running validation or clearly recording why it could not run.
 
 ## Work Loop
 
+Use Claude Code agent teams/background agents aggressively inside this stream's
+ownership boundary. Parallelize independent work so the stream moves fast:
+one agent can inspect benchmark/profiling/checking patterns, one can implement
+a focused xtask/CI/docs slice, and another can verify validation commands,
+docs, and smoke workflows. Keep ownership clear and integrate all agent work in
+this stream worktree before committing. Do not spawn agents to edit other
+streams' owned areas.
+
 Repeat this loop until the goal is complete or you hit a real blocker:
 
 1. Pull the latest `main` into your stream branch.

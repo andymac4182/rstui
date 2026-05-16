@@ -55,6 +55,11 @@ The detailed briefs in `scripts/claude-goals/*.md` intentionally repeat the
 shared rules. That keeps each Claude run self-contained after it reads the file
 from disk.
 
+Each stream is also told to use Claude Code agent teams/background agents for
+parallel work inside its ownership boundary: one agent can inspect references,
+one can implement a focused slice, and another can verify tests/docs while the
+main session coordinates integration and merge-back.
+
 Important operating notes:
 
 - Each stream owns a clear area and should avoid broad edits outside that area.

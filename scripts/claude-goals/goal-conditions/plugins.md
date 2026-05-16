@@ -27,6 +27,11 @@ test, commit, then merge yourself back to `main` using the serialized
 `main`, and push `main`. Repeat until no useful next plugin slice remains or a
 real blocker appears.
 
+Use Claude Code agent teams/background agents to parallelize reference review,
+implementation, and verification inside this stream's ownership boundary. Move
+fast, integrate the agent work yourself, and do not let subagents edit other
+streams' owned areas.
+
 Maintain existing ADRs/conventions and the vague-name ban. Run the strongest
 available gates: `cargo fmt --all --check`, `cargo clippy --all-targets
 --all-features -- -D warnings`, `cargo test --all-features`, and
