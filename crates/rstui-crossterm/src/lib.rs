@@ -171,6 +171,8 @@
 pub mod backend;
 pub mod event;
 pub mod event_source;
+#[cfg(feature = "async")]
+pub mod event_source_async;
 pub mod lifecycle;
 pub mod shell;
 pub mod signal;
@@ -181,3 +183,12 @@ pub use event_source::CrosstermEventSource;
 pub use lifecycle::{LifecycleOptions, TerminalGuard};
 pub use shell::{CrosstermRunError, restore_terminal, run_app, run_app_with};
 pub use signal::install_signal_restore_hook;
+
+/// The async full-screen entry point and crossterm `EventStream` source,
+/// available only with the `async` cargo feature (ADR 0011); the default
+/// build stays on the sync `run_app`.
+#[cfg(feature = "async")]
+pub use {
+    event_source_async::CrosstermAsyncEventSource,
+    shell::{run_app_async, run_app_async_with},
+};
