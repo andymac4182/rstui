@@ -92,10 +92,11 @@ jobs:
 
   # ADR 0003 §7 / Phase 3: the supply-chain leg (cargo-deny). Separate job —
   # needs an external tool, so it stays out of the dependency-free `xtask`
-  # fast loop. Per ADR 0003 §7 licenses/bans/sources are the *hard* gate;
-  # advisories run non-blocking initially (a fresh CVE must not red-wall
-  # every stream mid-flight) and are promoted to gating in a later slice.
-  # Config + the license allow-list rationale live in `deny.toml`.
+  # fast loop. Advisories started non-blocking (ADR 0003 §7) and are now
+  # **promoted to gating** (the planned later slice): a known vulnerability,
+  # unsound, or yanked crate fails CI. The escape hatch is a reviewed,
+  # rationale-commented `[advisories] ignore` entry in `deny.toml`, never
+  # silent suppression. Config + the license allow-list live in `deny.toml`.
   supply-chain:
     name: supply-chain (cargo-deny)
     runs-on: ubuntu-latest
@@ -111,9 +112,26 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
 
-      - name: Licenses, bans, sources (gating)
-        run: cargo deny check licenses bans sources
+      - name: cargo-deny (advisories, licenses, bans, sources — all gating)
+        run: cargo deny check
 
-      - name: Advisories (non-blocking, ADR 0003 §7)
-        continue-on-error: true
-        run: cargo deny check advisories
+  # Release-packaging smoke test: `cargo package` every publishable crate as
+  # one set (so intra-workspace path+version deps resolve). Catches a
+  # crates.io-required field gone missing / a mis-included file *before* a
+  # release tag. Separate job — packaging, not building (that is the `check`
+  # job's `cargo xtask ci`); same command locally via `cargo xtask
+  # publish-check`. See docs/development.md.
+  package:
+    name: package (publish-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo package (all publishable crates)
+        run: cargo xtask publish-check

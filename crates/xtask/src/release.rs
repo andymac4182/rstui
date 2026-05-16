@@ -11,53 +11,68 @@
 //!    dep makes a crate unpublishable, and a stale pinned version breaks
 //!    `cargo publish` after a bump.
 //!
-//! These are asserted as `#[test]`s so a desync fails `cargo test` — gate 5
-//! of `cargo xtask ci` and CI — rather than being caught by a human reading
-//! `cargo publish` output. Parsing is std-only line scanning (xtask is
-//! dependency-free by design, ADR 0003 §7): the inputs are this repo's own
-//! tightly-shaped manifests/workflow, not arbitrary TOML/YAML.
+//! Asserted as `#[test]`s so a desync fails `cargo test` — gate 5 of
+//! `cargo xtask ci` and CI. The *decision* logic ([`msrv_in_sync`],
+//! [`dep_version_ok`]) is pure and unit-tested with synthetic inputs, so a
+//! half-done version/MSRV bump is provably *detected*, not merely
+//! re-described; the live tests then apply that same logic to the real
+//! repo. Parsing is std-only line scanning (xtask is dependency-free by
+//! design, ADR 0003 §7): the inputs are this repo's own tightly-shaped
+//! manifests/workflow, not arbitrary TOML/YAML.
 
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    /// `<root>/crates/xtask` → `<root>`, resolved from the compile-time
-    /// manifest dir so it is correct from any working directory.
-    fn workspace_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .expect("xtask is at <root>/crates/xtask")
-            .to_path_buf()
-    }
+    // ---- pure parsers: text in, value out ------------------------------
 
-    /// The `value` of `key = "value"` inside the `[workspace.package]` table
-    /// of the root `Cargo.toml`.
-    fn workspace_package_value(root: &Path, key: &str) -> String {
-        let text = fs::read_to_string(root.join("Cargo.toml")).expect("read root Cargo.toml");
+    /// The `value` of `key = "value"` inside `[table]` of a manifest's text.
+    fn package_value(toml: &str, table: &str, key: &str) -> Option<String> {
+        let header = format!("[{table}]");
         let mut in_table = false;
-        for line in text.lines() {
+        for line in toml.lines() {
             let t = line.trim();
             if t.starts_with('[') {
-                in_table = t == "[workspace.package]";
+                in_table = t == header;
                 continue;
             }
             if in_table {
                 if let Some(rest) = t.strip_prefix(key) {
-                    let rest = rest.trim_start();
-                    if let Some(rest) = rest.strip_prefix('=') {
-                        return rest.trim().trim_matches('"').to_string();
+                    if let Some(rest) = rest.trim_start().strip_prefix('=') {
+                        return Some(rest.trim().trim_matches('"').to_string());
                     }
                 }
             }
         }
-        panic!("`{key}` not found in [workspace.package] of root Cargo.toml");
+        None
     }
 
-    /// `(major, minor, patch)` of a `1`, `1.85`, or `1.85.0` version string;
-    /// a missing component is `0`. Lets `rust-version = "1.85"` compare equal
-    /// to a CI pin of `1.85.0`.
+    /// The single pinned `dtolnay/rust-toolchain@<X>` ref in a workflow's
+    /// text (channel refs — `stable`/`beta`/`nightly`/`master` — are not
+    /// pins). `Err` if not exactly one: that ambiguity is itself a desync.
+    fn msrv_pin(ci_yaml: &str) -> Result<String, String> {
+        let mut pins = Vec::new();
+        for line in ci_yaml.lines() {
+            if let Some((_, after)) = line.split_once("dtolnay/rust-toolchain@") {
+                let pin = after.trim();
+                if !matches!(pin, "stable" | "beta" | "nightly" | "master") {
+                    pins.push(pin.to_string());
+                }
+            }
+        }
+        match pins.len() {
+            1 => Ok(pins.pop().unwrap()),
+            n => Err(format!(
+                "expected exactly one pinned dtolnay/rust-toolchain@<version> \
+                 (the msrv job); found {n}: {pins:?}"
+            )),
+        }
+    }
+
+    /// `(major, minor, patch)` of `1`, `1.85`, or `1.85.0`; a missing
+    /// component is `0`, so `rust-version = "1.85"` compares equal to a CI
+    /// pin of `1.85.0`.
     fn semverish(s: &str) -> (u64, u64, u64) {
         let mut it = s.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
         (
@@ -67,51 +82,27 @@ mod tests {
         )
     }
 
-    /// The single pinned `dtolnay/rust-toolchain@<X>` ref in the CI workflow
-    /// (the channel refs — `stable`/`beta`/`nightly`/`master` — are not
-    /// pins). That ref is the `msrv` job's toolchain.
-    fn ci_msrv_pin(root: &Path) -> String {
-        let text = fs::read_to_string(root.join(".github/workflows/ci.yml"))
-            .expect("read .github/workflows/ci.yml");
-        let mut pins = Vec::new();
-        for line in text.lines() {
-            if let Some((_, after)) = line.split_once("dtolnay/rust-toolchain@") {
-                let pin = after.trim();
-                if !matches!(pin, "stable" | "beta" | "nightly" | "master") {
-                    pins.push(pin.to_string());
-                }
-            }
-        }
-        assert_eq!(
-            pins.len(),
-            1,
-            "expected exactly one pinned dtolnay/rust-toolchain@<version> (the \
-             msrv job); found {pins:?}"
-        );
-        pins.into_iter().next().unwrap()
-    }
-
-    /// `true` unless the crate manifest opts out with `publish = false`.
-    fn is_publishable(manifest_text: &str) -> bool {
-        !manifest_text
+    /// `true` unless the manifest opts out with `publish = false`.
+    fn is_publishable(manifest: &str) -> bool {
+        !manifest
             .lines()
             .any(|l| l.trim().replace(' ', "").starts_with("publish=false"))
     }
 
-    /// Internal `rstui-*` path dependencies in a manifest's `[dependencies]`
-    /// (and `[build-dependencies]`) — *not* `[dev-dependencies]`, which
+    /// Internal `rstui-*` path deps in `[dependencies]` /
+    /// `[build-dependencies]` — *not* `[dev-dependencies]`, which
     /// `cargo publish` strips and which may omit a version. Returns
     /// `(dep_name, version_or_none)`.
-    fn internal_path_deps(manifest_text: &str) -> Vec<(String, Option<String>)> {
+    fn internal_path_deps(manifest: &str) -> Vec<(String, Option<String>)> {
         let mut out = Vec::new();
-        let mut in_runtime_deps = false;
-        for line in manifest_text.lines() {
+        let mut in_publishable_deps = false;
+        for line in manifest.lines() {
             let t = line.trim();
             if t.starts_with('[') {
-                in_runtime_deps = t == "[dependencies]" || t == "[build-dependencies]";
+                in_publishable_deps = t == "[dependencies]" || t == "[build-dependencies]";
                 continue;
             }
-            if !in_runtime_deps || t.starts_with('#') {
+            if !in_publishable_deps || t.starts_with('#') {
                 continue;
             }
             let Some((name, value)) = t.split_once('=') else {
@@ -133,61 +124,170 @@ mod tests {
         out
     }
 
+    // ---- pure decisions: the guard logic both live and synthetic --------
+    // ---- tests exercise, so the guard cannot be wrong-but-passing ------
+
+    /// The MSRV invariant: the declared `rust-version` and the CI pin name
+    /// the same Rust release (patch-insensitive).
+    fn msrv_in_sync(rust_version: &str, ci_pin: &str) -> bool {
+        semverish(rust_version) == semverish(ci_pin)
+    }
+
+    /// The publishability invariant for one internal dep: it must carry a
+    /// `version` (a bare path dep is unpublishable) equal to the workspace
+    /// version (a stale pin breaks `cargo publish` after a bump).
+    fn dep_version_ok(workspace_version: &str, dep_version: Option<&str>) -> Result<(), String> {
+        match dep_version {
+            None => Err("bare path dependency (no `version`) — unpublishable".into()),
+            Some(v) if v == workspace_version => Ok(()),
+            Some(v) => Err(format!(
+                "pinned `{v}` but the workspace version is `{workspace_version}`"
+            )),
+        }
+    }
+
+    // ---- file wrappers / workspace root --------------------------------
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("xtask is at <root>/crates/xtask")
+            .to_path_buf()
+    }
+
+    fn read(root: &Path, rel: &str) -> String {
+        fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    // ---- live guards: apply the pure logic to the real repo ------------
+
     #[test]
     fn ci_msrv_matches_workspace_rust_version() {
         let root = workspace_root();
-        let declared = workspace_package_value(&root, "rust-version");
-        let pinned = ci_msrv_pin(&root);
-        assert_eq!(
-            semverish(&declared),
-            semverish(&pinned),
-            "CI msrv pin (dtolnay/rust-toolchain@{pinned}) must equal \
-             [workspace.package] rust-version ({declared}); bump both together"
+        let declared = package_value(
+            &read(&root, "Cargo.toml"),
+            "workspace.package",
+            "rust-version",
+        )
+        .expect("rust-version in [workspace.package]");
+        let pinned = msrv_pin(&read(&root, ".github/workflows/ci.yml")).expect("one msrv pin");
+        assert!(
+            msrv_in_sync(&declared, &pinned),
+            "CI msrv pin (dtolnay/rust-toolchain@{pinned}) must name the same \
+             release as [workspace.package] rust-version ({declared}); bump both"
         );
     }
 
     #[test]
     fn publishable_crate_internal_deps_pin_workspace_version() {
         let root = workspace_root();
-        let ws_version = workspace_package_value(&root, "version");
-        let crates_dir = root.join("crates");
-        let mut entries: Vec<PathBuf> = fs::read_dir(&crates_dir)
+        let ws = package_value(&read(&root, "Cargo.toml"), "workspace.package", "version")
+            .expect("version in [workspace.package]");
+        let mut dirs: Vec<PathBuf> = fs::read_dir(root.join("crates"))
             .expect("read crates/")
             .flatten()
             .map(|e| e.path())
             .collect();
-        entries.sort();
+        dirs.sort();
 
         let mut checked = 0_u32;
-        for dir in entries {
-            let manifest = dir.join("Cargo.toml");
-            let Ok(text) = fs::read_to_string(&manifest) else {
+        for dir in dirs {
+            let Ok(manifest) = fs::read_to_string(dir.join("Cargo.toml")) else {
                 continue;
             };
-            if !is_publishable(&text) {
+            if !is_publishable(&manifest) {
                 continue;
             }
-            for (dep, version) in internal_path_deps(&text) {
-                let crate_name = dir.file_name().unwrap().to_string_lossy();
-                let version = version.unwrap_or_else(|| {
-                    panic!(
-                        "publishable crate `{crate_name}` dep `{dep}` is a bare \
-                         path dep (no `version`) — unpublishable; add \
-                         `version = \"{ws_version}\"`"
-                    )
-                });
-                assert_eq!(
-                    version, ws_version,
-                    "publishable crate `{crate_name}` dep `{dep}` version \
-                     ({version}) must equal the workspace version \
-                     ({ws_version})"
-                );
+            let crate_name = dir.file_name().unwrap().to_string_lossy().into_owned();
+            for (dep, version) in internal_path_deps(&manifest) {
+                if let Err(why) = dep_version_ok(&ws, version.as_deref()) {
+                    panic!("publishable crate `{crate_name}` dep `{dep}`: {why}");
+                }
                 checked += 1;
             }
         }
-        assert!(
-            checked > 0,
-            "guard found no internal path deps to check — parsing likely broke"
+        assert!(checked > 0, "no internal path deps checked — parsing broke");
+    }
+
+    // ---- synthetic tests: prove the parsers + decisions are correct ----
+
+    #[test]
+    fn semverish_is_patch_insensitive_but_release_sensitive() {
+        assert_eq!(semverish("1.85"), semverish("1.85.0"));
+        assert_eq!(semverish("1"), semverish("1.0.0"));
+        assert_ne!(semverish("1.85"), semverish("1.90"));
+        assert_ne!(semverish("1.85.0"), semverish("1.85.1"));
+    }
+
+    #[test]
+    fn msrv_pin_requires_exactly_one_pinned_ref() {
+        let one = "uses: dtolnay/rust-toolchain@stable\nuses: dtolnay/rust-toolchain@1.90.0\n";
+        assert_eq!(msrv_pin(one).unwrap(), "1.90.0");
+        assert!(msrv_pin("uses: dtolnay/rust-toolchain@stable\n").is_err());
+        let two = "dtolnay/rust-toolchain@1.85.0\ndtolnay/rust-toolchain@1.90.0\n";
+        assert!(msrv_pin(two).is_err());
+    }
+
+    #[test]
+    fn internal_path_deps_reads_version_skips_devdeps_and_flags_bare() {
+        let manifest = "\
+[dependencies]\n\
+rstui-core = { path = \"../rstui-core\", version = \"0.0.1\" }\n\
+rstui-runtime = { path = \"../rstui-runtime\" }\n\
+crossterm = \"0.29\"\n\
+[dev-dependencies]\n\
+rstui-widgets = { path = \"../rstui-widgets\" }\n";
+        let deps = internal_path_deps(manifest);
+        assert_eq!(
+            deps,
+            vec![
+                ("rstui-core".to_string(), Some("0.0.1".to_string())),
+                ("rstui-runtime".to_string(), None),
+            ],
+            "dev-deps excluded, external skipped, bare path => None"
         );
+    }
+
+    #[test]
+    fn is_publishable_honours_publish_false_any_spacing() {
+        assert!(is_publishable("[package]\nname = \"x\"\n"));
+        assert!(!is_publishable("[package]\npublish = false\n"));
+        assert!(!is_publishable("[package]\npublish=false\n"));
+    }
+
+    #[test]
+    fn package_value_reads_the_named_table_only() {
+        let toml = "\
+[workspace.package]\n\
+version = \"0.0.1\"\n\
+rust-version = \"1.85\"\n\
+[package]\n\
+version = \"9.9.9\"\n";
+        assert_eq!(
+            package_value(toml, "workspace.package", "version").as_deref(),
+            Some("0.0.1")
+        );
+        assert_eq!(
+            package_value(toml, "workspace.package", "rust-version").as_deref(),
+            Some("1.85")
+        );
+        assert_eq!(package_value(toml, "workspace.package", "edition"), None);
+    }
+
+    /// The headline: a *half-done* `0.0.1 → 0.1.0` bump (or an MSRV that
+    /// moved on only one side) is caught by the exact functions the live
+    /// guards call — this is what makes the rehearsal a permanent test.
+    #[test]
+    fn half_done_bump_is_detected() {
+        // Workspace bumped, an internal dep left behind:
+        assert!(dep_version_ok("0.1.0", Some("0.0.1")).is_err());
+        // A dep that was never given a version at all:
+        assert!(dep_version_ok("0.1.0", None).is_err());
+        // The fully-consistent state passes:
+        assert!(dep_version_ok("0.1.0", Some("0.1.0")).is_ok());
+        // rust-version bumped but the CI pin not (or vice-versa):
+        assert!(!msrv_in_sync("1.90", "1.85.0"));
+        assert!(msrv_in_sync("1.85", "1.85.0"));
     }
 }
