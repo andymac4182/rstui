@@ -65,8 +65,14 @@ Important operating notes:
 - Each stream owns a clear area and should avoid broad edits outside that area.
 - Each stream merges back to `main` after each validated slice, not only at the
   end of the night.
-- Merge-back uses `/tmp/rstui-main-merge.lock`; if a Claude run crashes while
-  holding it, inspect the lock before removing it.
+- Validation is the single command `cargo run -p xtask -- ci` (fmt,
+  lint-names, clippy, **doc**, test — exactly CI's gates). Run it on the
+  *merged* `main` checkout, not just the stream worktree, before pushing;
+  never push a red `main`. The partial fmt/clippy/test list omits the
+  rustdoc `doc` gate. Full checklist: `docs/merging.md`.
+- Merge-back uses `/tmp/rstui-main-merge.lock`. A stale lock whose
+  `owner.pid` is a dead process may be cleared so a crashed stream cannot
+  block everyone; a lock held by a live PID must be waited on.
 - If `main` is dirty, a merge conflict is ambiguous, or validation cannot be
   made green, the stream should stop and report rather than forcing broken
   state into `main`.

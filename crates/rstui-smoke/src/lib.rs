@@ -18,10 +18,13 @@
 //! app that uses all three layers, [`SmokeApp`] also doubles as the
 //! composable seed a fuller kitchen-sink harness can grow from.
 //!
-//! The assertions live in `tests/headless.rs`; this module is the reusable
-//! demo app they drive, under both the headless `Harness` and the real
-//! `rstui_runtime::run` loop (over an in-memory backend and scripted input,
-//! so the *production* loop itself is on the smoke path).
+//! The assertions live in `tests/`: `headless.rs` drives [`SmokeApp`] under
+//! both the headless `Harness` and the real `rstui_runtime::run` loop (over
+//! an in-memory backend and scripted input, so the *production* loop itself
+//! is on the smoke path); `widgets.rs` renders the richer widgets (Tree,
+//! Toast, Markdown) through the same `Frame::render_widget` seam and pins the
+//! crossterm full-screen `run_app` shell's signature at compile time (it
+//! needs a real TTY, so it cannot run headless).
 
 use rstui_runtime::{App, Cmd, Event, Frame};
 use rstui_widgets::{Block, Borders};
