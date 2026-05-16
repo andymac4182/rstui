@@ -47,8 +47,12 @@ use std::time::Duration;
 use crate::capability::{CapabilityRequest, normalize_lexical};
 use crate::clock::Clock;
 use crate::effects::HostEffects;
+use crate::hook::{HookKind, HookOutcome};
 use crate::manifest::PluginManifest;
-use crate::message::{CapabilityResponse, MessageError, decode_request, encode_response};
+use crate::message::{
+    CapabilityResponse, MessageError, decode_hook_result, decode_request, encode_hook_dispatch,
+    encode_request, encode_response,
+};
 use crate::permission::{Decision, PermissionPolicy};
 use crate::process::{ExitOutcome, PluginProcess, PluginSpawnSpec, ProcessRunner};
 use crate::protocol::{Frame, MessageType, ProtocolError, read_frame, write_frame};
@@ -82,6 +86,13 @@ impl fmt::Display for PluginId {
 /// The ordered list of these on a [`PluginRunReport`] is the auditable
 /// record of exactly what authority a plugin exercised — and, by the
 /// absence of a record, what it was refused before any effect ran.
+///
+/// `decision` is always the *policy's* ruling. A `BeforeCapability` hook
+/// (ADR 0007 §6) can turn an otherwise-permitted call into a denial:
+/// in that case `decision` is [`Decision::Allow`] (the policy permitted
+/// it) but `response` is [`CapabilityResponse::Denied`] with a
+/// `vetoed by before_capability hook:` reason — and the effect did not
+/// run. A hook can only narrow this way, never the reverse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediationRecord {
     /// The request *after* host canonicalisation (filesystem paths are
@@ -324,7 +335,10 @@ impl PluginHost {
                 source,
             })?;
 
-        let started = self.clock.elapsed();
+        let deadline = RunDeadline {
+            started: self.clock.elapsed(),
+            timeout,
+        };
 
         // Move stdout onto a dedicated reader thread so a plugin that
         // stalls *mid-frame* is still bounded by the deadline, not just one
@@ -341,19 +355,31 @@ impl PluginHost {
         };
         let channel = FrameChannel::spawn(stdout);
 
-        if let Err(err) =
-            self.handshake(plugin.clone(), process.as_mut(), &channel, started, timeout)
-        {
+        if let Err(err) = self.handshake(plugin.clone(), process.as_mut(), &channel, deadline) {
             let _ = process.request_shutdown();
             let _ = process.kill();
             return Err(err);
+        }
+
+        // SessionStart (ADR 0007 §6): an Observe hook — a one-way
+        // notification the host does not await a reply for (the reply is
+        // ignored *by definition*, so requiring one would only add a
+        // deadlock class). A write failure here is a genuine pipe fault,
+        // handled fail-closed like any other.
+        if manifest.hooks.contains(&HookKind::SessionStart) {
+            if let Err(err) =
+                self.notify_observe_hook(&plugin, process.as_mut(), HookKind::SessionStart)
+            {
+                let _ = process.kill();
+                return Err(err);
+            }
         }
 
         // `channel` stays owned here; it is dropped the instant `run_plugin`
         // returns (right after `mediate`), which ends the reader thread (its
         // `send` fails once the receiver is gone, and a killed process's
         // closed pipe unblocks a blocked `read`).
-        self.mediate(plugin, cwd, timeout, started, process, &channel)
+        self.mediate(plugin, cwd, deadline, process, &channel, &manifest.hooks)
     }
 
     /// Write `Initialize`, then expect `Ready` within the deadline. Any
@@ -363,8 +389,7 @@ impl PluginHost {
         plugin: PluginId,
         process: &mut dyn PluginProcess,
         channel: &FrameChannel,
-        started: Duration,
-        timeout: Duration,
+        deadline: RunDeadline,
     ) -> Result<(), HostError> {
         let init = Frame::new(
             MessageType::Initialize,
@@ -376,7 +401,7 @@ impl PluginHost {
             source,
         })?;
 
-        match channel.recv(self.clock.as_ref(), started, timeout) {
+        match channel.recv(self.clock.as_ref(), deadline) {
             Recv::Frame(frame) => match frame.message_type {
                 MessageType::Ready => Ok(()),
                 other => Err(HostError::Handshake {
@@ -390,29 +415,130 @@ impl PluginHost {
             }),
             Recv::TimedOut => Err(HostError::TimedOut {
                 plugin,
-                budget: timeout,
+                budget: deadline.timeout,
             }),
         }
     }
 
-    /// The mediation loop. `started` is the clock reading at spawn; the run
-    /// is abandoned once `clock.elapsed() - started` reaches `timeout` —
-    /// enforced *both* between frames and while blocked waiting for the
-    /// next one (a stalled read cannot outlive the budget).
+    /// Dispatch an **Observe** hook (`SessionStart`/`SessionEnd`): a one-way
+    /// notification. The host does *not* await a reply — an Observe reply is
+    /// ignored by definition (ADR 0007 §6 / [`crate::hook`]), so requiring
+    /// one would add nothing but a deadlock class. A write fault is still a
+    /// real protocol failure surfaced to the caller (callers on the
+    /// best-effort end-of-run path ignore it).
+    fn notify_observe_hook(
+        &self,
+        plugin: &PluginId,
+        process: &mut dyn PluginProcess,
+        kind: HookKind,
+    ) -> Result<(), HostError> {
+        debug_assert!(matches!(
+            kind.reduction(),
+            crate::hook::HookReduction::Observe
+        ));
+        let frame = Frame::new(
+            MessageType::HookDispatch,
+            correlation_id(0),
+            encode_hook_dispatch(kind, &[]),
+        );
+        write_frame(&mut process.stdin(), &frame).map_err(|source| HostError::Protocol {
+            plugin: plugin.clone(),
+            source,
+        })
+    }
+
+    /// Dispatch a **VetoChain** hook (`BeforeCapability`) and await its
+    /// [`HookOutcome`] within the deadline.
+    ///
+    /// Strict request/reply: the very next frame *must* be the matching
+    /// [`HookResult`](MessageType::HookResult) (the SDK guarantees a plugin
+    /// services a dispatch before sending anything else). A wrong type, a
+    /// mismatched correlation id, an undecodable payload, a closed stream,
+    /// or a timeout is fail-closed — the process is killed and the error
+    /// surfaced (ADR 0007 §4/§6). A veto can only *narrow* (the caller only
+    /// reaches here on the policy-Allow path).
+    fn dispatch_veto_hook(
+        &self,
+        plugin: &PluginId,
+        process: &mut dyn PluginProcess,
+        channel: &FrameChannel,
+        input: &[u8],
+        id: u64,
+        deadline: RunDeadline,
+    ) -> Result<HookOutcome, HostError> {
+        let corr = correlation_id(id);
+        let frame = Frame::new(
+            MessageType::HookDispatch,
+            corr,
+            encode_hook_dispatch(HookKind::BeforeCapability, input),
+        );
+        if let Err(source) = write_frame(&mut process.stdin(), &frame) {
+            let _ = process.kill();
+            return Err(HostError::Protocol {
+                plugin: plugin.clone(),
+                source,
+            });
+        }
+        match channel.recv(self.clock.as_ref(), deadline) {
+            Recv::Frame(reply)
+                if reply.message_type == MessageType::HookResult
+                    && reply.correlation_id == corr =>
+            {
+                match decode_hook_result(&reply.payload) {
+                    Ok(outcome) => Ok(outcome),
+                    Err(source) => {
+                        let _ = process.kill();
+                        Err(HostError::MalformedCall {
+                            plugin: plugin.clone(),
+                            source,
+                        })
+                    }
+                }
+            }
+            Recv::Frame(reply) => {
+                let _ = process.kill();
+                Err(HostError::MisdirectedFrame {
+                    plugin: plugin.clone(),
+                    got: reply.message_type,
+                })
+            }
+            Recv::Closed => {
+                let _ = process.kill();
+                Err(HostError::Handshake {
+                    plugin: plugin.clone(),
+                    detail: "stream closed awaiting before_capability HookResult".to_string(),
+                })
+            }
+            Recv::TimedOut => {
+                let _ = process.request_shutdown();
+                let _ = process.kill();
+                Err(HostError::TimedOut {
+                    plugin: plugin.clone(),
+                    budget: deadline.timeout,
+                })
+            }
+        }
+    }
+
+    /// The mediation loop. The run is abandoned once the [`RunDeadline`]
+    /// elapses — enforced *both* between frames and while blocked waiting
+    /// for the next one (a stalled read cannot outlive the budget).
     fn mediate(
         &self,
         plugin: PluginId,
         cwd: &Path,
-        timeout: Duration,
-        started: Duration,
+        deadline: RunDeadline,
         mut process: Box<dyn PluginProcess>,
         channel: &FrameChannel,
+        hooks: &[HookKind],
     ) -> Result<PluginRunReport, HostError> {
         let mut mediated = Vec::new();
         let mut logs = Vec::new();
+        let before_capability = hooks.contains(&HookKind::BeforeCapability);
+        let mut hook_id: u64 = 1;
 
         loop {
-            let frame = match channel.recv(self.clock.as_ref(), started, timeout) {
+            let frame = match channel.recv(self.clock.as_ref(), deadline) {
                 Recv::TimedOut => {
                     // Cooperative-then-forced (ADR 0007 §6). Dropping
                     // `channel` after we return ends the reader thread:
@@ -423,7 +549,7 @@ impl PluginHost {
                     let _ = process.kill();
                     return Err(HostError::TimedOut {
                         plugin,
-                        budget: timeout,
+                        budget: deadline.timeout,
                     });
                 }
                 Recv::Closed => {
@@ -434,6 +560,16 @@ impl PluginHost {
                     // corrupt *frame* was already rejected per-frame
                     // (MalformedCall / MisdirectedFrame) before this point.
                     // Finalise cooperatively-then-forced (ADR 0007 §6).
+                    // SessionEnd is Observe + best-effort: the plugin may
+                    // already be gone, so a failed write is expected and
+                    // ignored — a run that is ending cannot be vetoed.
+                    if hooks.contains(&HookKind::SessionEnd) {
+                        let _ = self.notify_observe_hook(
+                            &plugin,
+                            process.as_mut(),
+                            HookKind::SessionEnd,
+                        );
+                    }
                     let _ = process.request_shutdown();
                     let exit = process.wait().unwrap_or(ExitOutcome {
                         code: None,
@@ -461,17 +597,46 @@ impl PluginHost {
                     let canonical = canonicalize(cwd, request);
                     let decision = self.policy.check(&canonical);
                     let response = match &decision {
-                        Decision::Allow => match self.effects.run(&canonical) {
-                            Ok(outcome) => CapabilityResponse::Ok {
-                                payload: outcome.payload,
-                            },
-                            Err(error) => CapabilityResponse::Failed {
-                                error: error.to_string(),
-                            },
-                        },
                         Decision::Deny { reason } => CapabilityResponse::Denied {
                             reason: reason.clone(),
                         },
+                        Decision::Allow => {
+                            // Defense in depth (ADR 0007 §6): a
+                            // `BeforeCapability` hook may VETO an
+                            // *already-policy-permitted* call. It can only
+                            // narrow — control is on the Allow arm; a hook
+                            // is never consulted on the Deny path, so it can
+                            // never widen a denial into an allow.
+                            let outcome = if before_capability {
+                                let id = hook_id;
+                                hook_id += 1;
+                                // On any protocol fault the helper has
+                                // already killed the process; `?` surfaces it.
+                                self.dispatch_veto_hook(
+                                    &plugin,
+                                    process.as_mut(),
+                                    channel,
+                                    &encode_request(&canonical),
+                                    id,
+                                    deadline,
+                                )?
+                            } else {
+                                HookOutcome::Continue
+                            };
+                            match outcome {
+                                HookOutcome::Veto { reason } => CapabilityResponse::Denied {
+                                    reason: format!("vetoed by before_capability hook: {reason}"),
+                                },
+                                HookOutcome::Continue => match self.effects.run(&canonical) {
+                                    Ok(outcome) => CapabilityResponse::Ok {
+                                        payload: outcome.payload,
+                                    },
+                                    Err(error) => CapabilityResponse::Failed {
+                                        error: error.to_string(),
+                                    },
+                                },
+                            }
+                        }
                     };
                     let reply = Frame::new(
                         MessageType::CapabilityResponse,
@@ -568,6 +733,15 @@ enum ReaderItem {
     Closed,
 }
 
+/// The run's time budget: the clock reading at spawn (`started`) and the
+/// total `timeout`. Bundled so the deadline travels as one value (and to
+/// keep the hook/mediation helpers under the argument-count bar).
+#[derive(Debug, Clone, Copy)]
+struct RunDeadline {
+    started: Duration,
+    timeout: Duration,
+}
+
 /// The outcome of waiting for the next frame within the remaining budget.
 enum Recv {
     /// A frame arrived.
@@ -620,12 +794,12 @@ impl FrameChannel {
     /// deterministic in tests); the actual block uses the channel's
     /// real-time `recv_timeout`, because a genuinely stalled pipe can only
     /// be escaped in real time — a fake clock cannot unblock a real read.
-    fn recv(&self, clock: &dyn Clock, started: Duration, timeout: Duration) -> Recv {
-        let elapsed = clock.elapsed().saturating_sub(started);
-        if elapsed >= timeout {
+    fn recv(&self, clock: &dyn Clock, deadline: RunDeadline) -> Recv {
+        let elapsed = clock.elapsed().saturating_sub(deadline.started);
+        if elapsed >= deadline.timeout {
             return Recv::TimedOut;
         }
-        match self.rx.recv_timeout(timeout - elapsed) {
+        match self.rx.recv_timeout(deadline.timeout - elapsed) {
             Ok(ReaderItem::Frame(frame)) => Recv::Frame(frame),
             Ok(ReaderItem::Closed) => Recv::Closed,
             Err(mpsc::RecvTimeoutError::Timeout) => Recv::TimedOut,
@@ -641,7 +815,7 @@ mod tests {
     use crate::clock::FakeClock;
     use crate::effects::{HostEffectError, RecordingHostEffects};
     use crate::manifest::PluginManifest;
-    use crate::message::{decode_response, encode_request};
+    use crate::message::{decode_response, encode_hook_result, encode_request};
     use crate::permission::{ManifestPolicy, RecordingPolicy};
     use crate::process::{FakePluginProcess, FakeProcessRunner};
     use crate::protocol::Frame;
@@ -1210,6 +1384,201 @@ mod tests {
             CapabilityResponse::Ok {
                 payload: b"V".to_vec()
             }
+        );
+    }
+
+    // ── Hook extension points (ADR 0007 §6) ──────────────────────────────
+
+    /// A scripted plugin→host `HookResult` echoing the host's hook
+    /// correlation id. The host's first `BeforeCapability` dispatch uses
+    /// `correlation_id(1)` (the hook counter starts at 1), so a test that
+    /// scripts a reply to the Nth dispatch passes `n`.
+    fn hook_result(corr_n: u64, outcome: &HookOutcome) -> Frame {
+        let mut cid = [0u8; 16];
+        cid[..8].copy_from_slice(&corr_n.to_be_bytes());
+        Frame::new(MessageType::HookResult, cid, encode_hook_result(outcome))
+    }
+
+    #[test]
+    fn before_capability_hook_vetoes_an_allowed_call_and_the_effect_never_runs() {
+        // PATH is granted, so the policy ALLOWS the env read — but the
+        // plugin subscribes to before_capability and vetoes it.
+        let m =
+            base_manifest("[env]\nallow = \"PATH\"\n[hooks]\nsubscribe = \"before_capability\"\n");
+        assert!(m.hooks.contains(&HookKind::BeforeCapability));
+        let req = CapabilityRequest::Env { key: "PATH".into() };
+        let runner = Arc::new(FakeProcessRunner::new(FakePluginProcess::new(
+            script(&[
+                ready(),
+                call(1, &req),
+                hook_result(
+                    1,
+                    &HookOutcome::Veto {
+                        reason: "policy-of-policies says no".into(),
+                    },
+                ),
+            ]),
+            Vec::new(),
+            ExitOutcome {
+                code: Some(0),
+                success: true,
+            },
+        )));
+        let effects = Arc::new(RecordingHostEffects::with_ok(b"PATH-VALUE".to_vec()));
+        let report = host(
+            runner,
+            Arc::new(ManifestPolicy::from_manifest(&m)),
+            effects.clone(),
+            Arc::new(FakeClock::new()),
+        )
+        .run_plugin(&m, Path::new("/w"), Duration::from_secs(5))
+        .expect("run completes");
+
+        // The policy still ALLOWED it — the hook is the second lock.
+        assert_eq!(report.mediated[0].decision, Decision::Allow);
+        match &report.mediated[0].response {
+            CapabilityResponse::Denied { reason } => {
+                assert!(reason.contains("vetoed by before_capability hook"));
+                assert!(reason.contains("policy-of-policies says no"));
+            }
+            other => panic!("expected hook-vetoed Denied, got {other:?}"),
+        }
+        // The crux: a vetoed call NEVER reaches the effector.
+        assert!(
+            effects.calls().is_empty(),
+            "a hook-vetoed call must not reach HostEffects"
+        );
+    }
+
+    #[test]
+    fn before_capability_continue_lets_the_allowed_call_proceed() {
+        let m =
+            base_manifest("[env]\nallow = \"PATH\"\n[hooks]\nsubscribe = \"before_capability\"\n");
+        let req = CapabilityRequest::Env { key: "PATH".into() };
+        let runner = Arc::new(FakeProcessRunner::new(FakePluginProcess::new(
+            script(&[
+                ready(),
+                call(1, &req),
+                hook_result(1, &HookOutcome::Continue),
+            ]),
+            Vec::new(),
+            ExitOutcome {
+                code: Some(0),
+                success: true,
+            },
+        )));
+        let effects = Arc::new(RecordingHostEffects::with_ok(b"V".to_vec()));
+        let report = host(
+            runner,
+            Arc::new(ManifestPolicy::from_manifest(&m)),
+            effects.clone(),
+            Arc::new(FakeClock::new()),
+        )
+        .run_plugin(&m, Path::new("/w"), Duration::from_secs(5))
+        .expect("run completes");
+        assert_eq!(
+            report.mediated[0].response,
+            CapabilityResponse::Ok {
+                payload: b"V".to_vec()
+            }
+        );
+        assert_eq!(effects.calls(), vec![req]);
+    }
+
+    #[test]
+    fn no_hook_subscription_means_no_dispatch_and_no_extra_frame_needed() {
+        // Same allowed call, but the manifest does NOT subscribe to
+        // before_capability — the host must not dispatch a hook, so the
+        // scripted stdout has no HookResult and the call still succeeds.
+        let m = base_manifest("[env]\nallow = \"PATH\"\n");
+        assert!(m.hooks.is_empty());
+        let req = CapabilityRequest::Env { key: "PATH".into() };
+        let runner = Arc::new(FakeProcessRunner::new(FakePluginProcess::new(
+            script(&[ready(), call(1, &req)]),
+            Vec::new(),
+            ExitOutcome {
+                code: Some(0),
+                success: true,
+            },
+        )));
+        let effects = Arc::new(RecordingHostEffects::with_ok(b"V".to_vec()));
+        let report = host(
+            runner,
+            Arc::new(ManifestPolicy::from_manifest(&m)),
+            effects.clone(),
+            Arc::new(FakeClock::new()),
+        )
+        .run_plugin(&m, Path::new("/w"), Duration::from_secs(5))
+        .expect("run completes");
+        assert!(report.mediated[0].response.eq(&CapabilityResponse::Ok {
+            payload: b"V".to_vec()
+        }));
+        assert_eq!(effects.calls(), vec![req]);
+    }
+
+    #[test]
+    fn a_hook_can_never_widen_a_policy_denial() {
+        // The policy DENIES (no grant). Even with before_capability
+        // subscribed, the host must not dispatch the hook on the deny path
+        // — a hook can only narrow. The scripted stdout deliberately has NO
+        // HookResult; if the host wrongly dispatched, it would block/err.
+        let m = base_manifest("[hooks]\nsubscribe = \"before_capability\"\n");
+        let req = CapabilityRequest::Env {
+            key: "SECRET".into(),
+        };
+        let runner = Arc::new(FakeProcessRunner::new(FakePluginProcess::new(
+            script(&[ready(), call(1, &req)]),
+            Vec::new(),
+            ExitOutcome {
+                code: Some(0),
+                success: true,
+            },
+        )));
+        let effects = Arc::new(RecordingHostEffects::new());
+        let report = host(
+            runner,
+            Arc::new(ManifestPolicy::from_manifest(&m)),
+            effects.clone(),
+            Arc::new(FakeClock::new()),
+        )
+        .run_plugin(&m, Path::new("/w"), Duration::from_secs(5))
+        .expect("run completes without a hook round-trip on the deny path");
+        assert!(matches!(
+            report.mediated[0].response,
+            CapabilityResponse::Denied { .. }
+        ));
+        assert!(effects.calls().is_empty());
+    }
+
+    #[test]
+    fn malformed_hook_result_is_fail_closed_and_kills() {
+        let m =
+            base_manifest("[env]\nallow = \"PATH\"\n[hooks]\nsubscribe = \"before_capability\"\n");
+        let req = CapabilityRequest::Env { key: "PATH".into() };
+        // Reply to the hook with a CapabilityResponse-typed frame instead
+        // of HookResult → misdirected → fail-closed.
+        let mut cid = [0u8; 16];
+        cid[7] = 1;
+        let bogus = Frame::new(MessageType::CapabilityResponse, cid, vec![0xff]);
+        let runner = Arc::new(FakeProcessRunner::new(FakePluginProcess::new(
+            script(&[ready(), call(1, &req), bogus]),
+            Vec::new(),
+            ExitOutcome {
+                code: None,
+                success: false,
+            },
+        )));
+        let err = host(
+            runner,
+            Arc::new(ManifestPolicy::from_manifest(&m)),
+            Arc::new(RecordingHostEffects::with_ok(Vec::new())),
+            Arc::new(FakeClock::new()),
+        )
+        .run_plugin(&m, Path::new("/w"), Duration::from_secs(5))
+        .expect_err("a non-HookResult reply to a hook must fail closed");
+        assert!(
+            matches!(err, HostError::MisdirectedFrame { .. }),
+            "got {err}"
         );
     }
 }

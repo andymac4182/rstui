@@ -74,6 +74,16 @@
 //! variable name: non-empty, must not contain `=` or ASCII whitespace.
 //! Produces [`CapabilityGrant::Env`]. Repeatable.
 //!
+//! ## Section `[hooks]`
+//!
+//! Key: `subscribe` only (any other key is an error). Value is a hook
+//! name — exactly one of `session_start`, `before_capability`,
+//! `session_end` (the [`HookKind::wire_name`](crate::hook::HookKind::wire_name)s);
+//! an unknown name is a hard error (fail-closed). Repeatable; duplicates
+//! are de-duplicated, not errors. The host dispatches only subscribed
+//! hooks, and a hook can only *narrow* authority, never widen it
+//! (ADR 0007 §6 — see [`crate::hook`]).
+//!
 //! # Example
 //!
 //! ```
@@ -145,6 +155,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::capability::{CapabilityGrant, FsMode, normalize_lexical};
+use crate::hook::HookKind;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -172,6 +183,12 @@ pub struct PluginManifest {
     pub entry: PathBuf,
     /// The scoped capabilities the plugin requests, in declaration order.
     pub grants: Vec<CapabilityGrant>,
+    /// The hook points the plugin subscribes to (`[hooks]` section), in
+    /// declaration order, de-duplicated. The host only dispatches a hook a
+    /// plugin actually subscribed to (no round-trip a plugin will not
+    /// answer), and a hook can only ever *narrow* authority (ADR 0007 §6 —
+    /// see [`crate::hook`]).
+    pub hooks: Vec<HookKind>,
 }
 
 impl PluginManifest {
@@ -313,6 +330,13 @@ pub enum ManifestError {
         /// The invalid name.
         raw: String,
     },
+    /// A `[hooks]` `subscribe` value is not a known hook name.
+    UnknownHook {
+        /// 1-based line number.
+        line: usize,
+        /// The unrecognised hook name.
+        name: String,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -376,6 +400,12 @@ impl fmt::Display for ManifestError {
                     "line {line}: invalid env var name `{raw}` (must be non-empty, no `=` or whitespace)"
                 )
             }
+            Self::UnknownHook { line, name } => {
+                write!(
+                    f,
+                    "line {line}: unknown hook `{name}` (expected one of: session_start, before_capability, session_end)"
+                )
+            }
         }
     }
 }
@@ -413,6 +443,7 @@ enum Section {
     Network,
     Command,
     Env,
+    Hooks,
 }
 
 /// The hand-written, fail-closed line-oriented parser.
@@ -428,6 +459,7 @@ impl<'src> Parser<'src> {
     fn parse(self) -> Result<PluginManifest, ManifestError> {
         let mut top = TopLevel::new();
         let mut grants: Vec<CapabilityGrant> = Vec::new();
+        let mut hooks: Vec<HookKind> = Vec::new();
         let mut section = Section::TopLevel;
 
         for (line_idx, raw_line) in self.text.lines().enumerate() {
@@ -464,6 +496,13 @@ impl<'src> Parser<'src> {
                     let grant = Self::handle_command(key, &value, line_num)?;
                     grants.push(grant);
                 }
+                Section::Hooks => {
+                    let hook = Self::handle_hooks(key, &value, line_num)?;
+                    // De-duplicate: subscribing twice is harmless, not an error.
+                    if !hooks.contains(&hook) {
+                        hooks.push(hook);
+                    }
+                }
                 Section::Env => {
                     let grant = Self::handle_env(key, value, line_num)?;
                     grants.push(grant);
@@ -491,6 +530,25 @@ impl<'src> Parser<'src> {
             api_version,
             entry: PathBuf::from(entry_str),
             grants,
+            hooks,
+        })
+    }
+
+    /// Handle a `[hooks]` line: `subscribe = "<hook-name>"`. The name must
+    /// be a known [`HookKind::wire_name`]; anything else is a hard,
+    /// fail-closed error (an unrecognised hook subscription is never
+    /// silently dropped — ADR 0007 §2).
+    fn handle_hooks(key: &str, value: &str, line: usize) -> Result<HookKind, ManifestError> {
+        if key != "subscribe" {
+            return Err(ManifestError::UnknownSectionKey {
+                line,
+                section: "hooks".to_string(),
+                key: key.to_string(),
+            });
+        }
+        HookKind::from_wire_name(value).ok_or_else(|| ManifestError::UnknownHook {
+            line,
+            name: value.to_string(),
         })
     }
 
@@ -507,6 +565,7 @@ impl<'src> Parser<'src> {
             "network" => Ok(Section::Network),
             "command" => Ok(Section::Command),
             "env" => Ok(Section::Env),
+            "hooks" => Ok(Section::Hooks),
             other => Err(ManifestError::UnknownSection {
                 line,
                 name: other.to_string(),
@@ -1608,5 +1667,48 @@ mod tests {
         );
         let m = PluginManifest::parse(src).unwrap();
         assert_eq!(m.name, "ws-test");
+    }
+
+    fn with_hooks(section: &str) -> Result<PluginManifest, ManifestError> {
+        PluginManifest::parse(&format!(
+            "name = \"p\"\nversion = \"1\"\napi_version = \"1\"\nentry = \"b\"\n{section}"
+        ))
+    }
+
+    #[test]
+    fn hooks_section_parses_subscriptions_in_order_deduped() {
+        let m = with_hooks(
+            "[hooks]\nsubscribe = \"before_capability\"\nsubscribe = \"session_start\"\nsubscribe = \"before_capability\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.hooks,
+            vec![HookKind::BeforeCapability, HookKind::SessionStart],
+            "declaration order preserved, duplicate de-duplicated"
+        );
+    }
+
+    #[test]
+    fn unknown_hook_name_is_fail_closed() {
+        let err = with_hooks("[hooks]\nsubscribe = \"on_everything\"\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(matches!(&err, ManifestError::UnknownHook { name, .. } if name == "on_everything"));
+        assert!(msg.contains("unknown hook `on_everything`"));
+    }
+
+    #[test]
+    fn unknown_hooks_key_is_an_error() {
+        let err = with_hooks("[hooks]\nlisten = \"session_start\"\n").unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::UnknownSectionKey { section, key, .. }
+                if section == "hooks" && key == "listen"
+        ));
+    }
+
+    #[test]
+    fn no_hooks_section_means_no_subscriptions() {
+        let m = with_hooks("[env]\nallow = \"PATH\"\n").unwrap();
+        assert!(m.hooks.is_empty());
     }
 }
