@@ -28,6 +28,10 @@
 //!   the same caller-owned pure projection as [`List`] on the other axis.
 //! - [`gauge`]: [`Gauge`] — a horizontal progress bar, the first widget to
 //!   render at sub-cell precision (fractional eighth-block glyphs).
+//! - [`scrollbar`]: [`Scrollbar`] — a track-and-thumb scroll indicator, a
+//!   pure projection of caller-owned scroll metrics; the visible companion to
+//!   [`List`]/[`Paragraph`] scrolling and the first widget with no lifetime
+//!   (every part is a single `char`).
 //!
 //! # Example
 //!
@@ -47,10 +51,12 @@ pub mod block;
 pub mod gauge;
 pub mod list;
 pub mod paragraph;
+pub mod scrollbar;
 pub mod tabs;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use gauge::Gauge;
 pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
+pub use scrollbar::{Scrollbar, ScrollbarOrientation};
 pub use tabs::Tabs;
