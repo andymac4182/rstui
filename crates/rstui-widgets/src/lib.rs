@@ -44,6 +44,9 @@
 //!   model a focus visual; a pure projection of caller-owned `checked` and
 //!   `focused` state (focus *routing* is deliberately deferred, not smuggled
 //!   in).
+//! - [`button`]: [`Button`] — a single-line centred focusable *action* label,
+//!   the first form control with **no data** — a pure projection of only a
+//!   caller-owned `focused` `bool`; the press action is the reducer's concern.
 //!
 //! # Example
 //!
@@ -60,6 +63,7 @@
 //! ```
 
 pub mod block;
+pub mod button;
 pub mod checkbox;
 pub mod gauge;
 pub mod list;
@@ -70,6 +74,7 @@ pub mod table;
 pub mod tabs;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
+pub use button::Button;
 pub use checkbox::Checkbox;
 pub use gauge::Gauge;
 pub use list::{List, ListItem};
