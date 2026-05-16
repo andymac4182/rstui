@@ -32,6 +32,9 @@
 //!   pure projection of caller-owned scroll metrics; the visible companion to
 //!   [`List`]/[`Paragraph`] scrolling and the first widget with no lifetime
 //!   (every part is a single `char`).
+//! - [`spinner`]: [`Spinner`] — a one-cell animated busy indicator, a pure
+//!   projection of a caller-owned animation `tick`; the first consumer of the
+//!   `Frame::count()` animation clock.
 //!
 //! # Example
 //!
@@ -52,6 +55,7 @@ pub mod gauge;
 pub mod list;
 pub mod paragraph;
 pub mod scrollbar;
+pub mod spinner;
 pub mod tabs;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
@@ -59,4 +63,5 @@ pub use gauge::Gauge;
 pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};
+pub use spinner::Spinner;
 pub use tabs::Tabs;
