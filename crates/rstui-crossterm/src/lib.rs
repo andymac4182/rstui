@@ -9,14 +9,38 @@
 //!
 //! The crate's responsibilities are the `Backend` implementation over an
 //! [`std::io::Write`], a panic-safe RAII terminal-lifecycle guard, the pure
-//! crossterm→rstui input translation, and the crossterm input source. **All
-//! four have landed**: the terminal-free input translation
-//! ([`from_crossterm`]), the [`CrosstermBackend`] drawing seam, the
-//! [`TerminalGuard`] panic-safe lifecycle guard, and the
-//! [`CrosstermEventSource`] input source. The framework now composes end to
-//! end — the same `rstui_runtime::run` the headless harness tests drive runs an
-//! unmodified app on a real terminal (see the `run_app` example). A
+//! crossterm→rstui input translation, the crossterm input source, and the
+//! one-call full-screen app shell. **All have landed**: the terminal-free
+//! input translation ([`from_crossterm`]), the [`CrosstermBackend`] drawing
+//! seam, the [`TerminalGuard`] panic-safe lifecycle guard, the
+//! [`CrosstermEventSource`] input source, and [`run_app`] — the ergonomic
+//! entry point that composes all four with [`rstui_runtime::run`] and a
+//! panic-restore hook. The framework now composes end to end: the same
+//! `rstui_runtime::run` the headless harness tests drive runs an unmodified
+//! app on a real terminal in a single call (see the `run_app` example). A
 //! feature-gated async `EventStream` source is a future enhancement.
+//!
+//! # App shell: one call from `App` to a live terminal
+//!
+//! [`run_app`] hides the four-seam composition every full-screen `main` would
+//! otherwise repeat, and installs a panic hook that restores the terminal
+//! *before* the panic message prints, so a crash leaves the user's shell clean
+//! **and** readable. See the [`shell`] module for the panic policy.
+//!
+//! ```no_run
+//! use rstui_crossterm::run_app;
+//! # use rstui_runtime::{App, Cmd, Frame};
+//! # #[derive(Default)] struct Editor;
+//! # impl App for Editor {
+//! #     type Message = ();
+//! #     fn update(&mut self, _: ()) -> Cmd<()> { Cmd::quit() }
+//! #     fn view(&self, _: &mut Frame<'_>) {}
+//! # }
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     run_app(Editor::default())?;
+//!     Ok(())
+//! }
+//! ```
 //!
 //! # Output: the backend
 //!
@@ -148,8 +172,10 @@ pub mod backend;
 pub mod event;
 pub mod event_source;
 pub mod lifecycle;
+pub mod shell;
 
 pub use backend::CrosstermBackend;
 pub use event::from_crossterm;
 pub use event_source::CrosstermEventSource;
 pub use lifecycle::{LifecycleOptions, TerminalGuard};
+pub use shell::{CrosstermRunError, restore_terminal, run_app, run_app_with};

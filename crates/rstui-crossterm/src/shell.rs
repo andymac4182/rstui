@@ -1,0 +1,222 @@
+//! The full-screen app shell: one call from an [`App`] to a live terminal.
+//!
+//! [`run_app`] is the ergonomic capstone the lower slices built toward. The
+//! `run_app` example used to hand-compose four things —
+//! [`CrosstermBackend`](crate::CrosstermBackend) over stdout, a
+//! [`TerminalGuard`](crate::TerminalGuard), a
+//! [`CrosstermEventSource`](crate::CrosstermEventSource), and
+//! [`rstui_runtime::run`] — in every `main`. That composition is always the
+//! same, so this module owns it once:
+//!
+//! ```no_run
+//! use rstui_crossterm::run_app;
+//! # use rstui_runtime::{App, Cmd, Frame};
+//! # #[derive(Default)] struct MyApp;
+//! # impl App for MyApp {
+//! #     type Message = ();
+//! #     fn update(&mut self, _: ()) -> Cmd<()> { Cmd::quit() }
+//! #     fn view(&self, _: &mut Frame<'_>) {}
+//! # }
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     run_app(MyApp::default())?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! This is the "ergonomic app run loop" rstui owes a full-screen framework: the
+//! whole-terminal lifecycle (alternate screen, raw mode, mouse/paste/focus
+//! capture) and panic-safe restore are handled, and the app the harness tests
+//! drive headless runs live with no extra code.
+//!
+//! # Panic policy: the terminal *and* the panic message both survive
+//!
+//! [`TerminalGuard`](crate::TerminalGuard)'s [`Drop`] already restores the
+//! terminal while unwinding from a panic — that guarantee is proven in memory
+//! in the [`lifecycle`](crate::lifecycle) tests. What it cannot do alone is
+//! make the panic *message readable*: Rust's default panic hook prints
+//! **before** unwinding starts, i.e. while the app is still on the alternate
+//! screen in raw mode, so that text is wiped when the guard later leaves the
+//! alternate screen.
+//!
+//! [`run_app`] closes that gap by installing a process-global panic hook that
+//! restores the terminal *first*, then chains the previously-installed hook
+//! (Rust's default, or a user reporter such as `human-panic` / `color-eyre`).
+//! The message therefore lands on the user's restored normal screen. This is
+//! the same ordering ratatui's `init()` uses (`restore()` then the prior
+//! hook); chaining rather than replacing is what preserves a user's own panic
+//! reporter.
+//!
+//! ## Why this lives behind a small non-deterministic seam
+//!
+//! Installing a process-global hook, writing to the real stdout, and toggling
+//! raw mode are inherently process-wide and TTY-bound (ADR 0001 testing layer
+//! L4c) — exactly the surface the rest of this crate already isolates. The
+//! *content* of the restore, however, is single-sourced with the guard's
+//! teardown via [`queue_leave_sequence`](crate::lifecycle) and asserted
+//! byte-for-byte in memory, so the on-panic restore provably cannot drift from
+//! the normal one. The hook is installed exactly once per process (a
+//! [`Once`]), so repeated [`run_app`] calls never nest restore hooks.
+
+use std::io::{self, Write};
+use std::sync::Once;
+
+use crossterm::terminal::disable_raw_mode;
+use rstui_runtime::{App, RunError, run};
+
+use crate::backend::CrosstermBackend;
+use crate::event_source::CrosstermEventSource;
+use crate::lifecycle::{LifecycleOptions, TerminalGuard, queue_leave_sequence};
+
+/// The error [`run_app`] can fail with: a [`RunError`] whose render-backend and
+/// input-source halves are both [`io::Error`] (crossterm's error type).
+///
+/// A named alias because the fully-spelled `RunError<io::Error, io::Error>`
+/// otherwise leaks into every `main` signature; it implements
+/// [`std::error::Error`] so `?` bubbles it into `Box<dyn Error>`/`anyhow`.
+pub type CrosstermRunError = RunError<io::Error, io::Error>;
+
+/// Restores the terminal to its normal state, best-effort.
+///
+/// Disables raw mode and emits the **full-screen preset's** leave sequence
+/// (disable focus/paste/mouse reporting, then leave the alternate screen) to
+/// stdout. It deliberately restores the *whole* default preset rather than a
+/// subset: the panic hook cannot know which [`LifecycleOptions`] subset an app
+/// chose, and disabling a mode that was never enabled is a harmless no-op on
+/// every terminal — the same "over-restoring is safe" rationale
+/// [`TerminalGuard`] documents for its half-constructed path.
+///
+/// Public so an app with its own teardown path (or a custom panic reporter)
+/// can call it directly; [`run_app`] installs it as the panic hook for you.
+/// Every step is best-effort: a failure during restore has nowhere useful to
+/// go, and a partially-restored terminal is still better than none.
+pub fn restore_terminal() {
+    // Raw mode off first: it has the most side effects (input
+    // canonicalization, signal generation), so it is the highest-priority
+    // teardown step — ratatui documents this exact ordering.
+    let _ = disable_raw_mode();
+    let mut stdout = io::stdout();
+    emit_leave(&mut stdout);
+}
+
+/// Writes the full-preset leave escape sequence to `w` and flushes it.
+///
+/// Split out from [`restore_terminal`] purely so the (deterministic) escape
+/// sequence is assertable against an in-memory writer with no TTY, while
+/// `restore_terminal` itself binds it to the real stdout. The bytes are
+/// produced by the *same* [`queue_leave_sequence`] the guard's [`Drop`] uses,
+/// which is what guarantees the on-panic restore matches the normal one.
+fn emit_leave<W: Write>(w: &mut W) {
+    let _ = queue_leave_sequence(w, LifecycleOptions::default());
+    let _ = w.flush();
+}
+
+/// Installs the panic-restore hook exactly once for the process.
+///
+/// Chains rather than replaces: the previously-installed hook (Rust's default,
+/// or a user reporter) is captured and invoked *after* the terminal is
+/// restored, so the panic message prints onto the user's normal screen and any
+/// custom reporter still runs. The [`Once`] makes repeated [`run_app`] calls
+/// idempotent — without it, each call would wrap the previous wrapper and
+/// restore N times per panic.
+fn install_panic_restore_hook() {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            previous(info);
+        }));
+    });
+}
+
+/// Runs `app` full-screen on the real terminal with the default lifecycle
+/// (alternate screen, raw mode, mouse + bracketed paste + focus reporting) and
+/// panic-safe restore, returning the final app state.
+///
+/// One call replaces the four-seam hand-composition: it installs the
+/// [panic-restore hook](self#panic-policy-the-terminal-and-the-panic-message-both-survive),
+/// builds a [`CrosstermBackend`](crate::CrosstermBackend) over stdout wrapped
+/// in a [`TerminalGuard`](crate::TerminalGuard), reads input through a
+/// [`CrosstermEventSource`](crate::CrosstermEventSource), and drives the
+/// *identical* [`rstui_runtime::run`] loop the headless
+/// [`Harness`](rstui_runtime::Harness) tests exercise. The app is therefore
+/// unchanged between `cargo test` and production.
+///
+/// Use [`run_app_with`] to choose a different [`LifecycleOptions`] preset
+/// (e.g. no mouse capture, or no alternate screen for an inline tool).
+///
+/// # Errors
+///
+/// Returns [`CrosstermRunError::Backend`] if entering the terminal modes or a
+/// later render fails, or [`CrosstermRunError::Input`] if reading the terminal
+/// fails. On any return path the [`TerminalGuard`](crate::TerminalGuard)'s
+/// [`Drop`] has already restored the terminal.
+pub fn run_app<A: App>(app: A) -> Result<A, CrosstermRunError> {
+    run_app_with(app, LifecycleOptions::default())
+}
+
+/// Like [`run_app`] but with a caller-chosen [`LifecycleOptions`] preset.
+///
+/// The panic-restore hook still restores the *full* preset regardless of
+/// `options` (over-restoring is harmless; see [`restore_terminal`]), so an app
+/// that opts out of, say, the alternate screen still cannot leave the terminal
+/// wedged on a panic.
+///
+/// # Errors
+///
+/// Identical to [`run_app`].
+pub fn run_app_with<A: App>(app: A, options: LifecycleOptions) -> Result<A, CrosstermRunError> {
+    install_panic_restore_hook();
+
+    let backend = CrosstermBackend::new(io::stdout());
+    // One panic-safe ownership chain: Terminal -> TerminalGuard ->
+    // CrosstermBackend -> Stdout. The guard enters the modes here and restores
+    // them when `run` drops the terminal, on success or panic.
+    let guard = TerminalGuard::with_options(backend, options).map_err(RunError::Backend)?;
+    let mut events = CrosstermEventSource::new();
+
+    run(app, guard, &mut events)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `emit_leave` must produce *exactly* the guard's documented teardown
+    /// escape sequence for the full preset — the property that makes the
+    /// on-panic restore provably equal to the normal one. Asserted in memory
+    /// with no TTY (the raw-mode toggle is the only PTY-bound part of
+    /// `restore_terminal`, and is excluded here by construction).
+    #[test]
+    fn emit_leave_matches_the_full_preset_teardown_sequence() {
+        use crossterm::event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture};
+        use crossterm::queue;
+        use crossterm::terminal::LeaveAlternateScreen;
+
+        let mut got = Vec::new();
+        emit_leave(&mut got);
+
+        let mut expected = Vec::new();
+        queue!(
+            expected,
+            DisableFocusChange,
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+        )
+        .unwrap();
+
+        assert_eq!(got, expected);
+    }
+
+    /// `restore_terminal` is idempotent and side-effect-safe to call more than
+    /// once (a panic mid-restore, a manual call plus the hook, repeated guards
+    /// all converge). It writes a few bytes to the captured test stdout and
+    /// must not panic; it deliberately installs no global hook, so it cannot
+    /// contaminate other tests in this binary.
+    #[test]
+    fn restore_terminal_is_idempotent_and_panic_free() {
+        restore_terminal();
+        restore_terminal();
+    }
+}

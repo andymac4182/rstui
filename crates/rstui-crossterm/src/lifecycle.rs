@@ -43,19 +43,20 @@
 //! guard with `raw_mode: false` and the raw-mode calls are the only genuine
 //! L4c (PTY) surface, exactly as the ADR anticipated.
 //!
-//! ## Scope: the guard restores the terminal; making a panic *message visible*
-//! is the next slice
+//! ## Scope: the guard restores the terminal; the app shell makes the panic
+//! *message* visible
 //!
 //! Because [`Drop`] runs during unwinding, a panicking app's terminal **is**
 //! restored by this guard — the ADR's "restore on drop including on panic"
-//! guarantee. It does not yet make the panic *message* visible: the default
-//! panic hook prints before unwinding begins, i.e. while still on the
-//! alternate screen, so that text is discarded when the guard later leaves it.
-//! Fixing that needs a process-global panic hook installed *before* the
-//! default one — a separate concern (global mutable state, ordering against
-//! user hooks, a restore path that cannot borrow the guard) that ratatui also
-//! implements separately from teardown. It is the natural next slice and
-//! belongs with the `rstui-runtime` driver wiring, which owns panic policy.
+//! guarantee. The guard alone cannot make the panic *message* visible: the
+//! default panic hook prints before unwinding begins, i.e. while still on the
+//! alternate screen, so that text would be discarded when the guard later
+//! leaves it. That gap is closed one level up by the [`shell`](crate::shell)
+//! module's process-global panic hook, which restores the terminal *before*
+//! the message prints. Restore content is single-sourced here —
+//! [`queue_leave_sequence`] is the *one* definition of the leave sequence, and
+//! both this guard's [`Drop`] and the shell's panic hook call it — so the
+//! on-panic restore provably cannot drift from normal teardown.
 
 use std::io::{self, Write};
 
@@ -228,20 +229,59 @@ impl<W: Write> TerminalGuard<W> {
             enable_raw_mode()?;
         }
         let w = self.backend.writer_mut();
-        if opts.alternate_screen {
-            queue!(w, EnterAlternateScreen)?;
-        }
-        if opts.mouse_capture {
-            queue!(w, EnableMouseCapture)?;
-        }
-        if opts.bracketed_paste {
-            queue!(w, EnableBracketedPaste)?;
-        }
-        if opts.focus_change {
-            queue!(w, EnableFocusChange)?;
-        }
+        queue_enter_sequence(w, opts)?;
         w.flush()
     }
+}
+
+/// Queues the *enable* escape sequences for `opts` in the proven acquisition
+/// order (alternate screen, then mouse, paste, focus).
+///
+/// Raw mode is deliberately **not** handled here: it toggles the real terminal
+/// device rather than emitting an escape sequence, so it is the caller's
+/// responsibility (and the sole PTY-bound step). Factoring the sequence out
+/// keeps [`TerminalGuard::enter`] and any future re-entry single-sourced.
+pub(crate) fn queue_enter_sequence<W: Write>(w: &mut W, opts: LifecycleOptions) -> io::Result<()> {
+    if opts.alternate_screen {
+        queue!(w, EnterAlternateScreen)?;
+    }
+    if opts.mouse_capture {
+        queue!(w, EnableMouseCapture)?;
+    }
+    if opts.bracketed_paste {
+        queue!(w, EnableBracketedPaste)?;
+    }
+    if opts.focus_change {
+        queue!(w, EnableFocusChange)?;
+    }
+    Ok(())
+}
+
+/// Queues the *disable* escape sequences for `opts` in reverse acquisition
+/// order, leaving the alternate screen **last** so the user's original screen
+/// and scrollback are what remain visible.
+///
+/// Single-sourced on purpose: both [`TerminalGuard`]'s [`Drop`] and the
+/// process-global panic-restore hook
+/// ([`restore_terminal`](crate::shell::restore_terminal)) emit *exactly* this
+/// sequence, so the on-panic restore can never drift from the normal teardown.
+/// Like [`queue_enter_sequence`] it does not touch raw mode — that real-device
+/// toggle is the caller's first teardown step, because it has the most side
+/// effects (input canonicalization, signal generation).
+pub(crate) fn queue_leave_sequence<W: Write>(w: &mut W, opts: LifecycleOptions) -> io::Result<()> {
+    if opts.focus_change {
+        queue!(w, DisableFocusChange)?;
+    }
+    if opts.bracketed_paste {
+        queue!(w, DisableBracketedPaste)?;
+    }
+    if opts.mouse_capture {
+        queue!(w, DisableMouseCapture)?;
+    }
+    if opts.alternate_screen {
+        queue!(w, LeaveAlternateScreen)?;
+    }
+    Ok(())
 }
 
 impl<W: Write> Drop for TerminalGuard<W> {
@@ -387,6 +427,57 @@ mod tests {
                 && !none.bracketed_paste
                 && !none.focus_change
         );
+    }
+
+    #[test]
+    fn queue_sequences_are_single_sourced_and_symmetric() {
+        // The exact bytes the guard's `Drop` *and* the panic-restore hook both
+        // depend on. Locking them here is what guarantees the on-panic restore
+        // cannot drift from normal teardown (they call this same function).
+        let full = LifecycleOptions::default();
+
+        let enter = encoded(|w| queue_enter_sequence(w, full));
+        assert_eq!(
+            enter,
+            encoded(|w| queue!(
+                w,
+                EnterAlternateScreen,
+                EnableMouseCapture,
+                EnableBracketedPaste,
+                EnableFocusChange,
+            )),
+        );
+
+        let leave = encoded(|w| queue_leave_sequence(w, full));
+        assert_eq!(
+            leave,
+            encoded(|w| queue!(
+                w,
+                DisableFocusChange,
+                DisableBracketedPaste,
+                DisableMouseCapture,
+                LeaveAlternateScreen,
+            )),
+        );
+
+        // A subset emits only its members, in the same relative order.
+        let alt_only = LifecycleOptions {
+            alternate_screen: true,
+            ..LifecycleOptions::NONE
+        };
+        assert_eq!(
+            encoded(|w| queue_enter_sequence(w, alt_only)),
+            encoded(|w| queue!(w, EnterAlternateScreen)),
+        );
+        assert_eq!(
+            encoded(|w| queue_leave_sequence(w, alt_only)),
+            encoded(|w| queue!(w, LeaveAlternateScreen)),
+        );
+
+        // The empty preset is genuinely zero bytes (an idle/no-mode guard must
+        // emit nothing — the symmetric counterpart of an idle frame).
+        assert!(encoded(|w| queue_enter_sequence(w, LifecycleOptions::NONE)).is_empty());
+        assert!(encoded(|w| queue_leave_sequence(w, LifecycleOptions::NONE)).is_empty());
     }
 
     #[test]

@@ -1,17 +1,12 @@
-//! End to end: an unmodified rstui app on a real terminal.
+//! End to end: an unmodified rstui app on a real terminal, in one call.
 //!
-//! This is the capstone the preceding slices built toward. It composes every
-//! seam at once:
-//!
-//! - a panic-safe [`TerminalGuard`] wrapping a [`CrosstermBackend`] over
-//!   stdout, forming one `Terminal -> TerminalGuard -> CrosstermBackend ->
-//!   Stdout` ownership chain that restores the terminal on exit *and* on panic;
-//! - a [`CrosstermEventSource`] reading real keystrokes and translating them
-//!   into rstui's event vocabulary;
-//! - `rstui_runtime::run` — the *same* function the headless harness tests
-//!   drive over a `TestBackend` + `TestEventSource`. The `App` below is
-//!   byte-for-byte the kind of reducer those tests exercise; nothing about it
-//!   is terminal-specific.
+//! This is the capstone the preceding slices built toward. Every seam still
+//! composes at once — a panic-safe [`TerminalGuard`] over a
+//! [`CrosstermBackend`], a [`CrosstermEventSource`], and the *same*
+//! `rstui_runtime::run` the headless harness tests drive — but the app no
+//! longer hand-wires them: [`run_app`] owns that composition and installs the
+//! panic-restore hook, so a crash leaves the terminal clean *and* the panic
+//! message readable on the user's normal screen.
 //!
 //! Run it in a real terminal:
 //!
@@ -19,16 +14,16 @@
 //! cargo run -p rstui-crossterm --example run_app
 //! ```
 //!
-//! `+`/`=` increments, `-` decrements, `q` or `Esc` quits. It needs a TTY, so
-//! CI builds it (proving the whole stack type-checks and composes) but does not
-//! execute it.
+//! `+`/`=` increments, `-` decrements, `q` or `Esc` quits. `!` panics on
+//! purpose — quit that way and the message is still readable, proving the
+//! panic policy. It needs a TTY, so CI builds it (proving the whole stack
+//! type-checks and composes) but does not execute it.
 
 use std::error::Error;
-use std::io::{self, Stdout};
 
 use rstui_core::{Color, KeyCode, Style};
-use rstui_crossterm::{CrosstermBackend, CrosstermEventSource, TerminalGuard};
-use rstui_runtime::{App, Cmd, Event, Frame, run};
+use rstui_crossterm::run_app;
+use rstui_runtime::{App, Cmd, Event, Frame};
 
 #[derive(Default)]
 struct Counter {
@@ -38,6 +33,9 @@ struct Counter {
 enum Msg {
     Inc,
     Dec,
+    /// Deliberately panic, to demonstrate that the panic-restore hook leaves
+    /// the terminal usable *and* the panic message visible.
+    Boom,
     Quit,
 }
 
@@ -48,6 +46,7 @@ impl App for Counter {
         match event.as_key_press()?.code {
             KeyCode::Char('+') | KeyCode::Char('=') => Some(Msg::Inc),
             KeyCode::Char('-') => Some(Msg::Dec),
+            KeyCode::Char('!') => Some(Msg::Boom),
             KeyCode::Char('q') | KeyCode::Esc => Some(Msg::Quit),
             _ => None,
         }
@@ -63,6 +62,7 @@ impl App for Counter {
                 self.value -= 1;
                 Cmd::none()
             }
+            Msg::Boom => panic!("intentional panic at value = {}", self.value),
             Msg::Quit => Cmd::quit(),
         }
     }
@@ -70,7 +70,7 @@ impl App for Counter {
     fn view(&self, frame: &mut Frame<'_>) {
         let pos = frame.area().position();
         let line = format!(
-            " rstui live — value = {}   (+/- change · q quit) ",
+            " rstui live — value = {}   (+/- change · ! panic · q quit) ",
             self.value
         );
         frame
@@ -80,15 +80,10 @@ impl App for Counter {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // One panic-safe ownership chain. The guard enters raw mode + the alternate
-    // screen on construction and restores them when `run` drops the terminal —
-    // including while unwinding from a panic.
-    let backend: CrosstermBackend<Stdout> = CrosstermBackend::new(io::stdout());
-    let guard = TerminalGuard::new(backend)?;
-
-    // The identical `run` the harness tests call — here over the live terminal.
-    // `?` bubbles a `RunError` (it is `std::error::Error`); the guard's `Drop`
-    // has already restored the terminal by the time this returns either way.
-    run(Counter::default(), guard, &mut CrosstermEventSource::new())?;
+    // The whole stack — alternate screen, raw mode, mouse/paste/focus capture,
+    // panic-safe restore, the live event loop — in one call. `?` bubbles a
+    // `CrosstermRunError`; the terminal is already restored by the time it
+    // returns, on success, error, or panic.
+    run_app(Counter::default())?;
     Ok(())
 }

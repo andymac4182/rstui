@@ -13,16 +13,15 @@ workspace = true
 
 [dependencies]
 rstui-core = { path = "../rstui-core" }
+# The full-screen app shell (`run_app`) composes `rstui_runtime::run` with the
+# guard + backend + event source, so the runtime is a normal dependency, not
+# just a dev one. This is acyclic by design — `rstui-runtime` depends only on
+# `rstui-core`, never on `rstui-crossterm` — so the backend crate is free to
+# sit on top of the runtime and own the terminal-specific entry point.
+rstui-runtime = { path = "../rstui-runtime" }
 # The single external dependency in the workspace, deliberately isolated here
 # per ADR 0001 so `rstui-core` stays dependency-free. Default features (incl.
 # `windows`) are kept on for the cross-platform support that motivated the
 # decision; the sync input source uses only the always-on `events` feature, so
 # no feature change was needed for it (an async `event-stream` is a future opt).
 crossterm = "0.29"
-
-[dev-dependencies]
-# Only the `run_app` example needs the runtime, to show the whole stack
-# (guard + backend + event source + `run`) composing on a real terminal. It is
-# a dev-dependency so it never enters a consumer's graph, and there is no cycle:
-# `rstui-runtime` does not depend on `rstui-crossterm`.
-rstui-runtime = { path = "../rstui-runtime" }
