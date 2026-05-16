@@ -44,9 +44,19 @@
 //! - 4-space **indented code blocks** (kept verbatim, like fenced code)
 //! - **setext headings** (`===` → H1, `---` → H2 underline), disambiguated
 //!   from thematic breaks and list markers
+//! - **HTML passthrough** (terminal-appropriate): named/numeric entities are
+//!   decoded, comments removed, `<b>/<strong>/<i>/<em>/<code>` mapped to their
+//!   markdown styling, `<br>` is a hard line break, and every other tag is
+//!   stripped with its text kept
+//! - **reference-style links/images** — full `[text][label]`, collapsed
+//!   `[text][]`, and shortcut `[text]` (and their `![…]` forms) resolved
+//!   against `[label]: dest "title"` definitions (document-scoped, not
+//!   rendered, fence-aware)
+//! - **loose vs tight lists** — a blank line between items (or a multi-block
+//!   item) renders inter-item spacer rows; a tight list stays compact
 //!
-//! Deliberately out of scope for this slice (each an additive follow-up that
-//! does not change this shape): HTML passthrough, reference-style links.
+//! Every CommonMark-ish construct this renderer aims at is now implemented;
+//! there are no deferred markdown features.
 //!
 //! Rendering is deterministic and width-aware: the same source and area always
 //! produce the same cells, so output is snapshot-testable through
@@ -268,13 +278,9 @@ impl<'a> Markdown<'a> {
         if width == 0 {
             return Vec::new();
         }
+        let (defs, src) = collect_defs(self.source.as_ref());
         let mut links = Vec::new();
-        let blocks = blocks_into(
-            self.source.as_ref(),
-            &mut links,
-            self.focused_link,
-            &self.theme,
-        );
+        let blocks = blocks_into(&src, &mut links, self.focused_link, &self.theme, &defs);
         let mut rows = Vec::new();
         layout_blocks(&blocks, width as usize, &self.theme, true, &mut rows);
         rows
@@ -437,6 +443,9 @@ enum MdBlock {
         ordered: bool,
         start: u64,
         items: Vec<Vec<MdBlock>>,
+        /// A *loose* list (a blank line between items, or a multi-block item)
+        /// renders a blank spacer row between items; a tight list does not.
+        loose: bool,
     },
     /// A GFM pipe table: per-column [`Alignment`] from the delimiter row, a
     /// header row, then body rows. Each cell is already inline-parsed spans.
@@ -453,15 +462,23 @@ enum MdBlock {
 /// this thin wrapper is exercised solely by the block-shape unit tests).
 #[cfg(test)]
 fn parse_blocks(src: &str) -> Vec<MdBlock> {
-    blocks_into(src, &mut Vec::new(), None, &MarkdownTheme::default())
+    let (defs, src) = collect_defs(src);
+    blocks_into(
+        &src,
+        &mut Vec::new(),
+        None,
+        &MarkdownTheme::default(),
+        &defs,
+    )
 }
 
 /// Every `[text](href)` / autolink in `src`, in reading order — the registry
 /// [`Markdown::links`] exposes for focus and activation. Labels/hrefs are
 /// theme-independent, so the default theme is fine here.
 fn document_links(src: &str) -> Vec<Link<'static>> {
+    let (defs, src) = collect_defs(src);
     let mut links = Vec::new();
-    blocks_into(src, &mut links, None, &MarkdownTheme::default());
+    blocks_into(&src, &mut links, None, &MarkdownTheme::default(), &defs);
     links
 }
 
@@ -474,8 +491,9 @@ fn inline(
     links: &mut Vec<Link<'static>>,
     focused: Option<usize>,
     theme: &MarkdownTheme,
+    defs: &LinkDefs,
 ) -> Vec<Span<'static>> {
-    let (spans, mut found) = inline_spans_and_links(text, links.len(), focused, theme);
+    let (spans, mut found) = inline_spans_and_links(text, links.len(), focused, theme, defs);
     links.append(&mut found);
     spans
 }
@@ -488,6 +506,7 @@ fn blocks_into(
     links: &mut Vec<Link<'static>>,
     focused: Option<usize>,
     theme: &MarkdownTheme,
+    defs: &LinkDefs,
 ) -> Vec<MdBlock> {
     let lines: Vec<&str> = src
         .split('\n')
@@ -556,7 +575,7 @@ fn blocks_into(
             let text = atx_heading_text(trimmed, level);
             out.push(MdBlock::Heading {
                 level,
-                spans: inline(text, links, focused, theme),
+                spans: inline(text, links, focused, theme, defs),
             });
             i += 1;
             continue;
@@ -583,6 +602,7 @@ fn blocks_into(
                 links,
                 focused,
                 theme,
+                defs,
             )));
             continue;
         }
@@ -592,7 +612,7 @@ fn blocks_into(
             let ncols = aligns.len();
             let mut header = Vec::with_capacity(ncols);
             for c in normalize_row(split_table_row(line), ncols) {
-                header.push(inline(&c, links, focused, theme));
+                header.push(inline(&c, links, focused, theme, defs));
             }
             i += 2;
             let mut rows = Vec::new();
@@ -604,7 +624,7 @@ fn blocks_into(
                 }
                 let mut cells = Vec::with_capacity(ncols);
                 for c in normalize_row(split_table_row(row), ncols) {
-                    cells.push(inline(&c, links, focused, theme));
+                    cells.push(inline(&c, links, focused, theme, defs));
                 }
                 rows.push(cells);
                 i += 1;
@@ -618,7 +638,7 @@ fn blocks_into(
         }
 
         if let Some(marker) = list_marker(line) {
-            let (block, next) = parse_list(&lines, i, marker, links, focused, theme);
+            let (block, next) = parse_list(&lines, i, marker, links, focused, theme, defs);
             out.push(block);
             i = next;
             continue;
@@ -657,7 +677,7 @@ fn blocks_into(
             buf.push_str(t);
             i += 1;
         }
-        let spans = inline(&buf, links, focused, theme);
+        let spans = inline(&buf, links, focused, theme, defs);
         out.push(match setext {
             Some(level) => MdBlock::Heading { level, spans },
             None => MdBlock::Paragraph(spans),
@@ -730,10 +750,12 @@ fn parse_list(
     links: &mut Vec<Link<'static>>,
     focused: Option<usize>,
     theme: &MarkdownTheme,
+    defs: &LinkDefs,
 ) -> (MdBlock, usize) {
     let ordered = first.ordered.is_some();
     let list_start = first.ordered.unwrap_or(1);
     let mut items: Vec<Vec<MdBlock>> = Vec::new();
+    let mut loose = false;
     let mut i = start;
     while i < lines.len() {
         let Some(m) = list_marker(lines[i]) else {
@@ -750,6 +772,7 @@ fn parse_list(
         body.push(head.to_owned());
         i += 1;
         let mut saw_blank = false;
+        let mut interior_blank = false;
         let mut end_list = false;
         while i < lines.len() {
             let l = lines[i];
@@ -761,6 +784,11 @@ fn parse_list(
             }
             let lead = l.len() - l.trim_start().len();
             if lead >= content_col {
+                // Content resuming after a blank means the item has
+                // blank-separated blocks — that makes the whole list loose.
+                if saw_blank {
+                    interior_blank = true;
+                }
                 body.push(l[content_col.min(l.len())..].to_owned());
                 i += 1;
             } else if list_marker(l).is_some() {
@@ -780,7 +808,19 @@ fn parse_list(
         while body.last().is_some_and(|s| s.is_empty()) {
             body.pop();
         }
-        items.push(blocks_into(&body.join("\n"), links, focused, theme));
+        let item_blocks = blocks_into(&body.join("\n"), links, focused, theme, defs);
+        // CommonMark looseness: a blank line *between* this item's blocks
+        // (`interior_blank`), or *between* this item and a following sibling
+        // marker, makes the whole list loose. A blank that merely ends the
+        // list, or a trailing blank before EOF, stays tight — and a nested
+        // sub-list with no blank line before it is still tight.
+        let next_is_sibling = i < lines.len()
+            && list_marker(lines[i])
+                .is_some_and(|m| m.indent == first.indent && m.ordered.is_some() == ordered);
+        if interior_blank || (saw_blank && !end_list && next_is_sibling) {
+            loose = true;
+        }
+        items.push(item_blocks);
         if end_list {
             break;
         }
@@ -790,6 +830,7 @@ fn parse_list(
             ordered,
             start: list_start,
             items,
+            loose,
         },
         i,
     )
@@ -993,7 +1034,7 @@ enum InlineTok {
 /// Plain-text + default-theme inline parse: used to derive a link's registry
 /// label (markup stripped) and by the inline unit tests.
 fn parse_inline(text: &str) -> Vec<Span<'static>> {
-    inline_spans_and_links(text, 0, None, &MarkdownTheme::default()).0
+    inline_spans_and_links(text, 0, None, &MarkdownTheme::default(), &LinkDefs::new()).0
 }
 
 /// Like [`parse_inline`] but also returns the links it contains, in order,
@@ -1006,8 +1047,11 @@ fn inline_spans_and_links(
     base: usize,
     focused: Option<usize>,
     theme: &MarkdownTheme,
+    defs: &LinkDefs,
 ) -> (Vec<Span<'static>>, Vec<Link<'static>>) {
-    let mut toks = lex_inline(text);
+    let resolved = resolve_refs(text, defs);
+    let prepared = prepare_html(&resolved);
+    let mut toks = lex_inline(&prepared);
     let mut links = Vec::new();
     for t in &mut toks {
         if let InlineTok::Link {
@@ -1029,6 +1073,382 @@ fn inline_spans_and_links(
     let mut out = Vec::new();
     render_toks(&toks, Style::new(), theme, &mut out);
     (coalesce(out), links)
+}
+
+/// Document-scoped link reference definitions: a normalised label → its
+/// destination. Resolved before inline parsing so `[text][label]` and friends
+/// become ordinary inline links the existing lexer already handles.
+type LinkDefs = std::collections::BTreeMap<String, String>;
+
+/// CommonMark label matching is case-insensitive and whitespace-collapsed.
+fn normalize_ref(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Parses a link reference definition line — `[label]: dest "optional title"`
+/// with ≤3 leading spaces — into `(label, dest)`, or `None`.
+fn parse_def_line(line: &str) -> Option<(String, String)> {
+    let indent = line.len() - line.trim_start().len();
+    if indent > 3 {
+        return None;
+    }
+    let s = line.trim_start();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.first() != Some(&'[') {
+        return None;
+    }
+    let mut j = 1;
+    while j < chars.len() && chars[j] != ']' {
+        if chars[j] == '\\' && j + 1 < chars.len() {
+            j += 1;
+        }
+        j += 1;
+    }
+    if j >= chars.len() || chars.get(j + 1) != Some(&':') {
+        return None;
+    }
+    let label: String = chars[1..j].iter().collect();
+    if label.trim().is_empty() {
+        return None;
+    }
+    let rest: String = chars[j + 2..].iter().collect();
+    let rest = rest.trim();
+    let dest = rest.split_whitespace().next()?;
+    let dest = dest
+        .strip_prefix('<')
+        .and_then(|d| d.strip_suffix('>'))
+        .unwrap_or(dest);
+    if dest.is_empty() {
+        return None;
+    }
+    Some((label, dest.to_owned()))
+}
+
+/// Scans link reference definitions out of `src`, returning the def map and
+/// the source with definition lines blanked so they never render.
+fn collect_defs(src: &str) -> (LinkDefs, String) {
+    let mut defs = LinkDefs::new();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut fence: Option<char> = None;
+    for raw in src.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = line.trim_start();
+        // Definitions inside a fenced code block are code, not definitions.
+        match fence {
+            Some(f) if fence_close(trimmed, f) => fence = None,
+            Some(_) => {}
+            None => {
+                if let Some((f, _)) = fence_open(trimmed) {
+                    fence = Some(f);
+                } else if let Some((label, dest)) = parse_def_line(line) {
+                    defs.entry(normalize_ref(&label)).or_insert(dest);
+                    kept.push("");
+                    continue;
+                }
+            }
+        }
+        kept.push(line);
+    }
+    (defs, kept.join("\n"))
+}
+
+/// Rewrites reference links/images — full `[t][label]`, collapsed `[t][]`,
+/// shortcut `[t]`, and their `![...]` image forms — into ordinary inline
+/// `[t](dest)` when the label resolves in `defs`. Unresolved references and
+/// inline `[t](url)` links are copied through untouched (CommonMark: an
+/// unknown reference renders literally); code spans pass verbatim.
+fn resolve_refs(text: &str, defs: &LinkDefs) -> String {
+    if defs.is_empty() || !text.contains('[') {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        if c == '`' {
+            let fence = chars[i..].iter().take_while(|&&x| x == '`').count();
+            if let Some(close) = find_backtick_run(&chars, i + fence, fence) {
+                out.extend(chars[i..close + fence].iter());
+                i = close + fence;
+                continue;
+            }
+        }
+        if c == '\\' && i + 1 < n {
+            out.push(c);
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        let bang = c == '!' && chars.get(i + 1) == Some(&'[');
+        if c == '[' || bang {
+            let open = if bang { i + 1 } else { i };
+            if let Some((text_inner, label, next)) = scan_reference(&chars, open) {
+                let key = normalize_ref(if label.is_empty() {
+                    &text_inner
+                } else {
+                    &label
+                });
+                if let Some(dest) = defs.get(&key) {
+                    if bang {
+                        out.push('!');
+                    }
+                    out.push('[');
+                    out.push_str(&text_inner);
+                    out.push_str("](");
+                    out.push_str(dest);
+                    out.push(')');
+                    i = next;
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Scans a `[text]` then optional `[label]` starting at `chars[open] == '['`.
+/// Returns `(text, label, next)` where an absent/empty `[label]` yields an
+/// empty `label` (shortcut/collapsed). `None` if `[text]` is unbalanced or is
+/// immediately an inline link (`](`), which the lexer handles instead.
+fn scan_reference(chars: &[char], open: usize) -> Option<(String, String, usize)> {
+    let n = chars.len();
+    let mut j = open + 1;
+    let mut depth = 1;
+    while j < n {
+        match chars[j] {
+            '\\' if j + 1 < n => j += 2,
+            '[' => {
+                depth += 1;
+                j += 1;
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                j += 1;
+            }
+            _ => j += 1,
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let text: String = chars[open + 1..j].iter().collect();
+    // `](` is an inline link — leave it for the lexer.
+    if chars.get(j + 1) == Some(&'(') {
+        return None;
+    }
+    if chars.get(j + 1) == Some(&'[') {
+        let mut k = j + 2;
+        let mut d = 1;
+        while k < n {
+            match chars[k] {
+                '\\' if k + 1 < n => k += 2,
+                '[' => {
+                    d += 1;
+                    k += 1;
+                }
+                ']' => {
+                    d -= 1;
+                    if d == 0 {
+                        break;
+                    }
+                    k += 1;
+                }
+                _ => k += 1,
+            }
+        }
+        if d != 0 {
+            return None;
+        }
+        let label: String = chars[j + 2..k].iter().collect();
+        Some((text, label, k + 1))
+    } else {
+        Some((text, String::new(), j + 1))
+    }
+}
+
+/// Terminal HTML "passthrough" at the inline layer, applied before lexing:
+///
+/// - named and numeric (`&#dd;` / `&#xhh;`) entities are decoded to their
+///   characters;
+/// - `<!-- … -->` comments are removed;
+/// - `<b>`/`<strong>` → `**`, `<i>`/`<em>` → `*`, `<code>` → `` ` ``,
+///   `<br>`/`<br/>` → a hard line break, so the existing emphasis/code engine
+///   renders them;
+/// - every other tag is stripped (its text content is kept);
+/// - inline code spans pass through verbatim (HTML is never interpreted
+///   inside code), backslash escapes are preserved, and `<…>` autolinks are
+///   left for the lexer.
+fn prepare_html(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        if c == '`' {
+            let fence = chars[i..].iter().take_while(|&&x| x == '`').count();
+            if let Some(close) = find_backtick_run(&chars, i + fence, fence) {
+                out.extend(chars[i..close + fence].iter());
+                i = close + fence;
+                continue;
+            }
+        }
+        if c == '\\' && i + 1 < n {
+            out.push(c);
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c == '&' {
+            if let Some((decoded, len)) = decode_entity(&chars, i) {
+                out.push_str(&decoded);
+                i += len;
+                continue;
+            }
+        }
+        if c == '<' {
+            if scan_autolink(&chars, i).is_some() {
+                out.push(c);
+                i += 1;
+                continue;
+            }
+            if chars[i..].starts_with(&['<', '!', '-', '-']) {
+                let mut j = i + 4;
+                while j + 2 < n && !(chars[j] == '-' && chars[j + 1] == '-' && chars[j + 2] == '>')
+                {
+                    j += 1;
+                }
+                i = if j + 2 < n { j + 3 } else { n };
+                continue;
+            }
+            if let Some((repl, len)) = map_html_tag(&chars, i) {
+                out.push_str(repl);
+                i += len;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Decodes an HTML entity beginning at `chars[i] == '&'`. Returns the decoded
+/// text and the number of `char`s consumed (including `&` and `;`), or `None`
+/// if it is not a well-formed entity (then `&` is a literal).
+fn decode_entity(chars: &[char], i: usize) -> Option<(String, usize)> {
+    let n = chars.len();
+    let semi = (i + 1..n.min(i + 33)).find(|&k| chars[k] == ';')?;
+    let body: String = chars[i + 1..semi].iter().collect();
+    let len = semi - i + 1;
+    if let Some(num) = body.strip_prefix('#') {
+        let code = if let Some(hex) = num.strip_prefix(['x', 'X']) {
+            u32::from_str_radix(hex, 16).ok()?
+        } else {
+            num.parse::<u32>().ok()?
+        };
+        let ch = char::from_u32(code)?;
+        return Some((ch.to_string(), len));
+    }
+    let decoded = match body.as_str() {
+        "amp" => "&",
+        "lt" => "<",
+        "gt" => ">",
+        "quot" => "\"",
+        "apos" => "'",
+        "nbsp" => "\u{00a0}",
+        "copy" => "©",
+        "reg" => "®",
+        "trade" => "™",
+        "mdash" => "—",
+        "ndash" => "–",
+        "hellip" => "…",
+        "laquo" => "«",
+        "raquo" => "»",
+        "lsquo" => "‘",
+        "rsquo" => "’",
+        "ldquo" => "“",
+        "rdquo" => "”",
+        "deg" => "°",
+        "plusmn" => "±",
+        "times" => "×",
+        "divide" => "÷",
+        "micro" => "µ",
+        "para" => "¶",
+        "sect" => "§",
+        "middot" => "·",
+        "bull" => "•",
+        "dagger" => "†",
+        "Dagger" => "‡",
+        "frac12" => "½",
+        "frac14" => "¼",
+        "frac34" => "¾",
+        "sup2" => "²",
+        "sup3" => "³",
+        "larr" => "←",
+        "rarr" => "→",
+        "uarr" => "↑",
+        "darr" => "↓",
+        "harr" => "↔",
+        "infin" => "∞",
+        "ne" => "≠",
+        "le" => "≤",
+        "ge" => "≥",
+        "equiv" => "≡",
+        "asymp" => "≈",
+        "euro" => "€",
+        "pound" => "£",
+        "yen" => "¥",
+        "cent" => "¢",
+        "check" => "✓",
+        "cross" => "✗",
+        "star" => "★",
+        "hearts" => "♥",
+        _ => return None,
+    };
+    Some((decoded.to_owned(), len))
+}
+
+/// Maps an HTML tag beginning at `chars[i] == '<'` to its markdown
+/// replacement (`""` strips an unrecognised but well-formed tag, keeping its
+/// inner text). Returns the replacement and `char`s consumed, or `None` if
+/// this is not a well-formed tag (then `<` is a literal).
+fn map_html_tag(chars: &[char], i: usize) -> Option<(&'static str, usize)> {
+    let n = chars.len();
+    let mut j = i + 1;
+    if j < n && chars[j] == '/' {
+        j += 1;
+    }
+    let name_start = j;
+    while j < n && chars[j].is_ascii_alphanumeric() {
+        j += 1;
+    }
+    if j == name_start {
+        return None; // `<` not followed by a tag name
+    }
+    let name: String = chars[name_start..j].iter().collect();
+    // Skip to the closing `>` (attributes/`/` are ignored).
+    let close = (j..n).find(|&k| chars[k] == '>')?;
+    let len = close - i + 1;
+    let repl = match name.to_ascii_lowercase().as_str() {
+        "b" | "strong" => "**",
+        "i" | "em" => "*",
+        "code" => "`",
+        "br" => "\n",
+        _ => "",
+    };
+    Some((repl, len))
 }
 
 /// Lexes `text` into [`InlineTok`]s: backslash escapes and code spans are
@@ -1399,9 +1819,10 @@ fn coalesce(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
 
 /// Appends the display rows for `blocks` (a content area `width` wide) to
 /// `out`. When `spacing` is set, a blank spacer row separates adjacent blocks
-/// so the document breathes the way a rendered page does; list items are laid
-/// out *tight* (`spacing` off) so a nested list sits directly under its parent
-/// — loose-list blank-line spacing is a deliberately deferred refinement.
+/// so the document breathes the way a rendered page does. A *tight* list
+/// passes `spacing` off so a nested list sits directly under its parent; a
+/// *loose* list (parsed per CommonMark) passes it on and additionally emits a
+/// spacer row between items.
 fn layout_blocks(
     blocks: &[MdBlock],
     width: usize,
@@ -1455,8 +1876,13 @@ fn layout_blocks(
                 ordered,
                 start,
                 items,
+                loose,
             } => {
                 for (n, item) in items.iter().enumerate() {
+                    // A loose list breathes: a blank spacer row between items.
+                    if *loose && n > 0 {
+                        out.push(Line::default());
+                    }
                     let label = if *ordered {
                         format!("{}. ", start + n as u64)
                     } else {
@@ -1464,12 +1890,13 @@ fn layout_blocks(
                     };
                     let pad = " ".repeat(label.chars().count());
                     let mut sub = Vec::new();
-                    // Tight: a nested list/para sits directly under the marker.
+                    // A list item's blocks are laid out tight internally; the
+                    // list's own looseness adds the inter-item spacer above.
                     layout_blocks(
                         item,
                         width.saturating_sub(label.chars().count()),
                         theme,
-                        false,
+                        *loose,
                         &mut sub,
                     );
                     for (k, line) in sub.into_iter().enumerate() {
@@ -1604,7 +2031,10 @@ fn layout_table(
 /// Word-wraps `spans` to `width`, each row prefixed by `prefix`. Wrapping is
 /// done on resolved `(char, style)` cells (the same approach
 /// [`Paragraph`](crate::Paragraph) uses) and rebuilt into per-row spans by
-/// grouping equal styles, so emphasis runs survive a line break.
+/// grouping equal styles, so emphasis runs survive a line break. A `\n` cell
+/// (an HTML `<br>` hard break) ends the current visual row outright; an empty
+/// segment between two breaks still occupies a row, so `<br><br>` leaves a
+/// blank line just as a blank source line does.
 fn wrap_spans(
     spans: &[Span<'static>],
     width: usize,
@@ -1616,10 +2046,23 @@ fn wrap_spans(
         .iter()
         .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
         .collect();
-    if cells.is_empty() {
-        out.push(Line::from(prefix.to_vec()));
-        return;
+    let mut start = 0;
+    for idx in 0..=cells.len() {
+        if idx == cells.len() || cells[idx].0 == '\n' {
+            wrap_segment(&cells[start..idx], avail, prefix, out);
+            start = idx + 1;
+        }
     }
+}
+
+/// Word-wraps one hard-break-free cell run, appending its rows. An empty run
+/// still yields one (prefix-only) row.
+fn wrap_segment(
+    cells: &[(char, Style)],
+    avail: usize,
+    prefix: &[Span<'static>],
+    out: &mut Vec<Line<'static>>,
+) {
     let mut row: Vec<(char, Style)> = Vec::new();
     let n = cells.len();
     let mut i = 0;
@@ -2177,6 +2620,116 @@ mod tests {
             parse_blocks("para\n\n---"),
             vec![MdBlock::Paragraph(vec![Span::raw("para")]), MdBlock::Rule]
         );
+    }
+
+    #[test]
+    fn html_entities_are_decoded_named_and_numeric() {
+        let s = parse_inline("a &amp; b &lt;x&gt; &#65; &#x42; &copy;");
+        assert_eq!(span_text(&s), "a & b <x> A B ©");
+    }
+
+    #[test]
+    fn html_comments_are_removed_and_unknown_tags_stripped() {
+        assert_eq!(lines(Markdown::new("x<!-- hide -->y"), 3, 1), "xy \n");
+        assert_eq!(
+            lines(Markdown::new("<span class=\"k\">hi</span>"), 4, 1),
+            "hi  \n"
+        );
+    }
+
+    #[test]
+    fn html_formatting_tags_map_to_markdown_styling() {
+        let s = parse_inline("<b>B</b> <i>I</i> <code>c*d*</code>");
+        assert!(
+            s.iter()
+                .any(|x| x.content == "B" && x.style.add_modifier.contains(Modifier::BOLD))
+        );
+        assert!(
+            s.iter()
+                .any(|x| x.content == "I" && x.style.add_modifier.contains(Modifier::ITALIC))
+        );
+        // <code> is a literal code span: the inner *d* is not italicised.
+        let code = s
+            .iter()
+            .find(|x| x.style.fg == Some(Color::Yellow))
+            .unwrap();
+        assert_eq!(code.content, "c*d*");
+    }
+
+    #[test]
+    fn html_br_is_a_hard_line_break_and_code_keeps_entities_literal() {
+        assert_eq!(lines(Markdown::new("a<br>b"), 3, 2), "a  \nb  \n");
+        // No entity decoding inside a code span.
+        let s = parse_inline("`&amp;`");
+        assert_eq!(s[0].content, "&amp;");
+    }
+
+    #[test]
+    fn reference_links_full_collapsed_and_shortcut_resolve() {
+        // Full, collapsed, and shortcut forms all resolve to the same link.
+        for src in [
+            "[t][r]\n\n[r]: http://e.com",
+            "[t][]\n\n[t]: http://e.com",
+            "[t]\n\n[t]: http://e.com",
+        ] {
+            assert_eq!(
+                Markdown::new(src).links(),
+                vec![Link::new("t", "http://e.com")],
+                "src = {src:?}"
+            );
+        }
+        // Label matching is case-insensitive and whitespace-collapsed.
+        assert_eq!(
+            Markdown::new("[Click Here][My  Ref]\n\n[my ref]: u").links(),
+            vec![Link::new("Click Here", "u")]
+        );
+    }
+
+    #[test]
+    fn an_unresolved_reference_renders_literally_and_is_no_link() {
+        let md = Markdown::new("see [text][missing] end");
+        assert!(md.links().is_empty());
+        assert_eq!(lines(md, 20, 1), "see [text][missing] \n");
+    }
+
+    #[test]
+    fn reference_image_resolves_and_definition_is_not_rendered() {
+        let md = Markdown::new("![a logo][l]\n\n[l]: logo.png");
+        // An image is not a link…
+        assert!(md.links().is_empty());
+        // …its alt stands in (styled), and the definition line renders nothing.
+        let out = lines(md, 7, 1);
+        assert_eq!(out, "a logo \n");
+    }
+
+    #[test]
+    fn a_definition_inside_a_code_fence_is_not_a_definition() {
+        // The fenced `[x]: y` is code, so `[x]` stays an unresolved literal.
+        let md = Markdown::new("```\n[x]: http://e.com\n```\n\n[x]");
+        assert!(md.links().is_empty());
+    }
+
+    #[test]
+    fn loose_lists_get_inter_item_spacers_tight_lists_do_not() {
+        // Tight: no blank line between items → compact.
+        assert_eq!(lines(Markdown::new("- a\n- b"), 4, 2), "• a \n• b \n");
+        // Loose: a blank line between items → a spacer row between them.
+        assert_eq!(
+            lines(Markdown::new("- a\n\n- b"), 4, 3),
+            "• a \n    \n• b \n"
+        );
+    }
+
+    #[test]
+    fn a_multi_block_item_makes_the_list_loose() {
+        let blocks = parse_blocks("- one\n\n  still one\n- two");
+        match &blocks[0] {
+            MdBlock::List { loose, items, .. } => {
+                assert!(*loose);
+                assert_eq!(items.len(), 2);
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
     }
 
     #[test]
