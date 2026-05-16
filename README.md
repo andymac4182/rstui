@@ -10,9 +10,9 @@ while staying idiomatic to Rust.
 
 > **Status:** early foundation. The rendering substrate, the terminal
 > `Backend` boundary, the double-buffered `Terminal` frame driver, the
-> keyboard/mouse/focus/resize `Event` model, and the Elm-style
-> `App`/`Cmd`/`Harness` runtime exist and are tested; a real terminal driver,
-> components, and the plugin host are not built yet.
+> constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
+> model, and the Elm-style `App`/`Cmd`/`Harness` runtime exist and are tested;
+> a real terminal driver, components, and the plugin host are not built yet.
 
 ## Workspace
 
@@ -21,12 +21,11 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`    | Dependency-free substrate: geometry, style, buffer, backend, terminal, event   |
+| `crates/rstui-core`    | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event |
 | `crates/rstui-runtime` | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
 
-Planned boundaries as the framework grows: a real terminal driver, layout, a
-component set, more examples, and a permissioned plugin host built on process
-isolation.
+Planned boundaries as the framework grows: a real terminal driver, a component
+set, more examples, and a permissioned plugin host built on process isolation.
 
 ### `rstui-core`
 
@@ -37,6 +36,10 @@ loop — so every layer above it can be unit tested without a TTY.
   edge accessors can never overflow.
 - `style` — `Color`, `Modifier`, and a composable `Style` patch model that
   themes, focus, and selection highlights build on.
+- `layout` — `Layout`, `Direction`, and the `Constraint` vocabulary
+  (`Length`/`Percentage`/`Ratio`/`Min`/`Max`/`Fill`) for dividing a `Rect`
+  into contiguous regions. A deterministic, integer-only divider (no Cassowary
+  solver, no floats) that always tiles the area exactly.
 - `buffer` — `Cell` and the immediate-mode `Buffer` grid widgets draw into and
   renderers `diff` against.
 - `backend` — the `Backend` trait (the screen boundary that consumes a

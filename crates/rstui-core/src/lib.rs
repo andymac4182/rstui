@@ -9,6 +9,8 @@
 //!   [`Rect`], [`Margin`]).
 //! - [`style`]: composable colors and attributes ([`Color`], [`Modifier`],
 //!   [`Style`]).
+//! - [`layout`]: dividing a [`Rect`] into contiguous sub-regions with
+//!   [`Constraint`]s ([`Layout`], [`Direction`]).
 //! - [`buffer`]: the immediate-mode [`Cell`] grid ([`Buffer`]) that widgets
 //!   draw into and renderers diff.
 //! - [`backend`]: the [`Backend`] screen boundary plus an in-memory
@@ -47,6 +49,7 @@ pub mod backend;
 pub mod buffer;
 pub mod event;
 pub mod geometry;
+pub mod layout;
 pub mod style;
 pub mod terminal;
 
@@ -56,5 +59,6 @@ pub use event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 pub use geometry::{Margin, Position, Rect, Size};
+pub use layout::{Constraint, Direction, Layout};
 pub use style::{Color, Modifier, Style};
 pub use terminal::{CompletedFrame, Frame, Terminal};
