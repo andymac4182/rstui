@@ -64,11 +64,7 @@
 use rstui_core::{Event, Terminal, TestBackend};
 
 use crate::app::App;
-
-/// The default cap on `update`/`perform` steps per input before the harness
-/// gives up and panics. Generous enough for real cascades, low enough to fail
-/// a runaway test fast.
-pub const DEFAULT_COMMAND_BUDGET: usize = 1024;
+use crate::run::{DEFAULT_COMMAND_BUDGET, Settled, settle};
 
 /// Drives an [`App`] over an in-memory [`TestBackend`] with no terminal.
 ///
@@ -185,32 +181,14 @@ impl<A: App> Harness<A> {
 
     /// Processes a command and every message it cascades into, in order, until
     /// the work settles or the budget is exceeded.
+    ///
+    /// Delegates to the *exact* [`settle`](crate::run::settle) state machine
+    /// the live [`run`](crate::run) loop uses, so the harness's semantics
+    /// cannot drift from production: the harness is that loop with a
+    /// [`TestBackend`] and scripted input swapped in.
     fn settle(&mut self, cmd: crate::Cmd<A::Message>) {
-        // Breadth-first: a command's messages are folded in order, and each
-        // resulting command is appended, so ordering is deterministic.
-        let mut pending = std::collections::VecDeque::new();
-        let mut quit = false;
-        cmd.drain(|m| pending.push_back(m), || quit = true);
-        if quit {
+        if settle(&mut self.app, cmd, self.command_budget) == Settled::Quit {
             self.running = false;
-            return;
-        }
-
-        let mut steps = 0usize;
-        while let Some(message) = pending.pop_front() {
-            steps += 1;
-            assert!(
-                steps <= self.command_budget,
-                "rstui-runtime: command loop exceeded {} steps without settling; \
-                 an update/perform cycle is producing messages without end",
-                self.command_budget,
-            );
-            let next = self.app.update(message);
-            next.drain(|m| pending.push_back(m), || quit = true);
-            if quit {
-                self.running = false;
-                return;
-            }
         }
     }
 

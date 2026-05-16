@@ -14,12 +14,17 @@
 //! - [`Harness`]: a deterministic, terminal-free driver that runs the real
 //!   loop over a [`TestBackend`](rstui_core::TestBackend) so whole apps are
 //!   unit-testable with no TTY, threads, or clock.
+//! - [`run`]: the **live** event loop — generic over a real
+//!   [`Backend`](rstui_core::Backend) + [`EventSource`](rstui_core::EventSource)
+//!   — that drives an [`App`] on an actual terminal.
 //!
-//! Keeping the loop a contract means the *same* `App`/`Cmd` code runs under
-//! the headless [`Harness`] today and under a real terminal runtime later with
-//! no changes — the harness is the reference semantics for that future driver.
-//! [`Event`] and [`Frame`] are re-exported from `rstui-core` so an [`App`]
-//! impl needs only this crate in scope.
+//! [`run`] and [`Harness`] share one [`settle`](run::settle) command-settling
+//! core, so the *same* `App`/`Cmd` code runs under the headless [`Harness`] in
+//! tests and under [`run`] on a real terminal with no changes — the harness is
+//! not merely *a* reference for the live loop, it is literally the same reducer
+//! logic with a [`TestBackend`](rstui_core::TestBackend) and scripted input
+//! swapped in. [`Event`] and [`Frame`] are re-exported from `rstui-core` so an
+//! [`App`] impl needs only this crate in scope.
 //!
 //! # Example
 //!
@@ -77,10 +82,12 @@
 pub mod app;
 pub mod cmd;
 pub mod harness;
+pub mod run;
 
 pub use app::App;
 pub use cmd::Cmd;
-pub use harness::{DEFAULT_COMMAND_BUDGET, Harness};
+pub use harness::Harness;
+pub use run::{DEFAULT_COMMAND_BUDGET, RunError, run};
 
 // Re-exported so an `App` implementor needs only `rstui_runtime` in scope for
 // the trait's own signatures.

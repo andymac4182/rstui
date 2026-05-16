@@ -14,10 +14,12 @@ while staying idiomatic to Rust.
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
 > model, the `Widget` abstraction with the foundational `Block` container, the
 > styled-text model (`Span`/`Line`/`Text`), the Elm-style
-> `App`/`Cmd`/`Harness` runtime, and the crossterm terminal driver's input
-> translation, `Backend` implementation, **and panic-safe RAII lifecycle
-> guard** exist and are tested; the crossterm input source, a broader
-> component set, and the plugin host are not built yet.
+> `App`/`Cmd`/`Harness` runtime **plus the live `run` loop (the production
+> twin of `Harness`, generic over any `Backend` + `EventSource`)**, and the
+> crossterm terminal driver's input translation, `Backend` implementation,
+> and panic-safe RAII lifecycle guard exist and are tested; the crossterm
+> input source, a broader component set, and the plugin host are not built
+> yet.
 
 ## Workspace
 
@@ -27,15 +29,16 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, event_source, widget, text |
-| `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
+| `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, and the panic-safe RAII lifecycle guard |
 
 The `rstui-crossterm` crate now exists ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md));
 its crossterm → `rstui-core` event-translation layer, its `Backend`
 implementation over `io::Write`, and its panic-safe terminal-lifecycle
-guard have landed. The core `EventSource` boundary it will implement now
-exists; the crossterm input source itself (`EventSource` over sync
-`poll`/`read`, then a feature-gated async stream) is the next slice. Other planned
+guard have landed. The live `run` loop (generic over `Backend` +
+`EventSource`) now exists in `rstui-runtime`, so the crossterm input source
+itself (`EventSource` over sync `poll`/`read`, then a feature-gated async
+stream) is the only piece left before an `App` runs on a real terminal. Other planned
 boundaries as the framework grows: a broader component set (the `Widget`
 trait lives in core;
 concrete widgets beyond `Block` will graduate to their own crate once there
@@ -100,8 +103,15 @@ app code runs headless today and under a real terminal later.
   back into `update`; the app never does IO or quits directly.
 - `Harness` — a deterministic, terminal-free driver that runs the real loop
   over `rstui-core`'s `TestBackend`, so whole apps are unit-testable (assert
-  on state and the rendered snapshot) with no TTY, threads, or clock. It is
-  the reference semantics for the future real runtime.
+  on state and the rendered snapshot) with no TTY, threads, or clock.
+- `run` — the **live** event loop, generic over any `rstui-core` `Backend` +
+  `EventSource`. It shares one `settle` command-settling core with `Harness`,
+  so the harness is not merely *a* reference for the live loop — it is
+  literally the same reducer logic with a `TestBackend` and scripted input
+  swapped in. The same `App`/`Cmd` code runs headless in tests and live on a
+  terminal, unchanged. Commands run inline and the loop blocks on input
+  (threaded commands and a periodic tick are separable future slices,
+  deliberately deferred, not stubbed).
 
 ### `rstui-crossterm`
 
@@ -136,10 +146,13 @@ vocabulary, so the backend stays swappable.
   free `init`/`restore`, affordable because rstui owns the loop. The
   enter/leave choreography is asserted in memory with no TTY (raw mode is
   the only PTY-only seam, gated by `LifecycleOptions::raw_mode`).
-- Next: the crossterm input source (sync `poll`/`read`, then a
-  feature-gated async event stream), and an opt-in panic hook so a
-  panicking app's message stays visible (a concern separate from
-  teardown, belonging with the runtime driver).
+- Next: the live `run` loop now exists in `rstui-runtime` (generic over
+  `Backend` + `EventSource`), so the **only** remaining piece to run an
+  `App` on a real terminal is a `CrosstermEventSource` implementing
+  `rstui-core`'s `EventSource` (sync `poll`/`read`, then a feature-gated
+  async event stream). Also pending: an opt-in panic hook so a panicking
+  app's message stays visible (a concern separate from teardown, belonging
+  with the runtime driver).
 
 ## Architecture decisions
 
