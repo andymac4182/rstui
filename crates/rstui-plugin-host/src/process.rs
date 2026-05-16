@@ -185,6 +185,23 @@ pub trait PluginProcess: Send {
     /// The protocol layer reads length-prefixed frames from here.
     fn stdout(&mut self) -> &mut dyn Read;
 
+    /// Take ownership of the plugin's stdout as an owned, `Send` reader so
+    /// the host can move it onto a dedicated reader thread for
+    /// **deadline-bounded** reads (ADR 0007 §6 — a plugin that stalls
+    /// mid-frame must still be killed at the deadline, not block the host
+    /// forever; safe `std` cannot put a read timeout on a pipe without the
+    /// `unsafe` libc the workspace forbids, so a reader thread plus
+    /// `recv_timeout` is the mechanism).
+    ///
+    /// Consumed once: `Some` on the first call, `None` thereafter. After it
+    /// is taken, [`stdout`](Self::stdout) must not be used. The default
+    /// returns `None` so the host falls back to the synchronous
+    /// [`stdout`](Self::stdout) path; the real and fake processes override
+    /// it.
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        None
+    }
+
     /// Takes ownership of the plugin's stderr stream, if not already taken.
     ///
     /// Returns `Some` on the first call and `None` on every subsequent call —
@@ -397,8 +414,9 @@ pub struct FakePluginProcess {
     stdin_capture: StdinCapture,
     /// Shared read-back handle for [`written_to_stdin`](Self::written_to_stdin).
     stdin_buf: Arc<Mutex<Vec<u8>>>,
-    /// Scripted stdout bytes read via `stdout()`.
-    stdout_script: Cursor<Vec<u8>>,
+    /// Scripted stdout bytes. `Some` until taken by `take_stdout`; read via
+    /// `stdout()` while still present.
+    stdout_script: Option<Cursor<Vec<u8>>>,
     /// Scripted stderr bytes; taken once via `take_stderr`.
     stderr_script: Option<Vec<u8>>,
     /// Outcome returned by `wait` and (once exited) `try_wait`.
@@ -435,7 +453,7 @@ impl FakePluginProcess {
                 buf: Arc::clone(&stdin_buf),
             },
             stdin_buf,
-            stdout_script: Cursor::new(stdout_bytes),
+            stdout_script: Some(Cursor::new(stdout_bytes)),
             stderr_script: Some(stderr_bytes),
             scripted_outcome: outcome,
             lifecycle: FakeLifecycle::Running,
@@ -458,7 +476,7 @@ impl FakePluginProcess {
                 buf: Arc::clone(&stdin_buf),
             },
             stdin_buf,
-            stdout_script: Cursor::new(Vec::new()),
+            stdout_script: Some(Cursor::new(Vec::new())),
             stderr_script: Some(Vec::new()),
             scripted_outcome: outcome,
             lifecycle: FakeLifecycle::AlreadyExited,
@@ -512,7 +530,16 @@ impl PluginProcess for FakePluginProcess {
     }
 
     fn stdout(&mut self) -> &mut dyn Read {
-        &mut self.stdout_script
+        self.stdout_script
+            .as_mut()
+            .expect("FakePluginProcess::stdout() after take_stdout()")
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.stdout_script.take().map(|cursor| {
+            let reader: Box<dyn Read + Send> = Box::new(cursor);
+            reader
+        })
     }
 
     fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
@@ -719,7 +746,7 @@ mod tests {
                 buf: Arc::clone(&stdin_buf),
             },
             stdin_buf: Arc::clone(&stdin_buf),
-            stdout_script: Cursor::new(Vec::new()),
+            stdout_script: Some(Cursor::new(Vec::new())),
             stderr_script: Some(Vec::new()),
             scripted_outcome: success_outcome(),
             lifecycle: FakeLifecycle::Running,
@@ -747,7 +774,7 @@ mod tests {
                 buf: Arc::clone(&shared_buf),
             },
             stdin_buf: Arc::clone(&shared_buf),
-            stdout_script: Cursor::new(Vec::new()),
+            stdout_script: Some(Cursor::new(Vec::new())),
             stderr_script: Some(Vec::new()),
             scripted_outcome: success_outcome(),
             lifecycle: FakeLifecycle::Running,

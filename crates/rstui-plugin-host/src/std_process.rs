@@ -187,8 +187,8 @@ pub struct StdPluginProcess {
     /// The child's stdin pipe. `None` after [`request_shutdown`](Self::request_shutdown)
     /// has dropped it to signal cooperative shutdown via EOF.
     stdin: Option<ChildStdin>,
-    /// The child's stdout pipe. `Some` for the whole lifetime (never taken);
-    /// `Option` only to mirror the spawn-time `take`.
+    /// The child's stdout pipe. `None` after [`take_stdout`](Self::take_stdout)
+    /// has moved it onto the host's deadline-bounded reader thread.
     stdout: Option<ChildStdout>,
     /// The child's stderr pipe. `None` after [`take_stderr`](Self::take_stderr)
     /// has moved it to the host's log-draining task.
@@ -217,12 +217,23 @@ impl PluginProcess for StdPluginProcess {
 
     /// The live [`ChildStdout`] as a `&mut dyn Read`.
     ///
-    /// The host reads length-prefixed response frames here. Always available
-    /// (stdout is never taken).
+    /// The host reads length-prefixed response frames here when it uses the
+    /// synchronous path; once [`take_stdout`](Self::take_stdout) has moved
+    /// the pipe onto a reader thread this must not be called.
     fn stdout(&mut self) -> &mut dyn Read {
         self.stdout
             .as_mut()
-            .expect("StdPluginProcess::stdout() pipe missing; spawn always pipes stdout")
+            .expect("StdPluginProcess::stdout() called after take_stdout() moved the pipe")
+    }
+
+    /// Move the child's [`ChildStdout`] out so the host can run
+    /// deadline-bounded reads on a dedicated thread (ADR 0007 §6). `Some`
+    /// once, then `None`. After this, [`stdout`](Self::stdout) panics —
+    /// the host uses exactly one of the two paths per process.
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.stdout
+            .take()
+            .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>)
     }
 
     /// Moves the child's stderr out for the host's log-draining task.

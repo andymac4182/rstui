@@ -38,8 +38,10 @@
 //! anything about widgets or the event loop.
 
 use std::fmt;
+use std::io::Read;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::Duration;
 
 use crate::capability::{CapabilityRequest, normalize_lexical};
@@ -275,9 +277,10 @@ impl PluginHost {
     /// until it ends, and return what was observed — or a [`HostError`]
     /// attributed to the plugin.
     ///
-    /// `timeout` bounds the whole run; it is checked before each plugin
-    /// frame (a plugin that never yields is additionally bounded by the
-    /// forced kill — ADR 0007 §6). `cwd` is the base a *relative*
+    /// `timeout` bounds the whole run and is enforced *both* between
+    /// frames and while the host is blocked waiting for one — a plugin
+    /// that opens a read and stalls is killed at the deadline, not left to
+    /// hang the host (ADR 0007 §6). `cwd` is the base a *relative*
     /// filesystem request path is resolved against before the policy sees
     /// it (ADR 0007 §3).
     ///
@@ -323,19 +326,45 @@ impl PluginHost {
 
         let started = self.clock.elapsed();
 
-        if let Err(err) = self.handshake(plugin.clone(), process.as_mut()) {
+        // Move stdout onto a dedicated reader thread so a plugin that
+        // stalls *mid-frame* is still bounded by the deadline, not just one
+        // that stalls between frames (ADR 0007 §6). Safe `std` cannot put a
+        // read timeout on a pipe without the `unsafe` libc the workspace
+        // forbids; a reader thread feeding a channel the host drains with
+        // `recv_timeout` is the mechanism.
+        let Some(stdout) = process.take_stdout() else {
+            let _ = process.kill();
+            return Err(HostError::Handshake {
+                plugin,
+                detail: "process exposed no stdout pipe".to_string(),
+            });
+        };
+        let channel = FrameChannel::spawn(stdout);
+
+        if let Err(err) =
+            self.handshake(plugin.clone(), process.as_mut(), &channel, started, timeout)
+        {
+            let _ = process.request_shutdown();
             let _ = process.kill();
             return Err(err);
         }
 
-        self.mediate(plugin, cwd, timeout, started, process)
+        // `channel` stays owned here; it is dropped the instant `run_plugin`
+        // returns (right after `mediate`), which ends the reader thread (its
+        // `send` fails once the receiver is gone, and a killed process's
+        // closed pipe unblocks a blocked `read`).
+        self.mediate(plugin, cwd, timeout, started, process, &channel)
     }
 
-    /// Write `Initialize`, expect `Ready`. Any deviation is fatal.
+    /// Write `Initialize`, then expect `Ready` within the deadline. Any
+    /// deviation — wrong frame, closed stream, or timeout — is fatal.
     fn handshake(
         &self,
         plugin: PluginId,
         process: &mut dyn PluginProcess,
+        channel: &FrameChannel,
+        started: Duration,
+        timeout: Duration,
     ) -> Result<(), HostError> {
         let init = Frame::new(
             MessageType::Initialize,
@@ -347,21 +376,29 @@ impl PluginHost {
             source,
         })?;
 
-        let frame = read_frame(&mut process.stdout()).map_err(|source| HostError::Protocol {
-            plugin: plugin.clone(),
-            source,
-        })?;
-        match frame.message_type {
-            MessageType::Ready => Ok(()),
-            other => Err(HostError::Handshake {
+        match channel.recv(self.clock.as_ref(), started, timeout) {
+            Recv::Frame(frame) => match frame.message_type {
+                MessageType::Ready => Ok(()),
+                other => Err(HostError::Handshake {
+                    plugin,
+                    detail: format!("expected Ready, got {other:?}"),
+                }),
+            },
+            Recv::Closed => Err(HostError::Handshake {
                 plugin,
-                detail: format!("expected Ready, got {other:?}"),
+                detail: "stream closed before Ready".to_string(),
+            }),
+            Recv::TimedOut => Err(HostError::TimedOut {
+                plugin,
+                budget: timeout,
             }),
         }
     }
 
     /// The mediation loop. `started` is the clock reading at spawn; the run
-    /// is abandoned once `clock.elapsed() - started` exceeds `timeout`.
+    /// is abandoned once `clock.elapsed() - started` reaches `timeout` —
+    /// enforced *both* between frames and while blocked waiting for the
+    /// next one (a stalled read cannot outlive the budget).
     fn mediate(
         &self,
         plugin: PluginId,
@@ -369,24 +406,27 @@ impl PluginHost {
         timeout: Duration,
         started: Duration,
         mut process: Box<dyn PluginProcess>,
+        channel: &FrameChannel,
     ) -> Result<PluginRunReport, HostError> {
         let mut mediated = Vec::new();
         let mut logs = Vec::new();
 
         loop {
-            if self.clock.elapsed().saturating_sub(started) > timeout {
-                // Cooperative-then-forced (ADR 0007 §6).
-                let _ = process.request_shutdown();
-                let _ = process.kill();
-                return Err(HostError::TimedOut {
-                    plugin,
-                    budget: timeout,
-                });
-            }
-
-            let frame = match read_frame(&mut process.stdout()) {
-                Ok(frame) => frame,
-                Err(_) => {
+            let frame = match channel.recv(self.clock.as_ref(), started, timeout) {
+                Recv::TimedOut => {
+                    // Cooperative-then-forced (ADR 0007 §6). Dropping
+                    // `channel` after we return ends the reader thread:
+                    // its `send` fails once the receiver is gone, and once
+                    // the killed process closes the pipe its `read`
+                    // unblocks — so the thread exits, not leaks.
+                    let _ = process.request_shutdown();
+                    let _ = process.kill();
+                    return Err(HostError::TimedOut {
+                        plugin,
+                        budget: timeout,
+                    });
+                }
+                Recv::Closed => {
                     // The plugin's stdout ended: the conversation is over
                     // (standard pipe semantics — EOF means the peer closed).
                     // Stopping here *is* fail-closed (ADR 0007 §4): the host
@@ -406,6 +446,7 @@ impl PluginHost {
                         exit,
                     });
                 }
+                Recv::Frame(frame) => frame,
             };
 
             match frame.message_type {
@@ -509,6 +550,83 @@ fn correlation_id(n: u64) -> [u8; 16] {
     let mut id = [0u8; 16];
     id[..8].copy_from_slice(&n.to_be_bytes());
     id
+}
+
+/// What the reader thread hands the host for one read attempt.
+enum ReaderItem {
+    /// A successfully framed message.
+    Frame(Frame),
+    /// The stream ended or a framing error occurred — either way the
+    /// conversation is over (the host treats both identically: stop,
+    /// fail-closed; a corrupt *frame type/payload* is caught later, per
+    /// frame).
+    Closed,
+}
+
+/// The outcome of waiting for the next frame within the remaining budget.
+enum Recv {
+    /// A frame arrived.
+    Frame(Frame),
+    /// The plugin's stdout ended (EOF or unreadable).
+    Closed,
+    /// The deadline elapsed before a frame arrived — including while the
+    /// read was *blocked*, which is the whole point of the reader thread.
+    TimedOut,
+}
+
+/// Owns the plugin's stdout on a dedicated thread so the host can bound
+/// every read by the deadline (ADR 0007 §6). The thread loops
+/// [`read_frame`] and forwards each result over a bounded channel; the
+/// host drains it with [`recv`](FrameChannel::recv), whose wait is capped
+/// at the remaining budget. Dropping the `FrameChannel` drops the
+/// receiver, so the thread's next `send` fails and it exits (and once a
+/// killed process closes the pipe, a blocked `read` unblocks) — it is
+/// detached, never joined, so a wedged pipe can never wedge the host.
+struct FrameChannel {
+    rx: mpsc::Receiver<ReaderItem>,
+}
+
+impl FrameChannel {
+    fn spawn(reader: Box<dyn Read + Send>) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<ReaderItem>(16);
+        thread::spawn(move || {
+            let mut reader = reader;
+            loop {
+                let mut borrowed: &mut dyn Read = reader.as_mut();
+                match read_frame(&mut borrowed) {
+                    Ok(frame) => {
+                        if tx.send(ReaderItem::Frame(frame)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tx.send(ReaderItem::Closed);
+                        break;
+                    }
+                }
+            }
+        });
+        Self { rx }
+    }
+
+    /// Wait for the next frame, but never longer than the budget left
+    /// (`timeout` minus the clock's elapsed-since-`started`). The budget is
+    /// measured by the injected [`Clock`] (so the *between-frames* check is
+    /// deterministic in tests); the actual block uses the channel's
+    /// real-time `recv_timeout`, because a genuinely stalled pipe can only
+    /// be escaped in real time — a fake clock cannot unblock a real read.
+    fn recv(&self, clock: &dyn Clock, started: Duration, timeout: Duration) -> Recv {
+        let elapsed = clock.elapsed().saturating_sub(started);
+        if elapsed >= timeout {
+            return Recv::TimedOut;
+        }
+        match self.rx.recv_timeout(timeout - elapsed) {
+            Ok(ReaderItem::Frame(frame)) => Recv::Frame(frame),
+            Ok(ReaderItem::Closed) => Recv::Closed,
+            Err(mpsc::RecvTimeoutError::Timeout) => Recv::TimedOut,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Recv::Closed,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -861,6 +979,112 @@ mod tests {
             }
             other => panic!("expected TimedOut, got {other}"),
         }
+    }
+
+    #[test]
+    fn timeout_fires_even_when_the_plugin_stalls_mid_read() {
+        // The between-frames clock check cannot catch a plugin that opens a
+        // read and never produces a byte — the host would block in `read`
+        // forever. The reader-thread + recv_timeout seam must still bound
+        // it. Here the plugin never even sends Ready (its stdout read
+        // blocks); the host must time out and kill it promptly.
+        use std::io::{self, Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct BlockingReader {
+            released: Arc<AtomicBool>,
+        }
+        impl Read for BlockingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                while !self.released.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(0) // EOF once the test releases it, so the thread exits
+            }
+        }
+
+        struct StallingProcess {
+            stdout: Option<Box<dyn Read + Send>>,
+            sink: Vec<u8>,
+            killed: Arc<AtomicBool>,
+        }
+        impl PluginProcess for StallingProcess {
+            fn stdin(&mut self) -> &mut dyn Write {
+                &mut self.sink
+            }
+            fn stdout(&mut self) -> &mut dyn Read {
+                unreachable!("host uses take_stdout")
+            }
+            fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+                self.stdout.take()
+            }
+            fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+                None
+            }
+            fn request_shutdown(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+            fn kill(&mut self) -> io::Result<()> {
+                self.killed.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            fn wait(&mut self) -> io::Result<ExitOutcome> {
+                Ok(ExitOutcome {
+                    code: None,
+                    success: false,
+                })
+            }
+            fn try_wait(&mut self) -> io::Result<Option<ExitOutcome>> {
+                Ok(None)
+            }
+        }
+
+        struct StallingRunner {
+            released: Arc<AtomicBool>,
+            killed: Arc<AtomicBool>,
+        }
+        impl ProcessRunner for StallingRunner {
+            fn spawn(&self, _spec: &PluginSpawnSpec) -> io::Result<Box<dyn PluginProcess>> {
+                Ok(Box::new(StallingProcess {
+                    stdout: Some(Box::new(BlockingReader {
+                        released: Arc::clone(&self.released),
+                    })),
+                    sink: Vec::new(),
+                    killed: Arc::clone(&self.killed),
+                }))
+            }
+        }
+
+        let m = base_manifest("");
+        let released = Arc::new(AtomicBool::new(false));
+        let killed = Arc::new(AtomicBool::new(false));
+        let runner = StallingRunner {
+            released: Arc::clone(&released),
+            killed: Arc::clone(&killed),
+        };
+
+        let started = std::time::Instant::now();
+        let err = host(
+            Arc::new(runner),
+            Arc::new(ManifestPolicy::from_manifest(&m)),
+            Arc::new(RecordingHostEffects::new()),
+            Arc::new(FakeClock::new()),
+        )
+        .run_plugin(&m, Path::new("/w"), Duration::from_millis(50))
+        .expect_err("a plugin that stalls mid-read must still time out");
+        let elapsed = started.elapsed();
+
+        assert!(matches!(err, HostError::TimedOut { .. }), "got {err}");
+        assert!(
+            killed.load(Ordering::SeqCst),
+            "the stalled process must be force-killed"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "must time out at ~50ms, not block forever (took {elapsed:?})"
+        );
+        // Let the detached reader thread observe EOF and exit cleanly.
+        released.store(true, Ordering::SeqCst);
     }
 
     #[test]
