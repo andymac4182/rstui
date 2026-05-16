@@ -214,6 +214,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-smoke"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+ "rstui-runtime",
+ "rstui-widgets",
+]
+
+[[package]]
 name = "rstui-widgets"
 version = "0.0.1"
 dependencies = [

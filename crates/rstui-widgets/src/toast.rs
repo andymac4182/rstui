@@ -38,8 +38,8 @@
 //! Box width is a [`Constraint`] resolved with
 //! [`Constraint::apply`] (clamped to the overlay, exactly as
 //! [`Modal`](crate::Modal) sizes its dialog). Each box's body is rendered
-//! through a private [`Paragraph`](crate::Paragraph) with soft
-//! [`Wrap`](crate::Wrap), and its height is
+//! through a private [`Paragraph`] with soft
+//! [`Wrap`], and its height is
 //! [`Paragraph::line_count`](crate::Paragraph::line_count) at the inner width —
 //! so wrapping and right-edge clipping are *inherited*, never a second wrap
 //! algorithm.

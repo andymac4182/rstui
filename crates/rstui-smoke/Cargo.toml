@@ -1,0 +1,22 @@
+[package]
+name = "rstui-smoke"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "Cross-cutting headless smoke test: composes the rstui core, runtime, and widget public APIs end-to-end so an integration regression fails `cargo test` for every stream, not only at merge time."
+
+[lints]
+workspace = true
+
+# This crate exists to span stream boundaries: it depends on the public API
+# of core + runtime + widgets together, so the kind of cross-crate breakage
+# that took `main` red on 2026-05-17 (each slice green alone, broken merged)
+# is caught by the `test` gate before push instead of at merge.
+[dependencies]
+rstui-core = { path = "../rstui-core" }
+rstui-runtime = { path = "../rstui-runtime" }
+rstui-widgets = { path = "../rstui-widgets" }
