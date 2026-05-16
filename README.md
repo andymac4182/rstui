@@ -299,6 +299,20 @@ crate copies.
   `max_visible == 0`, over-wide/over-tall bodies all clip safely). The
   `toast_demo` example renders a realistic info/success/warning/error stack
   over background content TTY-free.
+- `tree` — `Tree`/`TreeItem`/`TreeGuides`: a single-select column of indented,
+  expand/collapse rows — file explorers, outline panes, nested settings. The
+  `List` projection generalized: a **pure projection** of a caller-owned
+  **flattened** `Vec` of the currently-visible rows. Each `TreeItem` carries
+  only its `depth`/`has_children`/`expanded`; which nodes exist, which are
+  expanded, and which is `selected`/`offset` is reducer-owned state (expanding
+  a node is "splice its children into the flattened list") — the widget reads,
+  never writes, exactly like `List`. `TreeGuides` selects the prefix style
+  (`Markers` arrows or `Lines` box-drawing); true last-sibling `├`/`└` elbows
+  need a tree fact the flattened contract withholds, so they are a
+  deliberately deferred `TreeItem` additive, not smuggled in. **Total** (empty
+  list, zero/!inner areas, offsets past the end, deep indents all clip
+  safely). The `tree_demo` example renders a realistic partially-expanded
+  explorer TTY-free.
 
 ### `rstui-runtime`
 
@@ -458,6 +472,7 @@ cargo run -p rstui-widgets --example input_demo
 cargo run -p rstui-widgets --example modal_demo
 cargo run -p rstui-widgets --example status_bar_demo
 cargo run -p rstui-widgets --example toast_demo
+cargo run -p rstui-widgets --example tree_demo
 cargo run -p rstui-runtime --example counter
 ```
 

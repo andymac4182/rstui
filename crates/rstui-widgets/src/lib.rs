@@ -77,6 +77,11 @@
 //!   framing [`Block`]) floated over an overlay; a pure projection of a
 //!   caller-owned message list — expiry/dismissal is the reducer's, like
 //!   [`Modal`]'s clear-region opacity and [`Paragraph`]'s reused soft wrap.
+//! - [`tree`]: [`Tree`] — a single-select column of indented,
+//!   expand/collapse rows ([`TreeItem`]/[`TreeGuides`]); the [`List`]
+//!   projection generalized to a caller-owned **flattened** `Vec` of
+//!   currently-visible rows (the reducer owns the tree, expansion, and
+//!   `selected`/`offset`; the widget only reads them).
 //!
 //! # Example
 //!
@@ -108,6 +113,7 @@ pub mod status_bar;
 pub mod table;
 pub mod tabs;
 pub mod toast;
+pub mod tree;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use button::Button;
@@ -125,3 +131,4 @@ pub use status_bar::StatusBar;
 pub use table::{Row, Table};
 pub use tabs::Tabs;
 pub use toast::{Toast, ToastCorner, ToastLevel, ToastMessage};
+pub use tree::{Tree, TreeGuides, TreeItem};
