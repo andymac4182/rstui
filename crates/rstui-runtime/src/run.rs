@@ -853,7 +853,24 @@ where
             },
 
             Some(message) = rx.recv() => {
-                if step(&mut app, message, &mut exec) == Settled::Quit {
+                let mut outcome = step(&mut app, message, &mut exec);
+                // Coalesce a result burst (a fan-out of parallel commands all
+                // completing): fold every result already queued, then repaint
+                // **once** — the same zero-backlog rule Slice 15 applies to
+                // input, and what the sync `run_core` already does by draining
+                // its channel before one render. `try_recv` is non-blocking,
+                // so it stops the instant the queue is empty.
+                let mut coalesced = 0usize;
+                while outcome == Settled::Running && coalesced < COALESCE_LIMIT {
+                    match rx.try_recv() {
+                        Ok(next) => {
+                            outcome = step(&mut app, next, &mut exec);
+                            coalesced += 1;
+                        }
+                        Err(_) => break, // empty (or closed): nothing more now
+                    }
+                }
+                if outcome == Settled::Quit {
                     running = false;
                 }
                 render(&mut terminal, &app).map_err(RunError::Backend)?;
@@ -1758,6 +1775,62 @@ mod tests {
             draws.get(),
             2,
             "the async select! drain coalesces the burst to one repaint"
+        );
+    }
+
+    /// A fan-out of `BURST` off-loop `perform`s all complete and queue on the
+    /// result channel; the async loop must fold every one but repaint far
+    /// fewer than `BURST` times (it drains `try_recv` then renders once, like
+    /// the sync loop and Slice 15's input path). The exact count depends on
+    /// blocking-pool scheduling, so the deterministic, flake-free assertion is
+    /// "every result folded" + "renders ≪ results" (without coalescing it
+    /// would be ≈ `BURST`).
+    #[cfg(feature = "async")]
+    #[tokio::test(start_paused = true)]
+    async fn async_loop_coalesces_a_command_result_burst() {
+        #[derive(Default)]
+        struct FanOut {
+            done: u32,
+        }
+        enum Msg {
+            Done,
+        }
+        const BURST: u32 = 64;
+        impl App for FanOut {
+            type Message = Msg;
+            fn init(&mut self) -> Cmd<Msg> {
+                Cmd::batch((0..BURST).map(|_| Cmd::perform(|| Msg::Done)))
+            }
+            fn update(&mut self, _: Msg) -> Cmd<Msg> {
+                self.done += 1;
+                if self.done == BURST {
+                    Cmd::quit()
+                } else {
+                    Cmd::none()
+                }
+            }
+            fn view(&self, _: &mut rstui_core::Frame<'_>) {}
+        }
+        let draws = Rc::new(std::cell::Cell::new(0));
+        let backend = RenderCountingBackend {
+            inner: Rc::new(RefCell::new(TestBackend::new(2, 1))),
+            draws: Rc::clone(&draws),
+        };
+        // No input: the loop is driven purely by the command-result burst.
+        // The sender is held so `next_event` never reports end-of-input.
+        let (keepalive_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut source = ScriptedAsyncSource { rx };
+
+        let app = run_async(FanOut::default(), backend, &mut source)
+            .await
+            .unwrap();
+        drop(keepalive_tx);
+
+        assert_eq!(app.done, BURST, "every off-loop result folded");
+        assert!(
+            draws.get() < BURST as usize,
+            "results coalesced: {} repaints for {BURST} results",
+            draws.get(),
         );
     }
 
