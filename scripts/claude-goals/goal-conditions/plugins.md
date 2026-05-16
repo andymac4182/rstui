@@ -1,15 +1,16 @@
 Run the rstui Plugin Host and Secure Execution stream.
 
-Repo: `/Users/andrewmcclenaghan/dev/andymac4182/rstui`
-Full brief: `scripts/claude-goals/plugins.md`
+Main checkout: `/Users/andrewmcclenaghan/dev/andymac4182/rstui`
+Full brief in this worktree: `scripts/claude-goals/plugins.md`
 Stream: `plugins`
 
-First read the full brief from the repo and follow it as the source of truth.
-Do not summarize it and stop. Execute it.
+First confirm `git rev-parse --show-toplevel` is NOT the main checkout path
+above. If it is, stop immediately. Then read the full brief from the current
+worktree and follow it as the source of truth. Do not summarize it and stop.
+Execute it.
 
-Goal: use the current Claude `--worktree` if launched there, otherwise create
-your own worktree from latest `origin/main`; then make substantial, validated
-progress on rstui's permissioned plugin system. Own plugin
+Goal: use the current working directory as your stream worktree and make
+substantial, validated progress on rstui's permissioned plugin system. Own plugin
 host/runtime crates or modules, plugin ADRs/docs, examples/tests for manifests,
 permissions, process isolation, IO boundaries, and focused runtime integration
 only where plugin events/capabilities require it. Avoid widgets, rich
@@ -31,6 +32,9 @@ Use Claude Code agent teams/background agents to parallelize reference review,
 implementation, and verification inside this stream's ownership boundary. Move
 fast, integrate the agent work yourself, and do not let subagents edit other
 streams' owned areas.
+
+All source edits must happen in the current worktree. Do not edit files under
+the main checkout path directly; use it only for the merge-back commands.
 
 Maintain existing ADRs/conventions and the vague-name ban. Run the strongest
 available gates: `cargo fmt --all --check`, `cargo clippy --all-targets

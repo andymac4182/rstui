@@ -1,15 +1,16 @@
 Run the rstui Full-Screen Runtime stream.
 
-Repo: `/Users/andrewmcclenaghan/dev/andymac4182/rstui`
-Full brief: `scripts/claude-goals/fullscreen-runtime.md`
+Main checkout: `/Users/andrewmcclenaghan/dev/andymac4182/rstui`
+Full brief in this worktree: `scripts/claude-goals/fullscreen-runtime.md`
 Stream: `fullscreen-runtime`
 
-First read the full brief from the repo and follow it as the source of truth.
-Do not summarize it and stop. Execute it.
+First confirm `git rev-parse --show-toplevel` is NOT the main checkout path
+above. If it is, stop immediately. Then read the full brief from the current
+worktree and follow it as the source of truth. Do not summarize it and stop.
+Execute it.
 
-Goal: use the current Claude `--worktree` if launched there, otherwise create
-your own worktree from latest `origin/main`; then make substantial, validated
-progress on full-screen TUI runtime support. Own
+Goal: use the current working directory as your stream worktree and make
+substantial, validated progress on full-screen TUI runtime support. Own
 `crates/rstui-runtime/**`, `crates/rstui-crossterm/**`, runtime/crossterm
 examples, and only focused `rstui-core` event/focus/terminal/event_source
 changes needed by the runtime boundary. Avoid widget catalog, rich rendering,
@@ -31,6 +32,9 @@ Use Claude Code agent teams/background agents to parallelize reference review,
 implementation, and verification inside this stream's ownership boundary. Move
 fast, integrate the agent work yourself, and do not let subagents edit other
 streams' owned areas.
+
+All source edits must happen in the current worktree. Do not edit files under
+the main checkout path directly; use it only for the merge-back commands.
 
 Maintain existing ADRs/conventions and the vague-name ban. Run the strongest
 available gates: `cargo fmt --all --check`, `cargo clippy --all-targets

@@ -1,15 +1,16 @@
 Run the rstui Widgets stream.
 
-Repo: `/Users/andrewmcclenaghan/dev/andymac4182/rstui`
-Full brief: `scripts/claude-goals/widgets.md`
+Main checkout: `/Users/andrewmcclenaghan/dev/andymac4182/rstui`
+Full brief in this worktree: `scripts/claude-goals/widgets.md`
 Stream: `widgets`
 
-First read the full brief from the repo and follow it as the source of truth.
-Do not summarize it and stop. Execute it.
+First confirm `git rev-parse --show-toplevel` is NOT the main checkout path
+above. If it is, stop immediately. Then read the full brief from the current
+worktree and follow it as the source of truth. Do not summarize it and stop.
+Execute it.
 
-Goal: use the current Claude `--worktree` if launched there, otherwise create
-your own worktree from latest `origin/main`; then make substantial, validated
-progress on rstui widget/component authoring. Own
+Goal: use the current working directory as your stream worktree and make
+substantial, validated progress on rstui widget/component authoring. Own
 `crates/rstui-widgets/**`, widget examples, widget docs, and only focused
 `rstui-core` primitives that widgets truly need. Avoid runtime, plugin, rich
 rendering, benchmark, CI, and kitchen-sink work except for tiny integration
@@ -25,6 +26,9 @@ Use Claude Code agent teams/background agents to parallelize reference review,
 implementation, and verification inside this stream's ownership boundary. Move
 fast, integrate the agent work yourself, and do not let subagents edit other
 streams' owned areas.
+
+All source edits must happen in the current worktree. Do not edit files under
+the main checkout path directly; use it only for the merge-back commands.
 
 Keep widgets pure projections of caller-owned state, composable, documented,
 agent-friendly, total under tiny/narrow/empty inputs, and consistent with the

@@ -11,46 +11,30 @@ work throughout the night instead of diverging for hours.
 
 ## Repository
 
-The source repository is:
+The main checkout is:
 
 ```sh
 /Users/andrewmcclenaghan/dev/andymac4182/rstui
 ```
 
-Preferred launch mode is Claude's own `--worktree` flag. If this session was
-already launched in a Claude-created worktree, use the current directory as
-`$worktree` and do not create a second worktree. If you were launched from the
-main checkout instead, create your own worktree from current `origin/main`.
-Do not work directly in the main checkout except during the serialized
-merge-back protocol.
+The launcher creates an explicit git worktree under:
 
 ```sh
-repo="/Users/andrewmcclenaghan/dev/andymac4182/rstui"
-stream="fullscreen-runtime"
-stamp="$(date +%Y%m%d-%H%M%S)"
-branch="goal/${stream}-${stamp}"
-worktree_root="/Users/andrewmcclenaghan/dev/andymac4182/rstui-claude-worktrees"
-worktree="${worktree_root}/${stream}-${stamp}"
-
-git -C "$repo" fetch origin main
-git -C "$repo" status --short
+/Users/andrewmcclenaghan/dev/andymac4182/rstui-stream-worktrees
 ```
 
-If you are already in a Claude worktree, set `worktree="$(pwd)"`, set `branch`
-from `git branch --show-current`, and continue. If you are in the main checkout
-and the main checkout is dirty, stop and report the dirty files. Do not
-overwrite or stash user work. If the worktree path already exists, choose a new
-suffixed path. Do not delete existing worktrees.
-
-All source edits must happen in `$worktree`. Do not edit files under `$repo`
-directly. `$repo` is only the main-checkout merge target during the serialized
-merge-back protocol.
+Treat the current working directory as the only editable source workspace.
+Set these variables before running merge-back commands:
 
 ```sh
-mkdir -p "$worktree_root"
-git -C "$repo" worktree add -b "$branch" "$worktree" origin/main
-cd "$worktree"
+main_repo="/Users/andrewmcclenaghan/dev/andymac4182/rstui"
+worktree="$(git rev-parse --show-toplevel)"
+branch="$(git branch --show-current)"
 ```
+
+If `worktree` is the same path as `main_repo`, stop immediately. You were
+launched in the wrong directory. Do not edit the main checkout. The main
+checkout is only the serialized merge-back target.
 
 ## Your Ownership
 
@@ -189,7 +173,7 @@ Use this exact intent after each validated commit. The lock is important
 because five Claude sessions may be merging to `main` at the same time.
 
 ```sh
-repo="/Users/andrewmcclenaghan/dev/andymac4182/rstui"
+main_repo="/Users/andrewmcclenaghan/dev/andymac4182/rstui"
 lock="/tmp/rstui-main-merge.lock"
 
 while ! mkdir "$lock" 2>/dev/null; do
@@ -214,9 +198,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo run -p xtask -- lint-names
 
-git -C "$repo" checkout main
-git -C "$repo" pull --ff-only origin main
-git -C "$repo" status --short
+git -C "$main_repo" checkout main
+git -C "$main_repo" pull --ff-only origin main
+git -C "$main_repo" status --short
 ```
 
 If the main checkout is dirty, stop and report. Do not stash, reset, or
@@ -225,15 +209,15 @@ overwrite it.
 Merge and push:
 
 ```sh
-git -C "$repo" merge --no-ff "$branch" -m "Merge full-screen runtime goal slice"
+git -C "$main_repo" merge --no-ff "$branch" -m "Merge full-screen runtime goal slice"
 (
-  cd "$repo"
+  cd "$main_repo"
   cargo fmt --all --check
   cargo clippy --all-targets --all-features -- -D warnings
   cargo test --all-features
   cargo run -p xtask -- lint-names
 )
-git -C "$repo" push origin main
+git -C "$main_repo" push origin main
 ```
 
 If merge conflicts occur, abort the merge in the main checkout, release the
