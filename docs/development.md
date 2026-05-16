@@ -39,7 +39,8 @@ the inner loop would tax every slice (ADR 0003 §7/§8, Phase 3). A green
 |--------|---------|-------------|
 | `msrv` | new-language-feature creep past the declared `rust-version` | `rustup toolchain install 1.85.0 && cargo +1.85.0 check --workspace --all-targets --all-features` |
 | `unused-deps` | dependencies declared but unused | `cargo install cargo-machete && cargo machete` |
-| `supply-chain` | disallowed licenses, foreign registries/git, yanked crates (advisories non-blocking initially) | `cargo install cargo-deny && cargo deny check` |
+| `supply-chain` | RustSec advisories, disallowed licenses, foreign registries/git, yanked crates — all gating (`deny.toml` `ignore` is the reviewed escape hatch) | `cargo install cargo-deny && cargo deny check` |
+| `package` | release-packaging breakage (missing crates.io-required field, mis-included file) before a release tag | `cargo xtask publish-check` |
 
 The `msrv` pin and the publishable crates' internal-dependency versions are
 not kept in lock-step by discipline: the `xtask` `release` tests fail

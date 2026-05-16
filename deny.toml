@@ -1,10 +1,12 @@
 # cargo-deny — the supply-chain gate (ADR 0003 §7, Phase 3).
 #
 # Local:  cargo deny check
-# CI:     the `supply-chain` job (.github/workflows/ci.yml). Per ADR 0003 §7
-#         licenses / bans / sources are the *hard* gate; advisories run
-#         non-blocking initially (a fresh CVE must not red-wall every stream
-#         mid-flight) and are promoted to gating in a later, deliberate slice.
+# CI:     the `supply-chain` job (.github/workflows/ci.yml). All four checks
+#         — advisories, licenses, bans, sources — are now the *hard* gate.
+#         Advisories started non-blocking (ADR 0003 §7) and were promoted
+#         here in the planned later slice. The escape hatch for a triaged
+#         advisory is a rationale-commented entry in `[advisories] ignore`
+#         below — a reviewed decision in-tree, never silent suppression.
 
 [graph]
 # Match what CI builds (`--all-features`), so the gate sees the real graph.
@@ -12,12 +14,16 @@ all-features = true
 
 [advisories]
 version = 2
-# RustSec DB. A yanked crate is a real supply-chain signal — fail on it.
-# Vulnerability handling is non-blocking *in CI* via a separate
-# continue-on-error step, not by weakening this file; that keeps the local
-# `cargo deny check` honest and the promotion a one-line CI change.
+# RustSec DB. Vulnerabilities and unsound/unmaintained advisories fail the
+# gate; a yanked crate is a real supply-chain signal and also fails.
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+# Escape hatch: to ship past a triaged advisory, add it here with a
+# one-line rationale — what it is, why it is acceptable here, who decided,
+# when to revisit. An empty list is the goal state; an entry is a debt:
+#   ignore = [
+#     "RUSTSEC-0000-0000", # <crate>: not reachable (no <feature>); revisit on bump — owner, 2026-05-17
+#   ]
 ignore = []
 
 [licenses]

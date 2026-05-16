@@ -21,6 +21,7 @@ mod bench;
 mod ci;
 mod merge_check;
 mod naming;
+mod publish_check;
 // Release-readiness drift guards: `#[test]`s only, so compiled solely under
 // test (no runtime task, no dead code in the shipped binary).
 #[cfg(test)]
@@ -44,6 +45,9 @@ Tasks:
   merge-check  Preflight before the serialized merge-back: on a stream
                branch, clean tree, rebased on origin/main, every gate
                green. GO/NO-GO; never pushes. See docs/merging.md.
+  publish-check  `cargo package` every publishable crate as one set —
+               release-packaging smoke test. NOT a ci gate (packaging,
+               not building). See docs/development.md.
   help         Show this message.";
 
 fn main() -> ExitCode {
@@ -54,6 +58,7 @@ fn main() -> ExitCode {
             bench::run(&workspace_root(), &extra)
         }
         Some("merge-check") => merge_check::run(&workspace_root()),
+        Some("publish-check") => publish_check::run(&workspace_root()),
         Some("lint-names") | None => lint_names(),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
