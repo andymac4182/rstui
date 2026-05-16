@@ -8,17 +8,18 @@ OpenCode, the update/view/event-loop ergonomics of Bubble Tea, the terminal
 rendering ecosystem of ratatui, and the breadth and polish of gpui-component —
 while staying idiomatic to Rust.
 
-> **Status:** early foundation. The rendering substrate exists and is tested;
-> the runtime, components, and plugin host are not built yet.
+> **Status:** early foundation. The rendering substrate and the terminal
+> `Backend` boundary exist and are tested; the runtime, components, and plugin
+> host are not built yet.
 
 ## Workspace
 
 The project is a Cargo workspace (Rust 2024 edition). Crates are introduced
 only when there is enough real API surface to justify the boundary.
 
-| Crate                | Responsibility                                              |
-| -------------------- | ----------------------------------------------------------- |
-| `crates/rstui-core`  | Dependency-free rendering substrate: geometry, style, buffer |
+| Crate                | Responsibility                                                       |
+| -------------------- | -------------------------------------------------------------------- |
+| `crates/rstui-core`  | Dependency-free rendering substrate: geometry, style, buffer, backend |
 
 Planned boundaries as the framework grows: a core runtime (Elm-style
 model/update/view loop), layout, a component set, examples, and a permissioned
@@ -35,6 +36,9 @@ loop — so every layer above it can be unit tested without a TTY.
   themes, focus, and selection highlights build on.
 - `buffer` — `Cell` and the immediate-mode `Buffer` grid widgets draw into and
   renderers `diff` against.
+- `backend` — the `Backend` trait (the screen boundary that consumes a
+  `Buffer` diff) and an in-memory `TestBackend` so UIs are testable without a
+  TTY. Real terminal backends will live in their own crate.
 
 ## Build & test
 

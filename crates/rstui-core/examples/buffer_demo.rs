@@ -1,13 +1,15 @@
-//! Draws a bordered, titled box into a [`Buffer`] and prints the resulting
-//! symbol grid to stdout.
+//! Draws a bordered, titled box into a [`Buffer`], then flushes it through the
+//! [`Backend`] boundary exactly the way the runtime will: diff the frame
+//! against a blank screen and hand only the changed cells to a backend.
 //!
-//! This needs no raw terminal mode, so it doubles as a deterministic smoke
-//! test of the core primitives:
+//! Using [`TestBackend`] keeps this free of any raw terminal mode, so it
+//! doubles as a deterministic smoke test of the core primitives:
 //!
 //! ```text
 //! cargo run -p rstui-core --example buffer_demo
 //! ```
 
+use rstui_core::backend::{Backend, TestBackend};
 use rstui_core::{Buffer, Color, Modifier, Position, Rect, Style};
 
 fn draw_border(buf: &mut Buffer, area: Rect) {
@@ -26,18 +28,6 @@ fn draw_border(buf: &mut Buffer, area: Rect) {
     buf.set_str(Position::new(r, t), "┐", plain);
     buf.set_str(Position::new(l, b), "└", plain);
     buf.set_str(Position::new(r, b), "┘", plain);
-}
-
-fn render_to_string(buf: &Buffer) -> String {
-    let area = buf.area();
-    let mut out = String::with_capacity((area.area() + area.height as u32) as usize);
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            out.push(buf.get(Position::new(x, y)).map_or(' ', |c| c.symbol));
-        }
-        out.push('\n');
-    }
-    out
 }
 
 fn main() {
@@ -67,5 +57,12 @@ fn main() {
         Style::new().fg(Color::Green).add_modifier(Modifier::DIM),
     );
 
-    print!("{}", render_to_string(&buf));
+    // The runtime path: diff the frame against a blank screen and flush only
+    // the cells that differ into the backend, then present it.
+    let blank = Buffer::empty(area);
+    let mut backend = TestBackend::new(area.width, area.height);
+    backend
+        .draw(buf.diff(&blank))
+        .expect("TestBackend is infallible");
+    print!("{backend}");
 }

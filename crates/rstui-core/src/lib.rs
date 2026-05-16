@@ -11,6 +11,8 @@
 //!   [`Style`]).
 //! - [`buffer`]: the immediate-mode [`Cell`] grid ([`Buffer`]) that widgets
 //!   draw into and renderers diff.
+//! - [`backend`]: the [`Backend`] screen boundary plus an in-memory
+//!   [`TestBackend`] so every layer above can be tested without a TTY.
 //!
 //! Keeping these pieces dependency-free and panic-light makes them trivial to
 //! unit test without a real terminal, which is the property the rest of the
@@ -37,10 +39,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod backend;
 pub mod buffer;
 pub mod geometry;
 pub mod style;
 
+pub use backend::{Backend, TestBackend};
 pub use buffer::{Buffer, Cell};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use style::{Color, Modifier, Style};
