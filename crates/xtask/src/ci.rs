@@ -175,11 +175,69 @@ pub(crate) fn run_all(root: &Path) -> bool {
     true
 }
 
-/// [`run_all`] as a process [`ExitCode`] — the `cargo xtask ci` entry point.
-pub(crate) fn run(root: &Path) -> ExitCode {
-    if run_all(root) {
+/// Is `bin` launchable (on `PATH`)? Distinguishes "tool not installed"
+/// (a `--full` leg is *skipped*, since CI still enforces it) from "tool
+/// ran and reported a problem" (the leg *fails*).
+fn tool_present(bin: &str) -> bool {
+    Command::new(bin).arg("--version").output().is_ok()
+}
+
+/// One optional `--full` leg backed by an external cargo plugin. Skipped
+/// (not failed) when the plugin is absent — CI is the authoritative
+/// backstop, so requiring the install for a local run would be friction.
+fn optional_leg(label: &str, bin: &str, root: &Path, args: &[&str]) -> bool {
+    println!("\n• leg: {label} ({bin})");
+    if !tool_present(bin) {
+        println!(
+            "  skipped — `{bin}` not installed (CI enforces this leg; \
+             `cargo install {bin}` to run it locally)"
+        );
+        return true;
+    }
+    // Invoke the plugin binary directly, not via `cargo <sub>`: the proxy
+    // re-passes the subcommand name as argv, which some plugins (cargo-machete)
+    // then treat as a path. Direct invocation is unambiguous.
+    match Command::new(bin).args(args).current_dir(root).status() {
+        Ok(status) => status.success(),
+        Err(err) => {
+            eprintln!("  could not launch `{bin}`: {err}");
+            false
+        }
+    }
+}
+
+/// `cargo xtask ci [--full]`. Plain `ci` is the five-gate fast loop —
+/// exactly CI's `check` job. `--full` additionally runs the *separate* CI
+/// legs locally so a contributor can reproduce all of CI before a release
+/// in one command: `publish-check` always, `cargo-deny` / `cargo-machete`
+/// when installed (skipped with an install hint otherwise). The fast loop
+/// is unchanged, so the `step_set_matches_ci_gates` contract still holds.
+pub(crate) fn run(root: &Path, full: bool) -> ExitCode {
+    if !run_all(root) {
+        return ExitCode::FAILURE;
+    }
+    if !full {
+        return ExitCode::SUCCESS;
+    }
+
+    println!("\n━━━ xtask ci --full — the separate CI legs (CI stays authoritative) ━━━");
+    let mut ok = true;
+
+    println!("\n• leg: package (publish-check) — always run");
+    ok &= crate::publish_check::check(root);
+    ok &= optional_leg("supply-chain", "cargo-deny", root, &["check"]);
+    ok &= optional_leg("unused-deps", "cargo-machete", root, &[]);
+    println!(
+        "\n• leg: msrv — not run here (needs the pinned toolchain). Reproduce:\n  \
+         rustup toolchain install <rust-version> && \
+         cargo +<rust-version> check --workspace --all-targets --all-features"
+    );
+
+    if ok {
+        println!("\n✓ xtask ci --full: fast gates + every runnable leg green.");
         ExitCode::SUCCESS
     } else {
+        eprintln!("\n✗ xtask ci --full: a leg failed above (the 5 gates passed).");
         ExitCode::FAILURE
     }
 }

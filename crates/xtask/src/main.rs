@@ -34,8 +34,10 @@ const USAGE: &str = "\
 Usage: cargo xtask <TASK>
 
 Tasks:
-  ci           Run every project gate (fmt, lint-names, clippy, doc, test)
-               fail-fast, exactly as CI does. See docs/development.md.
+  ci [--full]  Run every project gate (fmt, lint-names, clippy, doc, test)
+               fail-fast, exactly as CI's check job. `--full` also runs
+               the separate legs (publish-check; cargo-deny/-machete if
+               installed) to reproduce all of CI. See docs/development.md.
   lint-names   Fail if any crate name, source path, module, or public
                item uses a banned vague generic name. The default task.
                See docs/conventions/naming.md.
@@ -52,7 +54,10 @@ Tasks:
 
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
-        Some("ci") => ci::run(&workspace_root()),
+        Some("ci") => {
+            let full = std::env::args().any(|a| a == "--full");
+            ci::run(&workspace_root(), full)
+        }
         Some("bench") => {
             let extra: Vec<String> = std::env::args().skip(2).collect();
             bench::run(&workspace_root(), &extra)

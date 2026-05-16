@@ -77,10 +77,20 @@ fn publishable_crates(root: &Path) -> Vec<String> {
 /// crates.io; the set lets the members satisfy each other's path+version
 /// deps.
 pub(crate) fn run(root: &Path) -> ExitCode {
+    if check(root) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// [`run`]'s logic as a `bool`, so `xtask ci --full` can fold this leg in
+/// without `ExitCode` (which is not comparable).
+pub(crate) fn check(root: &Path) -> bool {
     let crates = publishable_crates(root);
     if crates.is_empty() {
         eprintln!("xtask publish-check: no publishable crates found under crates/");
-        return ExitCode::FAILURE;
+        return false;
     }
     println!(
         "━━━ xtask publish-check — `cargo package` (no-verify) for {} publishable \
@@ -102,18 +112,18 @@ pub(crate) fn run(root: &Path) -> ExitCode {
     match cmd.status() {
         Ok(s) if s.success() => {
             println!("\n✓ xtask publish-check: every publishable crate packages cleanly.");
-            ExitCode::SUCCESS
+            true
         }
         Ok(_) => {
             eprintln!(
                 "\n✗ xtask publish-check: a crate failed to package — fix the \
                  manifest/files reported above before a release tag."
             );
-            ExitCode::FAILURE
+            false
         }
         Err(err) => {
             eprintln!("xtask publish-check: could not launch `{cargo}`: {err}");
-            ExitCode::FAILURE
+            false
         }
     }
 }
