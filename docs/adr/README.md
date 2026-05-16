@@ -34,3 +34,4 @@ MADR-style shape:
 | [0002](0002-widget-crate-boundary.md) | Widget crate boundary | Accepted |
 | [0003](0003-lint-and-code-quality-policy.md) | Lint and code-quality policy | Accepted |
 | [0004](0004-focus-routing-architecture.md) | Focus-routing architecture | Accepted |
+| [0005](0005-benchmarking-and-profiling-strategy.md) | Benchmarking and profiling strategy | Accepted |

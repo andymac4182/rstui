@@ -1,0 +1,20 @@
+[package]
+name = "rstui-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "rstui hot-path benchmark runner: a dependency-free, deterministic timing harness over rstui-core's public API, driven by `cargo xtask bench`."
+
+[lints]
+workspace = true
+
+# Dependency-free by design, mirroring `xtask` (ADR 0003 §7) and extended by
+# ADR 0005: the benchmark runner measures `rstui-core`'s public API and must
+# not pull a benchmarking framework. `rstui-core` is itself dependency-free,
+# so the only thing built here is rstui code plus std.
+[dependencies]
+rstui-core = { path = "../rstui-core" }

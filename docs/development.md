@@ -60,6 +60,21 @@ dependency-update risk. Heavier, non-gating work (benchmarks, profiling) is
 deliberately *not* in this loop so the loop stays fast — see the relevant
 ADR/docs when that infrastructure lands.
 
+## Benchmarks and profiling (the slow loop)
+
+Benchmarks and profiling are deliberately *outside* `cargo xtask ci` so the
+fast loop stays fast (ADR 0005). The one command is:
+
+```sh
+cargo xtask bench
+```
+
+That builds and runs the `rstui-core` hot-path scenarios in release. The full
+workflow — scenario list, env tuning, adding a scenario, and CPU + memory
+profiling on macOS and Linux — is in [`docs/benchmarking.md`](benchmarking.md).
+Fast loop (the gate, every commit) vs slow loop (benchmarks, only when you
+touch a hot path): keep them separate and run each at the right time.
+
 ## Conventions and decisions
 
 - Mechanically-enforced rules new code must follow:

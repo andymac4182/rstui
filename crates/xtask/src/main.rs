@@ -6,14 +6,18 @@
 //!
 //! - `ci` — run the whole project gate sequence (fmt, naming, clippy,
 //!   rustdoc, test) with one command, fail-fast, exactly as CI runs it.
-//!   This is the loop every contributor and agent stream runs before a
+//!   This is the fast loop every contributor and agent stream runs before a
 //!   commit; see `docs/development.md`.
 //! - `lint-names` — the vague-generic-naming guardrail from the
 //!   iteration-19 steering note; see `docs/conventions/naming.md`.
+//! - `bench` — build and run the `rstui-bench` hot-path benchmarks in
+//!   release. Deliberately *not* a `ci` gate so the fast loop stays fast
+//!   (ADR 0005); see `docs/benchmarking.md`.
 //!
 //! Run via `cargo xtask <task>` (the alias is in `.cargo/config.toml`) or
 //! `cargo run -p xtask -- <task>`.
 
+mod bench;
 mod ci;
 mod naming;
 
@@ -29,11 +33,18 @@ Tasks:
   lint-names   Fail if any crate name, source path, module, or public
                item uses a banned vague generic name. The default task.
                See docs/conventions/naming.md.
+  bench [F]    Build and run the rstui-bench hot-path benchmarks in
+               release (F = scenario substring filter). NOT a ci gate —
+               the fast loop stays fast. See docs/benchmarking.md.
   help         Show this message.";
 
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("ci") => ci::run(&workspace_root()),
+        Some("bench") => {
+            let extra: Vec<String> = std::env::args().skip(2).collect();
+            bench::run(&workspace_root(), &extra)
+        }
         Some("lint-names") | None => lint_names(),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
