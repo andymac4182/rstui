@@ -104,6 +104,52 @@
 //!   [`TextArea`](rstui_core::TextArea) model plus caller-owned 2D `scroll`
 //!   and `focused`, with a rendered (not terminal) 2D caret. The reducer owns
 //!   the edit and the scroll (ADR 0004 §1); the widget only reads.
+//! - [`slider`]: [`Slider`] — a horizontal value selector, a pure projection
+//!   of a caller-owned `value` in `min..=max` plus `focused`; sub-cell
+//!   precision (the [`Gauge`] eighth-block ramp). A leaf control, no `Block`.
+//! - [`switch`]: [`Switch`] — a two-state toggle with a sliding track, the
+//!   [`Checkbox`] focus/cascade idiom; a pure projection of caller-owned
+//!   `on`/`focused`. A leaf control.
+//! - [`form`]: [`Form`]/[`FormField`] — a pure **layout** projection that owns
+//!   no app state: it lays out label+control+help rows and exposes a
+//!   per-field control `Rect` (the [`Modal::inner`](modal::Modal) pattern), so
+//!   the caller renders its own controls.
+//! - [`menu`]: [`Menu`]/[`MenuItem`] — an **opaque** action list (key hints,
+//!   separators, disabled rows) reusing [`List`]; commits an action via the
+//!   reducer (the [`Select`]-not-[`Modal`] precedent).
+//! - [`command_palette`]: [`CommandPalette`] — the worked **composition**:
+//!   [`Input`] + filtered [`List`] + [`Block`] + clear-region in a centred
+//!   panel; a pure projection (the reducer filters, not the widget).
+//! - [`tooltip`]: [`Tooltip`] — a small opaque popup anchored to a caller
+//!   `Rect`, flipping side to stay on-buffer (the [`Select`] placement rule);
+//!   a pure projection with a `placement` accessor.
+//! - [`breadcrumb`]: [`Breadcrumb`] — a one-row path strip (` › ` joiner,
+//!   last/selected emphasized, middle elided to `…` when narrow); a leaf, the
+//!   [`StatusBar`] precedent.
+//! - [`sparkline`]: [`Sparkline`] — a one-row trend of caller data via the
+//!   eight vertical block glyphs; a pure projection, a leaf control.
+//! - [`bar_chart`]: [`BarChart`]/[`Bar`]/[`BarChartDirection`] — labelled
+//!   horizontal/vertical bars at sub-cell precision (the [`Gauge`] ramp); a
+//!   pure projection with an optional [`Block`].
+//! - [`calendar`]: [`Calendar`] — a month grid that does **no** date math
+//!   (the caller supplies the day numbers — dependency-free, no `chrono`); a
+//!   pure projection with optional [`Block`].
+//! - [`description_list`]: [`DescriptionList`]/[`DescriptionRow`] — an aligned
+//!   key→value pane; values wrap by reusing [`Paragraph`] (no second wrap).
+//! - [`badge`]: [`Badge`]/[`BadgeLevel`] — a tiny inline status pill with
+//!   per-level accents; a pure projection, a leaf control.
+//! - [`alert`]: [`Alert`]/[`AlertLevel`] — a persistent (non-transient,
+//!   unlike [`Toast`]) framed banner; body wrap reuses [`Paragraph`].
+//! - [`divider`]: [`Divider`]/[`DividerOrientation`] — a horizontal/vertical
+//!   rule with an optional label; a pure projection, a leaf control.
+//! - [`split_pane`]: [`SplitPane`] — splits an area into two panes by a
+//!   caller-owned [`Constraint`](rstui_core::Constraint) with a divider glyph;
+//!   exposes `split`/`inner` accessors (pure layout, owns no state).
+//! - [`accordion`]: [`Accordion`]/[`AccordionSection`] — a stack of titled
+//!   collapsible sections; a pure layout projection of caller-owned
+//!   `expanded` flags, exposing each open body `Rect`.
+//! - [`card`]: [`Card`] — a titled container, a thin convenience composition
+//!   over [`Block`] with header/footer lines and an `inner` body accessor.
 //!
 //! # Example
 //!
@@ -119,39 +165,68 @@
 //! assert_eq!(Block::bordered().inner(buf.area()), Rect::new(1, 1, 4, 1));
 //! ```
 
+pub mod accordion;
+pub mod alert;
+pub mod badge;
+pub mod bar_chart;
 pub mod block;
+pub mod breadcrumb;
 pub mod button;
+pub mod calendar;
+pub mod card;
 pub mod checkbox;
+pub mod command_palette;
+pub mod description_list;
 pub mod diff;
+pub mod divider;
 pub mod editor;
+pub mod form;
 pub mod gauge;
 pub mod input;
 pub mod link;
 pub mod list;
 pub mod markdown;
+pub mod menu;
 pub mod mermaid;
 pub mod modal;
 pub mod paragraph;
 pub mod radio;
 pub mod scrollbar;
 pub mod select;
+pub mod slider;
+pub mod sparkline;
 pub mod spinner;
+pub mod split_pane;
 pub mod status_bar;
+pub mod switch;
 pub mod table;
 pub mod tabs;
 pub mod toast;
+pub mod tooltip;
 pub mod tree;
 
+pub use accordion::{Accordion, AccordionSection};
+pub use alert::{Alert, AlertLevel};
+pub use badge::{Badge, BadgeLevel};
+pub use bar_chart::{Bar, BarChart, BarChartDirection};
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
+pub use breadcrumb::Breadcrumb;
 pub use button::Button;
+pub use calendar::Calendar;
+pub use card::Card;
 pub use checkbox::Checkbox;
+pub use command_palette::CommandPalette;
+pub use description_list::{DescriptionList, DescriptionRow};
 pub use diff::{Diff, DiffLayout, DiffTheme};
+pub use divider::{Divider, DividerOrientation};
 pub use editor::Editor;
+pub use form::{Form, FormField};
 pub use gauge::Gauge;
 pub use input::Input;
 pub use link::{Link, LinkActivation};
 pub use list::{List, ListItem};
 pub use markdown::{LinkRegion, Markdown, MarkdownTheme};
+pub use menu::{Menu, MenuItem};
 // The Mermaid AST types (`Direction`, `Node`, `Edge`, `EdgeKind`, `Shape`,
 // `MermaidGraph`) are intentionally reached via `mermaid::` rather than
 // re-exported at the crate root: `Direction`/`Node`/`Edge` are generic enough
@@ -163,9 +238,14 @@ pub use paragraph::{Paragraph, Wrap};
 pub use radio::Radio;
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};
 pub use select::Select;
+pub use slider::Slider;
+pub use sparkline::Sparkline;
 pub use spinner::Spinner;
+pub use split_pane::SplitPane;
 pub use status_bar::StatusBar;
+pub use switch::Switch;
 pub use table::{Row, Table};
 pub use tabs::Tabs;
 pub use toast::{Toast, ToastCorner, ToastLevel, ToastMessage};
+pub use tooltip::Tooltip;
 pub use tree::{Tree, TreeGuides, TreeItem};

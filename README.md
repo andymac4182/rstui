@@ -57,7 +57,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit, text_area |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Markdown`, `Modal`, `StatusBar`, `Toast`, `Tree`, `Select`, and `Editor` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — the core set (`Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Modal`, `StatusBar`, `Toast`, `Tree`, `Select`, `Editor`), the rich-rendering family (`Markdown`, `Link`, `Diff`, `Mermaid`), the form/data family (`Slider`, `Switch`, `Form`, `Sparkline`, `BarChart`, `Calendar`, `DescriptionList`, `Badge`, `Alert`, `Divider`), and the navigation/layout family (`Menu`, `CommandPalette`, `Tooltip`, `Breadcrumb`, `SplitPane`, `Accordion`, `Card`) — ~39 today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/rstui-plugin-host` | Dependency-free permissioned plugin host ([ADR 0007](docs/adr/0007-plugin-host-and-secure-execution.md)): plugins run as separate OS processes the host fully mediates, deny-by-default. The closed four-capability model, the strict fail-closed manifest parser, the manifest-derived `PermissionPolicy`, the hand-rolled length-prefixed frame codec, the `PluginHost` mediation loop (host-canonicalised path, policy-checked, effect only if allowed; fail-closed + timeout), a real `env_clear`+allowlist `std::process` runner, and in-memory fakes so every security property is a `Harness`-grade deterministic test (see the `permissioned_plugin` example). No `unsafe`, no dependencies |
@@ -370,6 +370,42 @@ crate copies.
   `editor_demo` example renders a focused multi-line buffer with a visible 2D
   caret TTY-free.
 
+The Wave 2 set extends this to full opencode/gpui-component-class breadth —
+each the same pure-projection, caller-owned-state, total discipline:
+
+- `slider` — `Slider`: a horizontal value selector (sub-cell `Gauge` ramp), a
+  pure projection of caller-owned `value` in `min..=max` + `focused`. Leaf.
+- `switch` — `Switch`: a two-state sliding toggle, the `Checkbox` focus idiom.
+- `form` — `Form`/`FormField`: a pure **layout** projection owning no app
+  state; exposes a per-field control `Rect` (the `Modal::inner` pattern) so
+  the caller renders its own controls into an aligned label/help grid.
+- `menu` — `Menu`/`MenuItem`: an opaque action list (key hints, separators,
+  disabled rows) reusing `List`; commits via the reducer.
+- `command_palette` — `CommandPalette`: the worked **composition** — `Input` +
+  filtered `List` + `Block` + clear-region, centred; the reducer filters.
+- `tooltip` — `Tooltip`: an opaque popup anchored to a caller `Rect`, flipping
+  to stay on-buffer; a `placement` accessor.
+- `breadcrumb` — `Breadcrumb`: a one-row path strip (` › ` joiner, elision to
+  `…` when narrow). Leaf, the `StatusBar` precedent.
+- `sparkline` — `Sparkline`: a one-row data trend via the eight block glyphs.
+- `bar_chart` — `BarChart`/`Bar`/`BarChartDirection`: labelled
+  horizontal/vertical bars at sub-cell precision; optional `Block`.
+- `calendar` — `Calendar`: a month grid doing **no** date math (caller
+  supplies day numbers — dependency-free, no `chrono`); optional `Block`.
+- `description_list` — `DescriptionList`/`DescriptionRow`: an aligned key→value
+  pane; values wrap by reusing `Paragraph`.
+- `badge` — `Badge`/`BadgeLevel`: a tiny inline status pill. Leaf.
+- `alert` — `Alert`/`AlertLevel`: a persistent (non-transient, unlike `Toast`)
+  framed banner; body wrap reuses `Paragraph`.
+- `divider` — `Divider`/`DividerOrientation`: a horizontal/vertical rule with
+  an optional label. Leaf.
+- `split_pane` — `SplitPane`: splits an area into two panes by a caller-owned
+  `Constraint` with a divider; `split`/`inner` accessors, owns no state.
+- `accordion` — `Accordion`/`AccordionSection`: a stack of titled collapsible
+  sections; a pure layout projection exposing each open body `Rect`.
+- `card` — `Card`: a titled container, a thin convenience composition over
+  `Block` with header/footer lines and an `inner` body accessor.
+
 ### `rstui-runtime`
 
 The Elm/Bubble Tea–style application loop, expressed as a contract so the same
@@ -531,6 +567,23 @@ cargo run -p rstui-widgets --example toast_demo
 cargo run -p rstui-widgets --example tree_demo
 cargo run -p rstui-widgets --example select_demo
 cargo run -p rstui-widgets --example editor_demo
+cargo run -p rstui-widgets --example slider_demo
+cargo run -p rstui-widgets --example switch_demo
+cargo run -p rstui-widgets --example form_demo
+cargo run -p rstui-widgets --example menu_demo
+cargo run -p rstui-widgets --example command_palette_demo
+cargo run -p rstui-widgets --example tooltip_demo
+cargo run -p rstui-widgets --example breadcrumb_demo
+cargo run -p rstui-widgets --example sparkline_demo
+cargo run -p rstui-widgets --example bar_chart_demo
+cargo run -p rstui-widgets --example calendar_demo
+cargo run -p rstui-widgets --example description_list_demo
+cargo run -p rstui-widgets --example badge_demo
+cargo run -p rstui-widgets --example alert_demo
+cargo run -p rstui-widgets --example divider_demo
+cargo run -p rstui-widgets --example split_pane_demo
+cargo run -p rstui-widgets --example accordion_demo
+cargo run -p rstui-widgets --example card_demo
 cargo run -p rstui-runtime --example counter
 ```
 
