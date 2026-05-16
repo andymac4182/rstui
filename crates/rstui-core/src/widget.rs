@@ -15,10 +15,11 @@
 //! future heterogeneous widget list, even though rendering itself is always
 //! monomorphized.
 //!
-//! This slice ships the trait, trivial blanket impls (`&str`, `String`,
+//! It also ships the trait, trivial blanket impls (`&str`, `String`,
 //! `Option<W>`), and the foundational container every TUI is built around —
-//! [`Block`]: borders, a styled fill, padding, and a clipped title, plus the
-//! all-important [`Block::inner`] that hands the remaining area back to the
+//! [`Block`]: borders, a styled fill, padding, and a clipped title that is a
+//! full [`Line`] (so it carries per-span styles and its own alignment), plus
+//! the all-important [`Block::inner`] that hands the remaining area back to the
 //! content drawn inside it.
 //!
 //! # Example
@@ -41,6 +42,7 @@
 use crate::buffer::Buffer;
 use crate::geometry::{Position, Rect};
 use crate::style::Style;
+use crate::text::Line;
 
 /// A value that can draw itself into a [`Rect`] region of a [`Buffer`].
 ///
@@ -307,18 +309,18 @@ impl Padding {
 /// "first log line".render(inner, &mut buf);
 /// ```
 #[derive(Debug, Default, Clone)]
-pub struct Block {
+pub struct Block<'a> {
     borders: Borders,
     border_type: BorderType,
     border_style: Style,
     style: Style,
-    title: Option<String>,
+    title: Option<Line<'a>>,
     title_alignment: Alignment,
     title_style: Style,
     padding: Padding,
 }
 
-impl Block {
+impl<'a> Block<'a> {
     /// A block with no border, no title, and no fill — a transparent region.
     #[must_use]
     pub fn new() -> Self {
@@ -360,20 +362,31 @@ impl Block {
     }
 
     /// Sets the title drawn on the top edge.
+    ///
+    /// The title is a full [`Line`], so `"plain"`, a styled [`Span`], or a
+    /// `Vec<Span>` of differently-styled runs all work. A [`Line`] with its
+    /// own [`alignment`](Line::alignment) overrides
+    /// [`title_alignment`](Self::title_alignment); per-span styles cascade over
+    /// [`title_style`](Self::title_style) — the same text→line→span model
+    /// [`Text`](crate::Text) uses.
+    ///
+    /// [`Span`]: crate::Span
     #[must_use]
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn title(mut self, title: impl Into<Line<'a>>) -> Self {
         self.title = Some(title.into());
         self
     }
 
-    /// Sets how the title is aligned along the top edge.
+    /// Sets the default title alignment, used when the title [`Line`] does not
+    /// set its own.
     #[must_use]
     pub fn title_alignment(mut self, alignment: Alignment) -> Self {
         self.title_alignment = alignment;
         self
     }
 
-    /// Sets the [`Style`] applied to the title text.
+    /// Sets the base [`Style`] for the title, beneath each title span's own
+    /// style in the cascade.
     #[must_use]
     pub fn title_style(mut self, style: Style) -> Self {
         self.title_style = style;
@@ -408,7 +421,7 @@ impl Block {
     }
 }
 
-impl Widget for Block {
+impl Widget for Block<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
             return;
@@ -465,16 +478,29 @@ impl Widget for Block {
             let end = right - u16::from(borders.contains(Borders::RIGHT));
             if end > start {
                 let avail = end - start;
-                let chars: Vec<char> = title.chars().collect();
-                let len = (chars.len() as u16).min(avail);
-                let x0 = match self.title_alignment {
+                let len = (title.width() as u16).min(avail);
+                // A Line's own alignment wins; otherwise the block default.
+                let alignment = title.alignment.unwrap_or(self.title_alignment);
+                let x0 = match alignment {
                     Alignment::Left => start,
                     Alignment::Right => end - len,
                     Alignment::Center => start + (avail - len) / 2,
                 };
-                let ts = self.title_style;
-                for (i, ch) in chars.into_iter().take(len as usize).enumerate() {
-                    set_cell(buf, x0 + i as u16, top, ch, ts);
+                // Cascade: block title style → line style → span style, the
+                // same text→line→span model `Text` uses. Only the title's own
+                // glyph cells are stamped, so the border still shows through
+                // around a short title.
+                let base = self.title_style.patch(title.style);
+                let mut x = x0;
+                'title: for span in title.spans {
+                    let style = base.patch(span.style);
+                    for ch in span.content.chars() {
+                        if x >= end {
+                            break 'title;
+                        }
+                        set_cell(buf, x, top, ch, style);
+                        x = x.saturating_add(1);
+                    }
                 }
             }
         }
@@ -496,6 +522,7 @@ pub(crate) fn set_cell(buf: &mut Buffer, x: u16, y: u16, symbol: char, style: St
 mod tests {
     use super::*;
     use crate::style::{Color, Modifier};
+    use crate::text::Span;
 
     /// Renders `widget` into a fresh `width`×`height` buffer and returns the
     /// glyphs as one newline-terminated line per row — legible for asserting
@@ -601,6 +628,64 @@ mod tests {
             lines(Block::bordered().title("overlong"), 5, 2),
             "┌ove┐\n└───┘\n"
         );
+    }
+
+    #[test]
+    fn title_spans_keep_their_own_style_over_the_block_title_style() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 7, 2));
+        Block::bordered()
+            .title(Line::from(vec![
+                Span::styled("E", Style::new().fg(Color::Red)),
+                Span::raw("rr"),
+            ]))
+            .title_style(Style::new().add_modifier(Modifier::BOLD))
+            .render(buf.area(), &mut buf);
+
+        // ALL borders → the title starts just inside the left edge (x = 1).
+        let e = buf.get(Position::new(1, 0)).unwrap();
+        assert_eq!(e.symbol, 'E');
+        assert_eq!(e.fg, Color::Red); // the span's own fg wins
+        assert!(e.modifier.contains(Modifier::BOLD)); // block title_style base cascades
+
+        let r = buf.get(Position::new(2, 0)).unwrap();
+        assert_eq!(r.symbol, 'r');
+        assert_eq!(r.fg, Color::Reset); // raw span sets no fg → not red
+        assert!(r.modifier.contains(Modifier::BOLD)); // still inherits the base
+    }
+
+    #[test]
+    fn title_line_alignment_overrides_the_block_default() {
+        // The block defaults titles to the left, but this Line asks for the
+        // right — the Line wins, mirroring the Text→Line alignment cascade.
+        assert_eq!(
+            lines(
+                Block::bordered()
+                    .title(Line::raw("Hi").right_aligned())
+                    .title_alignment(Alignment::Left),
+                6,
+                2
+            ),
+            "┌──Hi┐\n└────┘\n"
+        );
+    }
+
+    #[test]
+    fn border_around_a_short_title_keeps_the_border_style_not_the_title_style() {
+        // Regression: only the title's own cells are stamped. The horizontal
+        // border cells beside a short title must keep the border style, not
+        // pick up the title style (i.e. no whole-row fill).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 2));
+        Block::bordered()
+            .border_style(Style::new().fg(Color::Cyan))
+            .title(Span::styled("Hi", Style::new().fg(Color::Red)))
+            .render(buf.area(), &mut buf);
+
+        // x=1,2 are the title; x=3..6 are the top border between title and
+        // the top-right corner.
+        assert_eq!(buf.get(Position::new(1, 0)).unwrap().fg, Color::Red);
+        let border = buf.get(Position::new(4, 0)).unwrap();
+        assert_eq!(border.symbol, '─');
+        assert_eq!(border.fg, Color::Cyan); // border style untouched by the title
     }
 
     #[test]

@@ -60,8 +60,10 @@ loop — so every layer above it can be unit tested without a TTY.
 - `widget` — the `Widget` trait (`render(self, area, buf)`) every component
   implements, blanket impls for `&str`/`String`/`Option<W>`, and the
   foundational `Block` container: `Borders`, `BorderType`, `Padding`, a styled
-  fill, and a clipped aligned title, with `Block::inner` handing the remaining
-  area to the content drawn inside. `Frame::render_widget` is the entry point.
+  fill, and a clipped title that is a full `Line` (per-span styles and its own
+  alignment, cascading over block-level `title_style`/`title_alignment`), with
+  `Block::inner` handing the remaining area to the content drawn inside.
+  `Frame::render_widget` is the entry point.
 - `text` — the styled-text model: `Span` (a styled run), `Line` (a row of
   spans with optional alignment), and `Text` (a block of lines). One
   committed, data-driven model with a predictable text→line→span `Style`

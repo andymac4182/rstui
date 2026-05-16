@@ -20,7 +20,8 @@
 //! - [`event`]: the keyboard/mouse/focus/resize [`Event`] vocabulary the
 //!   runtime, components, and focus routing all share.
 //! - [`widget`]: the [`Widget`] rendering abstraction plus the foundational
-//!   [`Block`] container (borders, fill, padding, title).
+//!   [`Block`] container (borders, fill, padding, and a styled, aligned
+//!   [`Line`] title).
 //! - [`text`]: the styled-text model ([`Span`], [`Line`], [`Text`]) every
 //!   richer component composes, with a predictable text→line→span style
 //!   cascade.

@@ -10,8 +10,8 @@
 //! ```
 
 use rstui_core::{
-    Alignment, Block, BorderType, Color, Constraint, Layout, Modifier, Padding, Style, Terminal,
-    TestBackend,
+    Alignment, Block, BorderType, Color, Constraint, Layout, Line, Modifier, Padding, Span, Style,
+    Terminal, TestBackend,
 };
 
 fn main() {
@@ -35,10 +35,16 @@ fn main() {
                 frame.render_widget(*item, row);
             }
 
+            // A styled multi-span title: a green status dot next to the
+            // label. The Line sets no alignment of its own, so it inherits
+            // the block's centered default.
             let body_block = Block::bordered()
                 .border_type(BorderType::Double)
                 .border_style(Style::new().fg(Color::Cyan))
-                .title("Body")
+                .title(Line::from(vec![
+                    Span::styled("● ", Style::new().fg(Color::Green)),
+                    Span::raw("Body"),
+                ]))
                 .title_alignment(Alignment::Center)
                 .padding(Padding::symmetric(1, 0));
             let body_inner = body_block.inner(body);
