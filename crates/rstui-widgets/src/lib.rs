@@ -150,6 +150,46 @@
 //!   `expanded` flags, exposing each open body `Rect`.
 //! - [`card`]: [`Card`] — a titled container, a thin convenience composition
 //!   over [`Block`] with header/footer lines and an `inner` body accessor.
+//! - [`scroll_view`]: [`ScrollView`] — the keystone scroll primitive: clips a
+//!   borrowed pre-rendered content [`Buffer`](rstui_core::Buffer) to a window
+//!   from a caller-owned 2D offset and draws a [`Scrollbar`] per overflowing
+//!   axis; a pure projection, immediate-mode-correct (no negative translate).
+//! - [`grid`]: [`Grid`] — a 2-D layout primitive: reuses core
+//!   [`Layout`](rstui_core::Layout) per axis to tile an area into cells;
+//!   `split`/`cell` accessors, owns no state (the [`SplitPane`] discipline).
+//! - [`align`]: [`Align`]/[`VerticalAlignment`] — centres/aligns a
+//!   [`Constraint`](rstui_core::Constraint)-sized child rect on both axes
+//!   (the [`Modal`] centring math generalized); a pure accessor, not a modal.
+//! - [`popover`]: [`Popover`]/[`PopoverSide`] — the generic anchored opaque
+//!   floating panel [`Tooltip`]/[`Menu`]/[`Select`] specialize; side flip to
+//!   stay on-buffer, a pure `placement` accessor.
+//! - [`drawer`]: [`Drawer`]/[`DrawerSide`] — an edge-anchored opaque side
+//!   sheet with optional backdrop; caller-owned `open` + size
+//!   [`Constraint`](rstui_core::Constraint).
+//! - [`sidebar`]: [`Sidebar`]/[`SidebarItem`] — an app navigation rail
+//!   (collapsible groups, a narrow/expanded mode) reusing [`List`]; a pure
+//!   projection of caller-owned `selected`/`collapsed`.
+//! - [`skeleton`]: [`Skeleton`]/[`SkeletonShape`] — a loading placeholder
+//!   whose shimmer is a pure projection of a caller-owned tick (the
+//!   [`Spinner`] precedent, no wall clock).
+//! - [`avatar`]: [`Avatar`] — a small initials swatch on an accent fill, a
+//!   leaf pure projection.
+//! - [`kbd`]: [`Kbd`] — an inline keycap glyph cluster (e.g. `⌃⇧P`); a leaf
+//!   pure projection.
+//! - [`help_overlay`]: [`HelpOverlay`]/[`HelpEntry`] — a centred opaque
+//!   keybinding cheat-sheet reusing [`Kbd`] + clear-region (the [`Modal`]
+//!   precedent, its own type).
+//! - [`pagination`]: [`Pagination`] — a windowed pager (`‹ 1 … 4 [5] 6 … ›`),
+//!   a pure projection of caller-owned `page`/`page_count`; a leaf.
+//! - [`stepper`]: [`Stepper`]/[`Step`]/[`StepperOrientation`] — a
+//!   horizontal/vertical wizard progress, a pure projection of caller-owned
+//!   `current`.
+//! - [`masked_input`]: [`MaskedInput`] — the [`Input`] projection with a mask
+//!   glyph + unmask toggle (password fields); borrows a caller-owned
+//!   [`TextEdit`](rstui_core::TextEdit), [`Input`] itself untouched.
+//! - [`date_picker`]: [`DatePicker`] — a closed field that drops an opaque
+//!   anchored [`Calendar`] panel (the [`Select`] anchored-panel idiom,
+//!   self-contained); caller-owned open/selected day numbers, no date math.
 //!
 //! # Example
 //!
@@ -167,6 +207,8 @@
 
 pub mod accordion;
 pub mod alert;
+pub mod align;
+pub mod avatar;
 pub mod badge;
 pub mod bar_chart;
 pub mod block;
@@ -176,28 +218,40 @@ pub mod calendar;
 pub mod card;
 pub mod checkbox;
 pub mod command_palette;
+pub mod date_picker;
 pub mod description_list;
 pub mod diff;
 pub mod divider;
+pub mod drawer;
 pub mod editor;
 pub mod form;
 pub mod gauge;
+pub mod grid;
+pub mod help_overlay;
 pub mod input;
+pub mod kbd;
 pub mod link;
 pub mod list;
 pub mod markdown;
+pub mod masked_input;
 pub mod menu;
 pub mod mermaid;
 pub mod modal;
+pub mod pagination;
 pub mod paragraph;
+pub mod popover;
 pub mod radio;
+pub mod scroll_view;
 pub mod scrollbar;
 pub mod select;
+pub mod sidebar;
+pub mod skeleton;
 pub mod slider;
 pub mod sparkline;
 pub mod spinner;
 pub mod split_pane;
 pub mod status_bar;
+pub mod stepper;
 pub mod switch;
 pub mod table;
 pub mod tabs;
@@ -232,17 +286,31 @@ pub use menu::{Menu, MenuItem};
 // re-exported at the crate root: `Direction`/`Node`/`Edge` are generic enough
 // to collide with `rstui_core` and future widgets, so only the widget and its
 // configuration/error surface are promoted.
+pub use align::{Align, VerticalAlignment};
+pub use avatar::Avatar;
+pub use date_picker::DatePicker;
+pub use drawer::{Drawer, DrawerSide};
+pub use grid::Grid;
+pub use help_overlay::{HelpEntry, HelpOverlay};
+pub use kbd::Kbd;
+pub use masked_input::MaskedInput;
 pub use mermaid::{Mermaid, MermaidError, MermaidTheme};
 pub use modal::Modal;
+pub use pagination::Pagination;
 pub use paragraph::{Paragraph, Wrap};
+pub use popover::{Popover, PopoverSide};
 pub use radio::Radio;
+pub use scroll_view::ScrollView;
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};
 pub use select::Select;
+pub use sidebar::{Sidebar, SidebarItem};
+pub use skeleton::{Skeleton, SkeletonShape};
 pub use slider::Slider;
 pub use sparkline::Sparkline;
 pub use spinner::Spinner;
 pub use split_pane::SplitPane;
 pub use status_bar::StatusBar;
+pub use stepper::{Step, Stepper, StepperOrientation};
 pub use switch::Switch;
 pub use table::{Row, Table};
 pub use tabs::Tabs;
