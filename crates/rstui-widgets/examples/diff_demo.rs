@@ -69,6 +69,18 @@ diff --git a/assets/logo.png b/assets/logo.png
 index 0000000..1111111 100644
 Binary files a/assets/logo.png and b/assets/logo.png differ";
 
+/// A newly-added file: `--- /dev/null` and a `@@ -0,0 +1,N @@` hunk — every
+/// body line is an addition with no old-side number.
+const ADDED_FILE: &str = "\
+diff --git a/src/new.rs b/src/new.rs
+new file mode 100644
+--- /dev/null
++++ b/src/new.rs
+@@ -0,0 +1,3 @@
++pub fn hello() -> &'static str {
++    \"hi\"
++}";
+
 /// Draws `patch` through [`Diff`] in `layout` (syntax highlight per
 /// `syntax`), framed and titled, over a fresh [`TestBackend`] of
 /// `width`×`height`, returning the rendered frame as text. The wider area
@@ -145,6 +157,18 @@ fn main() {
             "diff (binary)",
             56,
             5
+        )
+    );
+    // A newly-added file (`--- /dev/null`): all-addition hunk, no old number.
+    print!(
+        "{}",
+        frame(
+            ADDED_FILE,
+            DiffLayout::Unified,
+            true,
+            "diff (added file)",
+            56,
+            8
         )
     );
 }
