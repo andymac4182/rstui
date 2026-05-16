@@ -36,10 +36,16 @@ fn render(area: Rect) { /* verbatim, never reflowed */ }
 | headings | done  |
 | tables   | done  |
 
+HTML &amp; entities work, and a <b>bold</b> tag too.<br>Line after a break.
+
+A [reference link][rs] resolves from a definition.
+
+[rs]: https://rust-lang.org
+
 ---";
 
 fn main() {
-    let mut terminal = Terminal::new(TestBackend::new(48, 28)).expect("TestBackend is infallible");
+    let mut terminal = Terminal::new(TestBackend::new(48, 34)).expect("TestBackend is infallible");
 
     terminal
         .draw(|frame| {
