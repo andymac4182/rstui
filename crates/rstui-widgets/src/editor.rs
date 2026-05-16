@@ -161,6 +161,49 @@ impl<'a> Editor<'a> {
         self
     }
 
+    /// The number of terminal rows the document needs if every logical line
+    /// is soft-wrapped at `width` columns — a **pure measurement** of the
+    /// borrowed model, owning no state and touching no [`Buffer`], exactly as
+    /// [`Block::inner`](crate::Block::inner) is a pure geometry accessor.
+    ///
+    /// This is the composer auto-grow input: a chat/commit-message panel asks
+    /// "how tall must I be to show all of this at my current width?" and sizes
+    /// the [`Editor`]'s area accordingly (then drives the visible window with
+    /// a caller-owned [`scroll`](Self::scroll) /
+    /// [`ScrollState`](rstui_core::ScrollState) once it hits its cap). Each
+    /// logical line contributes `ceil(chars / width)` rows, an empty line one
+    /// row, so the result is at least `1` (a [`TextArea`] is never zero
+    /// lines). Note the [`Editor`] *renders* by clipping columns, not
+    /// wrapping — this is the height a wrapping composer reserves, not a claim
+    /// about the clip; the two are intentionally distinct seams.
+    ///
+    /// **Total**: `width == 0` yields `0` (no column to wrap into), an
+    /// enormous document saturates at [`u16::MAX`] — never a panic.
+    #[must_use]
+    pub fn content_height(&self, width: u16) -> u16 {
+        let width = width as usize;
+        if width == 0 {
+            return 0;
+        }
+        let rows = self.model.lines().iter().fold(0usize, |acc, line| {
+            let chars = line.chars().count();
+            acc.saturating_add(if chars == 0 { 1 } else { chars.div_ceil(width) })
+        });
+        u16::try_from(rows).unwrap_or(u16::MAX)
+    }
+
+    /// [`content_height`](Self::content_height) clamped to `min..=max` rows —
+    /// the height an auto-growing composer gives the editor: it grows with the
+    /// text but never below `min` (a one-line minimum) nor above `max` (after
+    /// which the caller scrolls the overflow). A pure accessor; `min`/`max`
+    /// passed in either order are normalised, so it is **total**.
+    #[must_use]
+    pub fn desired_height(&self, width: u16, min: u16, max: u16) -> u16 {
+        let lo = min.min(max);
+        let hi = min.max(max);
+        self.content_height(width).clamp(lo, hi)
+    }
+
     /// Frames the editor in `block`; the document renders into
     /// [`block.inner`](crate::Block::inner).
     #[must_use]
@@ -533,6 +576,44 @@ mod tests {
         assert_eq!(buf.get(Position::new(3, 1)).unwrap().symbol, 'i');
         assert_eq!(buf.get(Position::new(2, 2)).unwrap().symbol, 'Y');
         assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, ' ');
+    }
+
+    #[test]
+    fn content_height_wraps_each_logical_line_at_width() {
+        // 3 chars at width 4 -> 1 row; 9 chars at width 4 -> ceil(9/4)=3 rows;
+        // an empty logical line -> 1 row. Total 1 + 3 + 1 = 5.
+        let model = TextArea::from_value("abc\n123456789\n");
+        assert_eq!(model.row_count(), 3);
+        assert_eq!(Editor::new(&model).content_height(4), 5);
+        // Wider than every line -> one row per logical line.
+        assert_eq!(Editor::new(&model).content_height(80), 3);
+        // An empty document is one line, so at least one row.
+        assert_eq!(Editor::new(&TextArea::new()).content_height(10), 1);
+    }
+
+    #[test]
+    fn content_height_is_total_at_zero_width_and_huge_input() {
+        let model = TextArea::from_value("hello world");
+        assert_eq!(Editor::new(&model).content_height(0), 0); // no panic
+        // A single very long line saturates at u16::MAX, not an overflow.
+        let huge = TextArea::from_value("x".repeat(300_000));
+        assert_eq!(Editor::new(&huge).content_height(1), u16::MAX);
+    }
+
+    #[test]
+    fn desired_height_clamps_into_the_composer_range() {
+        let model = TextArea::from_value("one\ntwo\nthree\nfour");
+        // 4 rows at a wide width, clamped to a 2..=10 grow range -> 4.
+        assert_eq!(Editor::new(&model).desired_height(40, 2, 10), 4);
+        // The same content capped at max 3 -> the caller scrolls the rest.
+        assert_eq!(Editor::new(&model).desired_height(40, 1, 3), 3);
+        // A short document still gets the minimum height.
+        assert_eq!(
+            Editor::new(&TextArea::from_value("hi")).desired_height(40, 5, 9),
+            5
+        );
+        // min/max passed reversed are normalised (total).
+        assert_eq!(Editor::new(&model).desired_height(40, 10, 2), 4);
     }
 
     #[test]

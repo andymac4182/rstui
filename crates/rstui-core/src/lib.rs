@@ -51,6 +51,11 @@
 //!   logical lines plus a `(row, col)` char-indexed cursor with a sticky goal
 //!   column); a pure, total value the app stores and `update` mutates, that
 //!   an `Editor` widget projects (ADR 0004 Follow-up §2).
+//! - [`scroll`]: the optional, caller-owned scroll/viewport model —
+//!   [`ScrollState`], a pure, total `offset` + `follow_tail` value the app
+//!   stores and `update` mutates (clamp, scroll-by, sticky-bottom-while-
+//!   streaming, scroll-into-view) that a `ScrollView` projects
+//!   ([ADR 0012](https://github.com/andymac4182/rstui/blob/main/docs/adr/0012-widget-composition-and-layout-model.md) §P0).
 //!
 //! Keeping these pieces dependency-free and panic-light makes them trivial to
 //! unit test without a real terminal, which is the property the rest of the
@@ -81,6 +86,7 @@ pub mod event_source;
 pub mod focus;
 pub mod geometry;
 pub mod layout;
+pub mod scroll;
 pub mod style;
 pub mod stylize;
 pub mod terminal;
@@ -98,6 +104,7 @@ pub use event_source::{ChannelEventSource, EventSource, TestEventSource};
 pub use focus::{FocusId, FocusRing};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Alignment, Constraint, Direction, Layout};
+pub use scroll::ScrollState;
 pub use style::{Color, Modifier, Style};
 pub use stylize::{Styled, Stylize};
 pub use terminal::{CompletedFrame, Frame, Terminal};

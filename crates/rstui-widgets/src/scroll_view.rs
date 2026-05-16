@@ -47,7 +47,7 @@
 //! compose from this shape rather than changing it. An over-scrolled offset is
 //! clamped; content smaller than the window draws no bar.
 
-use rstui_core::{Buffer, Position, Rect, Style, Widget};
+use rstui_core::{Buffer, Position, Rect, ScrollState, Style, Widget};
 
 use crate::{Block, Scrollbar, ScrollbarOrientation};
 
@@ -142,6 +142,33 @@ impl<'a> ScrollView<'a> {
     #[must_use]
     pub fn row_offset(mut self, row: u16) -> Self {
         self.row_offset = row;
+        self
+    }
+
+    /// Drives the **vertical** offset from a caller-owned
+    /// [`ScrollState`] — the reducer mutates the
+    /// `ScrollState` (sticky-bottom while a transcript streams, scroll-into-
+    /// view, `PageUp`/`End`) and `view` projects it here. Additive over the
+    /// raw [`row_offset`](Self::row_offset): the same caller-owned-offset
+    /// contract, just with the bookkeeping moved into the reusable primitive.
+    /// `ScrollState`'s `usize` offset saturates into the viewport's `u16` and
+    /// is then clamped against the content like any other offset (an
+    /// over-scroll parks at the end). Pair with
+    /// [`horizontal_scroll`](Self::horizontal_scroll) for a 2-D viewport —
+    /// one `ScrollState` per axis, the documented compose-two model.
+    #[must_use]
+    pub fn vertical_scroll(mut self, scroll: &ScrollState) -> Self {
+        self.row_offset = u16::try_from(scroll.offset()).unwrap_or(u16::MAX);
+        self
+    }
+
+    /// Drives the **horizontal** offset from a caller-owned
+    /// [`ScrollState`] (the columns-axis dual of
+    /// [`vertical_scroll`](Self::vertical_scroll)). Additive over the raw
+    /// [`col_offset`](Self::col_offset); the same saturate-then-clamp rule.
+    #[must_use]
+    pub fn horizontal_scroll(mut self, scroll: &ScrollState) -> Self {
+        self.col_offset = u16::try_from(scroll.offset()).unwrap_or(u16::MAX);
         self
     }
 
@@ -548,6 +575,48 @@ mod tests {
             assert_eq!(cell.symbol, ' ');
             assert_eq!(cell.bg, Color::Blue);
         }
+    }
+
+    #[test]
+    fn a_scroll_state_drives_the_axes_like_the_raw_offsets() {
+        use rstui_core::ScrollState;
+
+        let c = content(3, 10);
+        // A streaming transcript pinned to the tail: on_content_change snaps
+        // the offset to the end, and ScrollView shows the last window.
+        let mut v = ScrollState::new();
+        v.on_content_change(10, 2); // 10 rows, 2-row window -> offset 8
+        let view = ScrollView::new(&c)
+            .vertical_scroll(&v)
+            .vertical_scrollbar(false);
+        // Window == inner (3×2); offset 8 shows the last two rows.
+        assert_eq!(view.viewport(Rect::new(0, 0, 3, 2)), Rect::new(0, 8, 3, 2));
+        // Equivalent to driving the raw row_offset with the same value.
+        assert_eq!(
+            view.viewport(Rect::new(0, 0, 3, 2)),
+            ScrollView::new(&c)
+                .row_offset(8)
+                .vertical_scrollbar(false)
+                .viewport(Rect::new(0, 0, 3, 2)),
+        );
+
+        // Equivalent to the raw row_offset, and the horizontal dual matches
+        // col_offset (compose two states for 2-D).
+        let wide = content(20, 4);
+        let mut h = ScrollState::default();
+        h.set_offset(5);
+        assert_eq!(
+            ScrollView::new(&wide)
+                .horizontal_scroll(&h)
+                .vertical_scrollbar(false)
+                .horizontal_scrollbar(false)
+                .viewport(Rect::new(0, 0, 6, 4)),
+            ScrollView::new(&wide)
+                .col_offset(5)
+                .vertical_scrollbar(false)
+                .horizontal_scrollbar(false)
+                .viewport(Rect::new(0, 0, 6, 4)),
+        );
     }
 
     #[test]
