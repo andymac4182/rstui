@@ -16,7 +16,8 @@ while staying idiomatic to Rust.
 > the `Paragraph` text widget (word wrap, scroll, alignment), the
 > scrollable single-select `List`, the horizontal `Tabs` strip, the
 > sub-cell-precision `Gauge` progress bar, the `Scrollbar` scroll
-> indicator, the animated `Spinner` busy indicator,
+> indicator, the animated `Spinner` busy indicator, the column-aligned
+> `Table` grid (optional header, single-row selection),
 > the styled-text
 > model (`Span`/`Line`/`Text`) with the `Stylize` fluent shorthand
 > (`"x".green().bold()`, `.on_blue()`), the Elm-style
@@ -37,7 +38,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, the `Widget` trait, text |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, and `Spinner` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, and `Table` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
@@ -54,8 +55,8 @@ the *same* `run` the headless harness tests drive. A feature-gated async
 boundaries as the framework grows: a broader component set (the `Widget`
 trait stays in core; concrete widgets live in the grouped `rstui-widgets`
 crate per [ADR 0002](docs/adr/0002-widget-crate-boundary.md), now extracted
-— `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, and `Spinner`
-ship there today, with `Buffer::set_cell`
+— `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, and
+`Table` ship there today, with `Buffer::set_cell`
 the public cell-stamping contract third-party widgets build on; `Alignment`
 stays in `rstui-core::layout` as the placement primitive the text model
 needs), more widgets and examples, and a permissioned plugin host built on
@@ -163,6 +164,13 @@ crate copies.
   `frames[tick % frames.len()]` and only reads the caller-owned `tick`
   (typically `frame.count()`) — the first consumer of the `Frame::count()`
   animation clock. An empty frame set is a total no-op, never a modulo panic.
+- `table` — `Table`/`Row`: a column-aligned grid, the 2D generalization of
+  `List`. Columns are sized by the same `Constraint` divider top-level
+  `Layout` uses (with `column_spacing`); an optional fixed `header` labels
+  them, and the selected data row gets the same full-width highlight bar and
+  reserved gutter as `List`. The same caller-owned **pure projection** —
+  `selected`/`offset` are read, never render-mutated — and **total**: an
+  out-of-range width percentage is clamped where ratatui panics.
 
 ### `rstui-runtime`
 
@@ -290,6 +298,7 @@ cargo run -p rstui-widgets --example tabs_demo
 cargo run -p rstui-widgets --example gauge_demo
 cargo run -p rstui-widgets --example scrollbar_demo
 cargo run -p rstui-widgets --example spinner_demo
+cargo run -p rstui-widgets --example table_demo
 cargo run -p rstui-runtime --example counter
 ```
 

@@ -35,6 +35,10 @@
 //! - [`spinner`]: [`Spinner`] — a one-cell animated busy indicator, a pure
 //!   projection of a caller-owned animation `tick`; the first consumer of the
 //!   `Frame::count()` animation clock.
+//! - [`table`]: [`Table`] — a column-aligned grid of [`Row`]s with an optional
+//!   fixed header and single-row selection, the 2D generalization of [`List`]
+//!   that reuses the [`Constraint`](rstui_core::Constraint) layout divider for
+//!   column widths.
 //!
 //! # Example
 //!
@@ -56,6 +60,7 @@ pub mod list;
 pub mod paragraph;
 pub mod scrollbar;
 pub mod spinner;
+pub mod table;
 pub mod tabs;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
@@ -64,4 +69,5 @@ pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};
 pub use spinner::Spinner;
+pub use table::{Row, Table};
 pub use tabs::Tabs;
