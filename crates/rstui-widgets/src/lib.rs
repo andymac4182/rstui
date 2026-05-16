@@ -57,6 +57,11 @@
 //!   consumer; a pure projection of a borrowed caller-owned
 //!   [`TextEdit`](rstui_core::TextEdit) plus `focused`, with a rendered (not
 //!   terminal) caret and a stateless caret-following horizontal scroll.
+//! - [`markdown`]: [`Markdown`] — a read-only document view that parses a
+//!   CommonMark-ish subset (headings, emphasis, code, quotes, lists, rules)
+//!   with a hand-written zero-dependency parser and lays it out width-aware
+//!   into the styled-text model (ADR 0002 §4: a grammar is not a "heavy,
+//!   alien" dependency, so it is a plain module here, not a feature or crate).
 //! - [`modal`]: [`Modal`] — a centred, **opaque**, optionally-[`Block`]-framed
 //!   dialog over an overlay area; the visual half of the
 //!   [`FocusRing`](rstui_core::FocusRing) scope-stack modal model (ADR 0004
@@ -88,6 +93,7 @@ pub mod checkbox;
 pub mod gauge;
 pub mod input;
 pub mod list;
+pub mod markdown;
 pub mod modal;
 pub mod paragraph;
 pub mod radio;
@@ -103,6 +109,7 @@ pub use checkbox::Checkbox;
 pub use gauge::Gauge;
 pub use input::Input;
 pub use list::{List, ListItem};
+pub use markdown::{Markdown, MarkdownTheme};
 pub use modal::Modal;
 pub use paragraph::{Paragraph, Wrap};
 pub use radio::Radio;
