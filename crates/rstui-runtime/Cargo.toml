@@ -1,0 +1,15 @@
+[package]
+name = "rstui-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The Elm-style App/Cmd runtime and deterministic headless harness for the rstui TUI framework."
+
+[lints]
+workspace = true
+
+[dependencies]
+rstui-core = { path = "../rstui-core" }

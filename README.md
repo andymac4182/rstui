@@ -9,22 +9,24 @@ rendering ecosystem of ratatui, and the breadth and polish of gpui-component —
 while staying idiomatic to Rust.
 
 > **Status:** early foundation. The rendering substrate, the terminal
-> `Backend` boundary, the double-buffered `Terminal` frame driver, and the
-> keyboard/mouse/focus/resize `Event` model exist and are tested; the
-> model/update/view runtime, components, and plugin host are not built yet.
+> `Backend` boundary, the double-buffered `Terminal` frame driver, the
+> keyboard/mouse/focus/resize `Event` model, and the Elm-style
+> `App`/`Cmd`/`Harness` runtime exist and are tested; a real terminal driver,
+> components, and the plugin host are not built yet.
 
 ## Workspace
 
 The project is a Cargo workspace (Rust 2024 edition). Crates are introduced
 only when there is enough real API surface to justify the boundary.
 
-| Crate                | Responsibility                                                                         |
-| -------------------- | -------------------------------------------------------------------------------------- |
-| `crates/rstui-core`  | Dependency-free substrate: geometry, style, buffer, backend, terminal, event |
+| Crate                  | Responsibility                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `crates/rstui-core`    | Dependency-free substrate: geometry, style, buffer, backend, terminal, event   |
+| `crates/rstui-runtime` | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
 
-Planned boundaries as the framework grows: a core runtime (Elm-style
-model/update/view loop), layout, a component set, examples, and a permissioned
-plugin host built on process isolation.
+Planned boundaries as the framework grows: a real terminal driver, layout, a
+component set, more examples, and a permissioned plugin host built on process
+isolation.
 
 ### `rstui-core`
 
@@ -49,6 +51,22 @@ loop — so every layer above it can be unit tested without a TTY.
   like the de-facto crossterm model so a real backend bridges 1:1, but using
   rstui's own `Position`/`Size`.
 
+### `rstui-runtime`
+
+The Elm/Bubble Tea–style application loop, expressed as a contract so the same
+app code runs headless today and under a real terminal later.
+
+- `App` — the trait you implement on your state: `init`/`on_event`/`update`/
+  `view`. State changes flow through `update` only; `on_event` (taking
+  `&self`) maps input to intent and `view` (taking `&self`) just renders.
+- `Cmd` — the side effects an `update` schedules (`none`, `quit`, `message`,
+  `perform`, `batch`). The runtime performs them and feeds resulting messages
+  back into `update`; the app never does IO or quits directly.
+- `Harness` — a deterministic, terminal-free driver that runs the real loop
+  over `rstui-core`'s `TestBackend`, so whole apps are unit-testable (assert
+  on state and the rendered snapshot) with no TTY, threads, or clock. It is
+  the reference semantics for the future real runtime.
+
 ## Build & test
 
 ```sh
@@ -57,6 +75,7 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -p rstui-core --example buffer_demo
 cargo run -p rstui-core --example terminal_loop
+cargo run -p rstui-runtime --example counter
 ```
 
 CI runs the same fmt, clippy, and test gates on every push and pull request.
