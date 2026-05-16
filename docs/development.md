@@ -81,3 +81,6 @@ touch a hot path): keep them separate and run each at the right time.
   [`docs/conventions/`](conventions/).
 - Why the project is built the way it is: [`docs/adr/`](adr/). ADR 0003 is
   the lint and code-quality policy this loop implements.
+- Getting a slice onto the shared `main` without breaking it for the other
+  parallel streams: [`docs/merging.md`](merging.md). The one rule —
+  validate the *merged* `main`, not just your worktree.
