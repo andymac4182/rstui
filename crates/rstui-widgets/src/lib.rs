@@ -72,6 +72,11 @@
 //!   fixed, documented contention rule; the first multi-anchor layout widget,
 //!   a pure projection of three caller-built segments (the editor/file-manager
 //!   status strip).
+//! - [`toast`]: [`Toast`] — a corner-anchored, **opaque** stack of transient
+//!   [`ToastMessage`] notifications (per-[`ToastLevel`] accents, an optional
+//!   framing [`Block`]) floated over an overlay; a pure projection of a
+//!   caller-owned message list — expiry/dismissal is the reducer's, like
+//!   [`Modal`]'s clear-region opacity and [`Paragraph`]'s reused soft wrap.
 //!
 //! # Example
 //!
@@ -102,6 +107,7 @@ pub mod spinner;
 pub mod status_bar;
 pub mod table;
 pub mod tabs;
+pub mod toast;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use button::Button;
@@ -118,3 +124,4 @@ pub use spinner::Spinner;
 pub use status_bar::StatusBar;
 pub use table::{Row, Table};
 pub use tabs::Tabs;
+pub use toast::{Toast, ToastCorner, ToastLevel, ToastMessage};

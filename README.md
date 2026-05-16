@@ -285,6 +285,20 @@ crate copies.
   like `Input` — no framing `Block`; the surrounding `Layout` owns the edge it
   pins to. The `status_bar_demo` example renders the canonical bottom strip
   TTY-free.
+- `toast` — `Toast`: a corner-anchored, **opaque** stack of transient
+  `ToastMessage` notifications (the editor "saved"/"build failed" strip), the
+  first **floating multi-box** widget. A **pure projection** of a caller-owned
+  `&[ToastMessage]` — `messages[0]` is the newest, anchored flush to a
+  `ToastCorner`; older entries stack away from it across `gap` blank rows, only
+  `max_visible` drawn — so *expiry and dismissal stay the reducer's job*, never
+  a wall clock smuggled into the pure `view` (the `Spinner` caller-owned-tick
+  precedent). Each box `clear_region`s itself opaque (the `Modal` affordance)
+  and soft-wraps its body by **reusing `Paragraph`** (`Paragraph::line_count`
+  sizes the box — no second wrap algorithm), with per-`ToastLevel` accent
+  styles and an optional framing `Block`. **Total** (empty list/overlay,
+  `max_visible == 0`, over-wide/over-tall bodies all clip safely). The
+  `toast_demo` example renders a realistic info/success/warning/error stack
+  over background content TTY-free.
 
 ### `rstui-runtime`
 
@@ -443,6 +457,7 @@ cargo run -p rstui-widgets --example radio_demo
 cargo run -p rstui-widgets --example input_demo
 cargo run -p rstui-widgets --example modal_demo
 cargo run -p rstui-widgets --example status_bar_demo
+cargo run -p rstui-widgets --example toast_demo
 cargo run -p rstui-runtime --example counter
 ```
 
