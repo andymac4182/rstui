@@ -57,6 +57,11 @@
 //!   consumer; a pure projection of a borrowed caller-owned
 //!   [`TextEdit`](rstui_core::TextEdit) plus `focused`, with a rendered (not
 //!   terminal) caret and a stateless caret-following horizontal scroll.
+//! - [`modal`]: [`Modal`] — a centred, **opaque**, optionally-[`Block`]-framed
+//!   dialog over an overlay area; the visual half of the
+//!   [`FocusRing`](rstui_core::FocusRing) scope-stack modal model (ADR 0004
+//!   §6). A pure projection — the app decides "is a modal open" in its model
+//!   and `view` renders it; the widget never reads focus.
 //!
 //! # Example
 //!
@@ -78,6 +83,7 @@ pub mod checkbox;
 pub mod gauge;
 pub mod input;
 pub mod list;
+pub mod modal;
 pub mod paragraph;
 pub mod radio;
 pub mod scrollbar;
@@ -91,6 +97,7 @@ pub use checkbox::Checkbox;
 pub use gauge::Gauge;
 pub use input::Input;
 pub use list::{List, ListItem};
+pub use modal::Modal;
 pub use paragraph::{Paragraph, Wrap};
 pub use radio::Radio;
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};

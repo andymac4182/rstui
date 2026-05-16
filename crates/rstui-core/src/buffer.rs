@@ -194,6 +194,26 @@ impl Buffer {
         }
     }
 
+    /// Resets every cell overlapping `area` back to [`Cell::EMPTY`].
+    ///
+    /// The region-scoped sibling of [`reset`](Self::reset) (which clears the
+    /// whole buffer). This is the **opaque-overlay** primitive. A
+    /// [`Style`] is a *patch*: [`set_style`](Self::set_style)
+    /// can set a colour but cannot return one to the terminal default, so a
+    /// style alone cannot make a floating region truly opaque over arbitrary
+    /// background content. A widget that floats over unrelated content (a
+    /// modal, popup, dropdown, autocomplete) calls this to take exclusive
+    /// ownership of its area before drawing, so nothing underneath bleeds
+    /// through the gaps. Cells outside the buffer are ignored, so it is total
+    /// for any `area`.
+    pub fn clear_region(&mut self, area: Rect) {
+        for position in area.intersection(self.area).positions() {
+            if let Some(cell) = self.get_mut(position) {
+                cell.reset();
+            }
+        }
+    }
+
     /// Resets every cell to [`Cell::EMPTY`] without changing the area.
     pub fn reset(&mut self) {
         for cell in &mut self.cells {
@@ -308,6 +328,36 @@ mod tests {
         assert_eq!(buf.get(Position::new(0, 0)).unwrap().bg, Color::Reset);
         assert_eq!(buf.get(Position::new(1, 1)).unwrap().bg, Color::Blue);
         assert_eq!(buf.get(Position::new(3, 3)).unwrap().bg, Color::Blue);
+    }
+
+    #[test]
+    fn clear_region_resets_only_the_overlap_back_to_empty() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
+        let styled = Style::new().fg(Color::Red).bg(Color::Blue);
+        // Paint the whole buffer with content and colour.
+        for p in buf.area().positions() {
+            buf.set_cell(p, 'x', styled);
+        }
+
+        // Clear an inner 2x2 box (also given an out-of-bounds extent to prove
+        // it is total — only the overlap is touched).
+        buf.clear_region(Rect::new(1, 1, 100, 100));
+
+        // The box is back to EMPTY: blank glyph, reset colours.
+        for y in 1..4 {
+            for x in 1..4 {
+                assert_eq!(*buf.get(Position::new(x, y)).unwrap(), Cell::EMPTY);
+            }
+        }
+        // Cells outside the cleared box are untouched.
+        let kept = buf.get(Position::new(0, 0)).unwrap();
+        assert_eq!(kept.symbol, 'x');
+        assert_eq!(kept.fg, Color::Red);
+        assert_eq!(kept.bg, Color::Blue);
+
+        // A region entirely outside the buffer is a total no-op.
+        buf.clear_region(Rect::new(50, 50, 4, 4));
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 'x');
     }
 
     #[test]

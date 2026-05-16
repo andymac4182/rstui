@@ -15,7 +15,9 @@
 //!   [`Constraint`]s ([`Layout`], [`Direction`]), and [`Alignment`] — the
 //!   horizontal placement primitive the text model and widgets share.
 //! - [`buffer`]: the immediate-mode [`Cell`] grid ([`Buffer`]) that widgets
-//!   draw into and renderers diff.
+//!   draw into and renderers diff, including [`Buffer::clear_region`] — the
+//!   opaque-overlay primitive a floating widget (modal, popup) reclaims its
+//!   area through, since a style patch alone cannot.
 //! - [`backend`]: the [`Backend`] screen boundary plus an in-memory
 //!   [`TestBackend`] so every layer above can be tested without a TTY.
 //! - [`terminal`]: the [`Terminal`] frame driver that runs the

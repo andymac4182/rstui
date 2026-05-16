@@ -21,7 +21,9 @@ while staying idiomatic to Rust.
 > boolean `Checkbox` control, the centred focusable `Button` action
 > label, the exclusive-choice `Radio` control and the single-line
 > text-entry `Input` field (the form-control family, with a focus
-> visual), the optional caller-owned `focus` model (`FocusId` value
+> visual), the centred opaque `Modal` dialog (the visual half of the
+> modal-focus model, over the new `Buffer::clear_region` overlay
+> primitive), the optional caller-owned `focus` model (`FocusId` value
 > tokens plus a pure, total, wrapping `FocusRing` with a model-owned
 > modal **focus-scope stack** — `push_scope`/`pop_scope`, validated
 > capture/restore, declarative reducer-gated trapping) those controls'
@@ -48,7 +50,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, and `Input` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, and `Modal` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
@@ -66,8 +68,8 @@ boundaries as the framework grows: a broader component set (the `Widget`
 trait stays in core; concrete widgets live in the grouped `rstui-widgets`
 crate per [ADR 0002](docs/adr/0002-widget-crate-boundary.md), now extracted
 — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`,
-`Table`, `Checkbox`, `Button`, `Radio`, and `Input` ship there today, with
-`Buffer::set_cell` the public cell-stamping contract third-party widgets
+`Table`, `Checkbox`, `Button`, `Radio`, `Input`, and `Modal` ship there
+today, with `Buffer::set_cell` the public cell-stamping contract third-party widgets
 build on; `Alignment`
 stays in `rstui-core::layout` as the placement primitive the text model
 needs), more widgets and examples, and a permissioned plugin host built on
@@ -94,7 +96,9 @@ loop — so every layer above it can be unit tested without a TTY.
   share, kept in core so the text model never reaches back into a widget crate
   (matching `ratatui_core::layout::Alignment`).
 - `buffer` — `Cell` and the immediate-mode `Buffer` grid widgets draw into and
-  renderers `diff` against.
+  renderers `diff` against; `Buffer::clear_region` is the opaque-overlay
+  primitive (a true reset a style patch cannot express) floating widgets like
+  `Modal` take exclusive ownership of their area through.
 - `backend` — the `Backend` trait (the screen boundary that consumes a
   `Buffer` diff) and an in-memory `TestBackend` so UIs are testable without a
   TTY. Real terminal backends will live in their own crate.
@@ -256,6 +260,19 @@ crate copies.
   control like `Checkbox` — no framing `Block`, one row — and **total**
   (one-cell/empty/multi-byte/multi-row areas clip safely). Driven end to end
   across two fields via `Harness` in the `input_demo` example.
+- `modal` — `Modal`: a centred, **opaque**, optionally-`Block`-framed dialog
+  over an overlay area — the *visual* half of the modal-focus model whose
+  *state* half is the `FocusRing` scope stack
+  ([ADR 0004](docs/adr/0004-focus-routing-architecture.md) §6, **Follow-up §3**).
+  A **pure projection**: the widget never reads focus; the app decides "a
+  modal is open" (`ring.in_scope()`) and `view` renders it. It **clears** its
+  box via `Buffer::clear_region` so background content cannot bleed through
+  (the defining always-on affordance — the `Input`-caret precedent); the
+  optional `backdrop_style` scrim is opt-in. Sizing reuses the `Constraint`
+  vocabulary (like `Table`'s columns), centred; `inner()`/`area()` are pure
+  derived rects. The `modal_demo` example wires both halves under `Harness`,
+  proving declarative trapping, scope-constrained `Tab`, and validated
+  capture/restore TTY-free.
 
 ### `rstui-runtime`
 
@@ -382,10 +399,12 @@ context, the options weighed, the decision, and the evidence behind it.
   modal model has landed in `rstui_core::focus` as the `FocusRing`
   scope stack (`push_scope`/`pop_scope`, scope-constrained traversal,
   captured/validate-restored focus, `in_scope`/`scope_depth` for
-  declarative reducer-gated trapping); the `Modal` widget and its
-  first concrete consumer are the remaining mechanical part of
-  **Follow-up §3**. Terminal `FocusGained`/`FocusLost` stay distinct
-  from widget focus.
+  declarative reducer-gated trapping), and the `rstui-widgets` `Modal`
+  widget — the centred opaque dialog that projects it — with the
+  `modal_demo` example wiring both halves under `Harness` (declarative
+  trapping, scope-constrained `Tab`, validated capture/restore, all
+  TTY-free) — **Follow-up §3 is complete**. Terminal
+  `FocusGained`/`FocusLost` stay distinct from widget focus.
 
 ## Build & test
 
@@ -410,6 +429,7 @@ cargo run -p rstui-widgets --example checkbox_demo
 cargo run -p rstui-widgets --example button_demo
 cargo run -p rstui-widgets --example radio_demo
 cargo run -p rstui-widgets --example input_demo
+cargo run -p rstui-widgets --example modal_demo
 cargo run -p rstui-runtime --example counter
 ```
 
