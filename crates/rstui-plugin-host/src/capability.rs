@@ -139,6 +139,12 @@ pub enum CapabilityRequest {
         mode: FsMode,
         /// The target path (host-canonicalised before policy check).
         path: PathBuf,
+        /// The bytes to write, for a [`FsMode::Write`] request. Empty for
+        /// a [`FsMode::Read`] (and ignored by the policy, which scopes by
+        /// path+mode only — the data never widens authority). Carried on
+        /// the request because a write effect needs its payload, mirroring
+        /// secure-exec's `{op, path, data}` write shape.
+        contents: Vec<u8>,
     },
     /// Connect to `host:port`.
     Network {
@@ -280,7 +286,8 @@ mod tests {
         assert_eq!(
             CapabilityRequest::Filesystem {
                 mode: FsMode::Read,
-                path: "/x".into()
+                path: "/x".into(),
+                contents: Vec::new()
             }
             .capability(),
             Capability::Filesystem

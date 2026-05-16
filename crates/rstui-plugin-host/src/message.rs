@@ -50,6 +50,7 @@
 //!
 //! ```text
 //! Filesystem: [tag 0x10][FsMode u8][path_len u32BE][path UTF-8]
+//!                       [contents_len u32BE][contents bytes]
 //! Network:    [tag 0x11][host_len u32BE][host UTF-8][port u16BE]
 //! Command:    [tag 0x12][program_len u32BE][program UTF-8]
 //!                       [argc u32BE]([arg_len u32BE][arg UTF-8])*
@@ -81,6 +82,7 @@
 //! let req = CapabilityRequest::Filesystem {
 //!     mode: FsMode::Read,
 //!     path: "/srv/data/report.csv".into(),
+//!     contents: Vec::new(),
 //! };
 //!
 //! let bytes = encode_request(&req);
@@ -216,10 +218,15 @@ impl std::error::Error for MessageError {}
 pub fn encode_request(req: &CapabilityRequest) -> Vec<u8> {
     let mut out = Vec::new();
     match req {
-        CapabilityRequest::Filesystem { mode, path } => {
+        CapabilityRequest::Filesystem {
+            mode,
+            path,
+            contents,
+        } => {
             out.push(TAG_REQ_FILESYSTEM);
             push_fsmode(&mut out, *mode);
             push_str(&mut out, path.to_string_lossy().as_ref());
+            push_bytes(&mut out, contents);
         }
         CapabilityRequest::Network { host, port } => {
             out.push(TAG_REQ_NETWORK);
@@ -265,7 +272,12 @@ pub fn decode_request(bytes: &[u8]) -> Result<CapabilityRequest, MessageError> {
         TAG_REQ_FILESYSTEM => {
             let mode = read_fsmode(&mut r)?;
             let path = PathBuf::from(read_string(&mut r)?);
-            CapabilityRequest::Filesystem { mode, path }
+            let contents = r.read_bytes()?;
+            CapabilityRequest::Filesystem {
+                mode,
+                path,
+                contents,
+            }
         }
         TAG_REQ_NETWORK => {
             let host = read_string(&mut r)?;
@@ -521,15 +533,19 @@ mod tests {
         let req = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: "/srv/data/report.csv".into(),
+            contents: Vec::new(),
         };
         assert_eq!(req_round_trip(&req), req);
     }
 
     #[test]
     fn filesystem_write_round_trips() {
+        // A write carries a payload; the codec must round-trip the bytes
+        // (including a NUL and high bytes) verbatim alongside path+mode.
         let req = CapabilityRequest::Filesystem {
             mode: FsMode::Write,
             path: "/tmp/output".into(),
+            contents: b"line1\n\0\xde\xad\xbe\xef".to_vec(),
         };
         assert_eq!(req_round_trip(&req), req);
     }
@@ -539,6 +555,7 @@ mod tests {
         let req = CapabilityRequest::Filesystem {
             mode: FsMode::Read,
             path: "/データ/ファイル.txt".into(),
+            contents: Vec::new(),
         };
         assert_eq!(req_round_trip(&req), req);
     }

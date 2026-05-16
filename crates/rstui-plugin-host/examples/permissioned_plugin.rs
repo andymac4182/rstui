@@ -72,10 +72,12 @@ fn main() {
     let allowed_read = CapabilityRequest::Filesystem {
         mode: FsMode::Read,
         path: "data/report.csv".into(), // relative -> resolved against cwd
+        contents: Vec::new(),           // a read carries no payload
     };
     let escaping_read = CapabilityRequest::Filesystem {
         mode: FsMode::Read,
         path: "data/../../etc/passwd".into(), // canonicalised, then denied
+        contents: Vec::new(),
     };
     let allowed_env = CapabilityRequest::Env { key: "PATH".into() };
     let denied_env = CapabilityRequest::Env {
