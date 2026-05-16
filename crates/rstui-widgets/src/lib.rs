@@ -145,13 +145,13 @@ pub mod tree;
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use button::Button;
 pub use checkbox::Checkbox;
-pub use diff::{Diff, DiffTheme};
+pub use diff::{Diff, DiffLayout, DiffTheme};
 pub use editor::Editor;
 pub use gauge::Gauge;
 pub use input::Input;
 pub use link::{Link, LinkActivation};
 pub use list::{List, ListItem};
-pub use markdown::{Markdown, MarkdownTheme};
+pub use markdown::{LinkRegion, Markdown, MarkdownTheme};
 // The Mermaid AST types (`Direction`, `Node`, `Edge`, `EdgeKind`, `Shape`,
 // `MermaidGraph`) are intentionally reached via `mermaid::` rather than
 // re-exported at the crate root: `Direction`/`Node`/`Edge` are generic enough

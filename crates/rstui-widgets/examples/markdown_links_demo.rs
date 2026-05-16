@@ -12,7 +12,7 @@
 //! cargo run -p rstui-widgets --example markdown_links_demo
 //! ```
 
-use rstui_core::{Terminal, TestBackend};
+use rstui_core::{Position, Rect, Terminal, TestBackend};
 use rstui_widgets::{Block, Markdown};
 
 const DOC: &str = "\
@@ -42,6 +42,22 @@ fn main() {
         "\nactivate(focused = {focused}) => index {} open {}",
         event.index, event.href
     );
+
+    // Mouse half: a click position resolves to a link via deterministic
+    // geometry, then the same activation path.
+    let area = Rect::new(0, 0, 56, 12);
+    let doc = Markdown::new(DOC).block(Block::bordered().title("links"));
+    if let Some(first) = doc.link_regions(area).first() {
+        let click = Position::new(first.rect.x, first.rect.y);
+        let hit = doc
+            .link_at(click, area)
+            .and_then(|i| links.get(i).map(|l| l.activate(i)));
+        println!(
+            "click {:?} => {}",
+            (click.x, click.y),
+            hit.map(|e| e.href).unwrap_or_else(|| "(miss)".into())
+        );
+    }
 
     let mut terminal = Terminal::new(TestBackend::new(56, 12)).expect("TestBackend is infallible");
     terminal

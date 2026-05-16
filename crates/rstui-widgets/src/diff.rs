@@ -37,17 +37,29 @@
 //!   one-word edit reads as one word changed, not two whole lines
 //! - a trailing `\r` is stripped so a CRLF diff renders clean; trailing blank
 //!   lines are dropped before parsing
+//! - two layouts via [`Diff::layout`] / [`Diff::side_by_side`]: the default
+//!   [`DiffLayout::Unified`] (one column, `±` sign in the gutter) and an
+//!   opt-in [`DiffLayout::Split`] side-by-side view — old/deletions on the
+//!   left, new/additions on the right, each with its own line-number gutter,
+//!   a thin `│` separator between them, a change group pairing deletion *i*
+//!   with addition *i* on one screen row (the shorter side padded with blank
+//!   themed cells so rows stay aligned), context echoed on both sides, and
+//!   the same intra-line word highlight on the paired changed lines; file and
+//!   hunk headers span the full width in either layout
 //!
 //! Deliberately out of scope for this slice (each an additive follow-up that
-//! does not change this shape): side-by-side / split layout, syntax
-//! highlighting of the code itself, combined (merge, `@@@`) diffs, `git`
-//! `rename`/`copy`/`mode`/`index` metadata lines (they are simply ignored, not
-//! rendered), and binary-file patches.
+//! does not change this shape): syntax highlighting of the code itself,
+//! combined (merge, `@@@`) diffs, `git` `rename`/`copy`/`mode`/`index`
+//! metadata lines (they are simply ignored, not rendered), and binary-file
+//! patches.
 //!
 //! Rendering is deterministic and width-aware: the same patch and area always
 //! produce the same cells, so output is snapshot-testable through
 //! [`Buffer`] exactly like every other widget. Malformed
 //! input never panics — an unparseable line renders best-effort as context.
+//! A [`DiffLayout::Split`] area too narrow to seat both columns (each a
+//! one-digit gutter, one content column, and the separator) degrades to the
+//! unified layout rather than panicking or rendering an unreadable sliver.
 //!
 //! # Example
 //!
@@ -135,6 +147,28 @@ impl Default for DiffTheme {
     }
 }
 
+/// How [`Diff`] arranges a hunk's body lines on screen.
+///
+/// The header rows (file, hunk, the `\ No newline` marker) always span the
+/// full width; this only governs the body. The default is [`Unified`].
+///
+/// [`Unified`]: DiffLayout::Unified
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffLayout {
+    /// One column: every body line on its own row, the `+`/`-`/` ` sign in
+    /// the gutter — the classic `git diff` reading order. The default.
+    #[default]
+    Unified,
+    /// Side by side: old/deletions in a left column, new/additions in a
+    /// right column, each with its own line-number gutter and a thin `│`
+    /// separator between them. Within a change group deletion *i* shares a
+    /// screen row with addition *i*; the shorter side is padded with blank
+    /// themed cells so the columns stay aligned. Context lines appear on both
+    /// sides. An area too narrow for two gutters, two content columns, and
+    /// the separator falls back to [`Unified`](DiffLayout::Unified).
+    Split,
+}
+
 /// A read-only unified-diff view: parses its source once at render time and
 /// draws the supported subset into the area, width-aware and deterministic.
 ///
@@ -142,8 +176,9 @@ impl Default for DiffTheme {
 /// `String` is owned). Parsing produces owned display lines, so the rendered
 /// spans are independent of the source lifetime. An optional framing
 /// [`Block`], a base [`Style`] that also fills the content area, a vertical
-/// scroll offset, and a [`DiffTheme`] are the only knobs — everything else is
-/// derived from the patch.
+/// scroll offset, a [`DiffLayout`] (unified or side-by-side), and a
+/// [`DiffTheme`] are the only knobs — everything else is derived from the
+/// patch.
 ///
 /// # Example
 ///
@@ -167,6 +202,7 @@ pub struct Diff<'a> {
     style: Style,
     scroll: u16,
     theme: DiffTheme,
+    layout: DiffLayout,
 }
 
 impl<'a> Diff<'a> {
@@ -178,6 +214,7 @@ impl<'a> Diff<'a> {
             style: Style::new(),
             scroll: 0,
             theme: DiffTheme::default(),
+            layout: DiffLayout::default(),
         }
     }
 
@@ -212,18 +249,40 @@ impl<'a> Diff<'a> {
         self
     }
 
+    /// Selects the body [`DiffLayout`] (unified or side-by-side). The default
+    /// is [`DiffLayout::Unified`].
+    #[must_use]
+    pub fn layout(mut self, layout: DiffLayout) -> Self {
+        self.layout = layout;
+        self
+    }
+
+    /// Shorthand for [`layout(DiffLayout::Split)`](Diff::layout): renders the
+    /// old side and the new side in two columns instead of one.
+    #[must_use]
+    pub fn side_by_side(self) -> Self {
+        self.layout(DiffLayout::Split)
+    }
+
     /// Parses the source and lays it out to display rows for a content area
-    /// `width` columns wide. Public so a host can measure a patch (its row
-    /// count) for scroll math or a surrounding scrollbar without re-rendering.
+    /// `width` columns wide, honouring the active [`DiffLayout`]. Public so a
+    /// host can measure a patch (its row count) for scroll math or a
+    /// surrounding scrollbar without re-rendering.
     ///
-    /// `width` of zero yields no rows.
+    /// `width` of zero yields no rows. In [`DiffLayout::Split`] a width too
+    /// narrow for two columns degrades to the unified layout (see the type
+    /// docs), so the row count reflects whichever layout was actually used.
     #[must_use]
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         if width == 0 {
             return Vec::new();
         }
         let rows = parse_rows(self.source.as_ref());
-        layout_rows(&rows, width as usize, &self.theme)
+        let width = width as usize;
+        match self.layout {
+            DiffLayout::Unified => layout_rows(&rows, width, &self.theme),
+            DiffLayout::Split => layout_rows_split(&rows, width, &self.theme),
+        }
     }
 }
 
@@ -632,6 +691,299 @@ fn num_str(no: Option<u32>) -> String {
         Some(n) => n.to_string(),
         None => String::new(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Split (side-by-side) layout
+// ---------------------------------------------------------------------------
+
+/// The glyph drawn between the two columns in [`DiffLayout::Split`].
+const SPLIT_SEP: char = '│';
+
+/// Which of the two split columns a [`SideCell`] is being drawn into. A
+/// context line carries both an old and a new number; this picks the one the
+/// column shows (old on the left, new on the right). For a deletion/addition
+/// only one number exists, so the side is irrelevant to the gutter value.
+#[derive(Clone, Copy)]
+enum Side {
+    /// The left column: old file, deletions, the old line number.
+    Left,
+    /// The right column: new file, additions, the new line number.
+    Right,
+}
+
+/// One column of a split row: a fixed-width slot holding either a body line
+/// (its number, content, intra-line word marks) or — for the short side of a
+/// paired change — nothing.
+struct SideCell<'r> {
+    /// Which column this slot is; selects a context line's old vs new number.
+    side: Side,
+    /// The line shown in this column, or `None` for an empty (padding) slot.
+    row: Option<&'r DiffRow>,
+    /// The intra-line changed-char mask for `row`, when it is a paired change.
+    mask: Option<&'r [bool]>,
+}
+
+/// Lays the parsed rows out side by side for a content area `width` wide:
+/// old/deletions left, new/additions right, each with its own gutter, a `│`
+/// between them. File/hunk/`\ No newline` rows span the full width. An area
+/// too narrow to seat both gutters, a content column each, and the separator
+/// degrades to [`layout_rows`] (the unified layout) rather than producing an
+/// unreadable sliver — so the caller never has to special-case tiny areas.
+fn layout_rows_split(rows: &[DiffRow], width: usize, theme: &DiffTheme) -> Vec<Line<'static>> {
+    let max_no = rows
+        .iter()
+        .filter_map(|r| match r {
+            DiffRow::Body { old_no, new_no, .. } => {
+                Some(old_no.unwrap_or(0).max(new_no.unwrap_or(0)))
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let num_w = digits(max_no).max(1);
+
+    // Per side: `<num_w> <sign> ` gutter + at least one content column. Two
+    // of those plus the 1-col separator is the minimum legible split.
+    let gutter_w = num_w + 3;
+    let min_side = gutter_w + 1;
+    if width < min_side * 2 + 1 {
+        return layout_rows(rows, width, theme);
+    }
+    let left_w = (width - 1) / 2;
+    let right_w = width - 1 - left_w;
+
+    let marks = intra_line_marks(rows);
+    let mut out = Vec::with_capacity(rows.len());
+    let mut i = 0;
+    while i < rows.len() {
+        match &rows[i] {
+            // Headers and the no-newline marker read across both columns.
+            DiffRow::File { .. } | DiffRow::Hunk { .. } | DiffRow::NoNewline { .. } => {
+                out.push(full_width_row(&rows[i], width, theme));
+                i += 1;
+            }
+            DiffRow::Body {
+                kind: ChangeKind::Context,
+                ..
+            } => {
+                // Context: the same source row on both sides, the left column
+                // showing its old number, the right its new number.
+                out.push(split_line(
+                    &SideCell {
+                        side: Side::Left,
+                        row: Some(&rows[i]),
+                        mask: None,
+                    },
+                    &SideCell {
+                        side: Side::Right,
+                        row: Some(&rows[i]),
+                        mask: None,
+                    },
+                    num_w,
+                    left_w,
+                    right_w,
+                    theme,
+                ));
+                i += 1;
+            }
+            DiffRow::Body { .. } => {
+                // A change group: consecutive deletions, then additions.
+                // Deletion k pairs with addition k on one screen row; the
+                // shorter side is padded with empty slots.
+                let del_start = i;
+                while matches!(
+                    rows.get(i),
+                    Some(DiffRow::Body {
+                        kind: ChangeKind::Deletion,
+                        ..
+                    })
+                ) {
+                    i += 1;
+                }
+                let del_end = i;
+                let add_start = i;
+                while matches!(
+                    rows.get(i),
+                    Some(DiffRow::Body {
+                        kind: ChangeKind::Addition,
+                        ..
+                    })
+                ) {
+                    i += 1;
+                }
+                let add_end = i;
+
+                let dels = del_end - del_start;
+                let adds = add_end - add_start;
+                for k in 0..dels.max(adds) {
+                    let left = if k < dels {
+                        let di = del_start + k;
+                        SideCell {
+                            side: Side::Left,
+                            row: Some(&rows[di]),
+                            mask: marks[di].as_deref(),
+                        }
+                    } else {
+                        SideCell {
+                            side: Side::Left,
+                            row: None,
+                            mask: None,
+                        }
+                    };
+                    let right = if k < adds {
+                        let ai = add_start + k;
+                        SideCell {
+                            side: Side::Right,
+                            row: Some(&rows[ai]),
+                            mask: marks[ai].as_deref(),
+                        }
+                    } else {
+                        SideCell {
+                            side: Side::Right,
+                            row: None,
+                            mask: None,
+                        }
+                    };
+                    out.push(split_line(&left, &right, num_w, left_w, right_w, theme));
+                }
+
+                // A row that began neither a deletion nor an addition (only
+                // possible if the grammar grew a new body kind) still moves.
+                if i == del_start {
+                    out.push(split_line(
+                        &SideCell {
+                            side: Side::Left,
+                            row: Some(&rows[i]),
+                            mask: None,
+                        },
+                        &SideCell {
+                            side: Side::Right,
+                            row: None,
+                            mask: None,
+                        },
+                        num_w,
+                        left_w,
+                        right_w,
+                        theme,
+                    ));
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A full-width header [`Line`] for split mode, reusing the unified renderer
+/// so file/hunk/no-newline rows are styled identically in both layouts.
+fn full_width_row(row: &DiffRow, width: usize, theme: &DiffTheme) -> Line<'static> {
+    match row {
+        DiffRow::File { path } => full_width_line(&format!("─── {path} "), width, theme.file),
+        DiffRow::Hunk {
+            old_start,
+            new_start,
+            section,
+        } => {
+            let mut head = format!("@@ -{old_start} +{new_start} @@");
+            if !section.is_empty() {
+                head.push(' ');
+                head.push_str(section);
+            }
+            full_width_line(&head, width, theme.hunk)
+        }
+        DiffRow::NoNewline { text } => full_width_line(text, width, theme.context),
+        // Body rows never reach here (the split walker handles them).
+        DiffRow::Body { content, .. } => full_width_line(content, width, theme.context),
+    }
+}
+
+/// Composes one split screen row: the left column, the `│` separator, the
+/// right column. The line's base style is the separator/blank style so the
+/// gap between the two columns and any empty padding inherit the widget base
+/// (and the framing block fill) rather than a diff color.
+fn split_line(
+    left: &SideCell<'_>,
+    right: &SideCell<'_>,
+    num_w: usize,
+    left_w: usize,
+    right_w: usize,
+    theme: &DiffTheme,
+) -> Line<'static> {
+    let mut spans = side_spans(left, num_w, left_w, theme);
+    spans.push(Span::styled(SPLIT_SEP.to_string(), Style::new()));
+    spans.extend(side_spans(right, num_w, right_w, theme));
+    Line::from(spans)
+}
+
+/// The spans for one column, exactly `side_w` cells wide: a `<num> <sign> `
+/// gutter then the content with its intra-line word marks, padded so the
+/// column's background spans the full slot. An empty slot (the short side of
+/// a paired change) is `side_w` blank cells with the inherit-everything
+/// style, so it reads as themed empty space, not a colored line.
+fn side_spans(
+    cell: &SideCell<'_>,
+    num_w: usize,
+    side_w: usize,
+    theme: &DiffTheme,
+) -> Vec<Span<'static>> {
+    let Some(DiffRow::Body {
+        kind,
+        old_no,
+        new_no,
+        content,
+    }) = cell.row
+    else {
+        // Empty padding slot: blank, themed by the cascade only.
+        return vec![Span::styled(" ".repeat(side_w), Style::new())];
+    };
+
+    let (sign, row_style, word_style) = match kind {
+        ChangeKind::Addition => ('+', theme.addition, theme.word_added),
+        ChangeKind::Deletion => ('-', theme.deletion, theme.word_deleted),
+        ChangeKind::Context => (' ', theme.context, theme.context),
+    };
+    // A deletion has only an old number, an addition only a new one; a
+    // context line has both, so the left column shows old, the right new.
+    let shown_no = match cell.side {
+        Side::Left => *old_no,
+        Side::Right => *new_no,
+    };
+
+    let gutter_w = num_w + 3;
+    let body_w = side_w.saturating_sub(gutter_w);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let gutter = format!("{n:>num_w$} {sign} ", n = num_str(shown_no));
+    spans.push(Span::styled(gutter, theme.gutter.patch(row_style)));
+
+    // Content cells with the per-word mask painted on top (same cascade as
+    // the unified renderer's body).
+    let mut col = 0usize;
+    let mut run = String::new();
+    let mut run_marked = false;
+    for (i, ch) in content.chars().enumerate() {
+        if col >= body_w {
+            break;
+        }
+        let marked = cell
+            .mask
+            .is_some_and(|m| m.get(i).copied().unwrap_or(false));
+        if !run.is_empty() && marked != run_marked {
+            spans.push(body_span(&run, run_marked, row_style, word_style));
+            run.clear();
+        }
+        run.push(ch);
+        run_marked = marked;
+        col += 1;
+    }
+    if !run.is_empty() {
+        spans.push(body_span(&run, run_marked, row_style, word_style));
+    }
+    if col < body_w {
+        spans.push(Span::styled(" ".repeat(body_w - col), row_style));
+    }
+    spans
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,6 +1458,152 @@ index e69de29..4b825dc 100644
             DiffRow::File {
                 path: "old/name.rs → new/name.rs".to_owned(),
             }
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Side-by-side (split) layout
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn split_basic_add_context_delete_snapshot() {
+        // 24 wide → a 1-col gutter each (num_w 1, gutter `n S `), the `│`
+        // separator, content padded so each column's background is a block.
+        // left_w = (24-1)/2 = 11, right_w = 24-1-11 = 12.
+        let patch = "@@ -1,2 +1,2 @@\n ctx\n-old\n+new";
+        let out = lines(Diff::new(patch).side_by_side(), 24, 3);
+        assert_eq!(
+            out,
+            "@@ -1 +1 @@             \n\
+             1   ctx    │1   ctx     \n\
+             2 - old    │2 + new     \n"
+        );
+    }
+
+    #[test]
+    fn split_pads_the_short_side_with_empty_cells() {
+        // 2 deletions, 1 addition: row 0 pairs del0/add0, row 1 is del1 on
+        // the left with an empty (blank) right column — the columns stay
+        // aligned. 20 wide → left_w 9, right_w 10, gutter 4 each.
+        let patch = "@@ -1,2 +1 @@\n-aaa\n-bbb\n+ccc";
+        let out = lines(Diff::new(patch).side_by_side(), 20, 3);
+        assert_eq!(
+            out,
+            "@@ -1 +1 @@         \n\
+             1 - aaa  │1 + ccc   \n\
+             2 - bbb  │          \n"
+        );
+        // The padded right column of the unequal row is all blanks.
+        let right_of_row2: String = out.lines().nth(2).unwrap().chars().skip(10).collect();
+        assert!(right_of_row2.chars().all(|c| c == ' '));
+    }
+
+    #[test]
+    fn split_shows_context_on_both_sides_with_side_specific_numbers() {
+        // A leading deletion makes the old/new numbering diverge: the context
+        // line "ctx" then carries old=2 on the left, new=1 on the right —
+        // proving context is echoed to both columns, each with its own
+        // gutter number.
+        let patch = "@@ -1,3 +1,2 @@\n-x\n ctx\n yyy";
+        let out = lines(Diff::new(patch).side_by_side(), 22, 4);
+        let ctx_row = out.lines().nth(2).unwrap();
+        let (left, right) = ctx_row.split_once('│').unwrap();
+        assert!(left.contains("ctx"));
+        assert!(right.contains("ctx"));
+        // Left gutter shows the old number (2), right the new number (1).
+        assert!(left.trim_start().starts_with('2'));
+        assert!(right.trim_start().starts_with('1'));
+    }
+
+    #[test]
+    fn split_preserves_intra_line_word_highlight_on_a_paired_change() {
+        let patch = "@@ -1 +1 @@\n-hello world\n+hello there";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 2));
+        Diff::new(patch).side_by_side().render(buf.area(), &mut buf);
+        // 40 wide → left_w 19, right_w 20; the right column begins at x=20,
+        // its gutter is `1 + ` (cols 20..24), content from col 24:
+        // "hello"=24..28, ' '=29, "there"=30..34. Only "there" changed.
+        let unchanged = buf.get(Position::new(26, 1)).unwrap(); // 'l' of hello
+        assert_eq!(unchanged.symbol, 'l');
+        assert_ne!(unchanged.bg, Color::Green);
+        let changed = buf.get(Position::new(31, 1)).unwrap(); // 'h' of there
+        assert_eq!(changed.symbol, 'h');
+        assert_eq!(changed.bg, Color::Green);
+        // The deletion's changed word is likewise marked on the left column.
+        // Left gutter `1 - ` (cols 0..4), content from col 4: "world"=10..14.
+        let del_changed = buf.get(Position::new(10, 1)).unwrap(); // 'w' of world
+        assert_eq!(del_changed.symbol, 'w');
+        assert_eq!(del_changed.bg, Color::Red);
+    }
+
+    #[test]
+    fn split_too_narrow_degrades_to_unified_without_panicking() {
+        let patch = "@@ -1,2 +1,2 @@\n ctx\n-old\n+new";
+        // num_w 1 ⇒ min split width is 2*(1+3+1)+1 = 11. Below that the
+        // split layout falls back to unified, so the rows match exactly.
+        assert_eq!(
+            Diff::new(patch).side_by_side().lines(10),
+            Diff::new(patch).lines(10),
+        );
+        // And a pathologically narrow render must not panic.
+        let _ = lines(Diff::new(patch).side_by_side(), 1, 4);
+        let _ = lines(Diff::new(patch).side_by_side(), 3, 4);
+        assert!(Diff::new(patch).side_by_side().lines(0).is_empty());
+    }
+
+    #[test]
+    fn split_frames_content_in_the_block_inner_area() {
+        // The block draws the border; the split content renders into the
+        // 14-wide inner area, its own `│` separator sitting between the two
+        // columns (distinct from the block's border `│`).
+        let out = lines(
+            Diff::new("@@ -1 +1 @@\n-a\n+b")
+                .side_by_side()
+                .block(Block::bordered()),
+            16,
+            4,
+        );
+        assert_eq!(
+            out,
+            "┌──────────────┐\n\
+             │@@ -1 +1 @@   │\n\
+             │1 - a │1 + b  │\n\
+             └──────────────┘\n"
+        );
+    }
+
+    #[test]
+    fn unified_layout_output_is_byte_for_byte_unchanged() {
+        // Regression guard: the default (unified) layout must render exactly
+        // as before the split-mode addition. A file header, a hunk with a
+        // section, context, an intra-line edit, and the no-newline marker.
+        let patch = "\
+--- a/m.rs
++++ b/m.rs
+@@ -1,3 +1,3 @@ fn run()
+ keep
+-let a = 1;
++let a = 2;
+\\ No newline at end of file";
+        let out = lines(Diff::new(patch), 28, 6);
+        // Built with `concat!` (not a `\`-continued literal): the addition
+        // row's gutter has two leading spaces (`  2 + `, the absent old
+        // number's slot), which a line-continuation would silently eat.
+        assert_eq!(
+            out,
+            concat!(
+                "─── m.rs                    \n",
+                "@@ -1 +1 @@ fn run()        \n",
+                "1 1   keep                  \n",
+                "2   - let a = 1;            \n",
+                "  2 + let a = 2;            \n",
+                "\\ No newline at end of file \n",
+            )
+        );
+        // The explicit-layout setter is equivalent to the default.
+        assert_eq!(
+            Diff::new(patch).layout(DiffLayout::Unified).lines(28),
+            Diff::new(patch).lines(28),
         );
     }
 }

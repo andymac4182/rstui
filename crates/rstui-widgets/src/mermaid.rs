@@ -31,15 +31,22 @@
 //! - **Edges**: `A --> B` (arrow), `A --- B` (open, no arrowhead),
 //!   `A -.-> B` (dotted), `A ==> B` (thick), with edge labels written either
 //!   as `A -->|text| B` or `A -- text --> B`. A node is declared on first use
-//!   and may be re-referenced by id to add edges.
+//!   and may be re-referenced by id to add edges. An arrow-like sequence
+//!   *inside* a bracketed/quoted label (`A["x --> y"]`) is not mistaken for
+//!   an operator.
+//! - **Chained edges** on one line: `A --> B --> C` records both links and
+//!   declares the shared middle node once; each hop may carry its own label
+//!   (`A -->|go| B --> C`).
+//! - **`&` group shorthand**: `A & B --> C` and `A --> B & C` (and both at
+//!   once) expand to the Cartesian set of links, a shared label riding every
+//!   one.
 //! - `%%` line comments and blank lines are ignored.
 //!
 //! Deliberately out of scope for this slice (each an additive follow-up that
 //! does not change this shape): subgraphs, `classDef`/`class`/`style`
-//! directives, click/href interactions, the `&` multi-node shorthand
-//! (`A & B --> C`), chained edges on one line (`A --> B --> C`), and a true
-//! `BT`/`RL` axis flip. Malformed lines never panic — an unparseable line is
-//! skipped, and a graph with no parseable nodes renders a clear placeholder.
+//! directives, click/href interactions, and a true `BT`/`RL` axis flip.
+//! Malformed lines never panic — an unparseable line is skipped, and a graph
+//! with no parseable nodes renders a clear placeholder.
 //!
 //! # Layout
 //!
@@ -47,14 +54,28 @@
 //! (nodes with no incoming edge); a graph that is all cycles falls back to
 //! declaration order for its roots, and back-edges into an already-ranked
 //! node are drawn but do not deepen the layering. For a top-down graph each
-//! rank is a centered row of boxes and connectors run from a parent's bottom
-//! to a child's top with a `▼` arrowhead; for left-right each rank is a
-//! column and connectors run rightwards with `▶`. Spacing is fixed so the
-//! same source and area always produce the same cells — output is
-//! snapshot-testable through [`Buffer`] exactly like every
-//! other widget. Clean trees and DAGs lay out well; overlapping edges between
-//! distant ranks are routed simply (a straight drop/!run that may cross a
-//! sibling) rather than with an orthogonal router — a documented v1 limit.
+//! rank is a centered row of boxes; for left-right each rank is a column.
+//!
+//! Connectors are routed orthogonally through a shared connection grid: a
+//! parent's forward edges leave on one *bus* (the row just below it, or the
+//! column just right of it for left-right), then each edge turns into its
+//! child's own distinct column/row and meets the box with a single `▼` (`▶`
+//! for left-right) arrowhead. Because every cell's glyph is chosen from the
+//! merged set of segments crossing it, corners, tees, and crossings resolve
+//! to the exact `┌┐└┘├┤┬┴┼` — a fan-out splits cleanly, a fan-in converges on
+//! a `┬`, and each edge's label rides its own child column/row so sibling
+//! labels never overprint (the historic `yes`/`no` → `nos` collision is
+//! fixed). Spacing is fixed so the same source and area always produce the
+//! same cells — output is snapshot-testable through [`Buffer`] exactly like
+//! every other widget.
+//!
+//! Honest remaining limits (each a clean follow-up, not a redesign): a
+//! back-edge or self-loop is a short `↺` stub, not a routed return path; an
+//! edge that skips ranks drops straight down its child's column and may pass
+//! a box between those ranks; and two children of one parent that happen to
+//! land in the same column (different ranks, equal centring) would share a
+//! label cell. Clean trees, DAGs, and the common branch/merge shapes lay out
+//! well.
 //!
 //! # Example
 //!
@@ -469,26 +490,102 @@ fn parse_header(line: &str) -> Option<Direction> {
     })
 }
 
-/// Parses one statement line: an edge (one or more on the line, connected by
-/// re-used ids) or a lone node declaration. Unparseable input is ignored.
+/// Parses one statement line: a chain of one or more edges or a lone node
+/// declaration. Unparseable input is ignored.
+///
+/// An endpoint may be a `&`-joined group (`A & B`), so each operator connects
+/// every node on its left to every node on its right (a Cartesian fan); a
+/// chained line `A --> B --> C` is split operator by operator, the right group
+/// of one edge becoming the left group of the next, so the middle node is
+/// declared exactly once and both links are recorded.
 fn parse_statement(line: &str, graph: &mut MermaidGraph) {
     if line.is_empty() {
         return;
     }
-    if let Some((from, edge, to)) = split_edge(line) {
-        let from_id = upsert_node(graph, from.trim());
-        let to_id = upsert_node(graph, to.trim());
-        if let (Some(from), Some(to)) = (from_id, to_id) {
-            graph.edges.push(Edge {
-                from,
-                to,
-                label: edge.label,
-                kind: edge.kind,
-            });
+    // Walk the operators left to right. `left_ids` is the resolved id list of
+    // the group the next operator starts from; on the first pass it is parsed
+    // from the head of the line. Each loop pins `rest` to the start of the
+    // current left group so [`split_edge`] always has a valid left side.
+    let mut rest = line;
+    let mut left_ids: Option<Vec<String>> = None;
+    let mut produced_edge = false;
+    while let Some((left, edge, tail)) = split_edge(rest) {
+        let from_ids = match left_ids.take() {
+            Some(ids) => ids,
+            None => group_ids(graph, left),
+        };
+        // The right group runs up to the *next* operator (so a chain does not
+        // fold the following link's source into this label-less target), else
+        // to the end of the line. On a chain the right group *is* the next
+        // edge's left group, so the loop re-scans `tail` and reuses these ids
+        // rather than re-parsing the shared middle node.
+        let (right, next_rest) = match split_edge(tail) {
+            Some((r, _, _)) => (&tail[..r.len()], Some(tail)),
+            None => (tail, None),
+        };
+        let to_ids = group_ids(graph, right);
+        for from in &from_ids {
+            for to in &to_ids {
+                graph.edges.push(Edge {
+                    from: from.clone(),
+                    to: to.clone(),
+                    label: edge.label.clone(),
+                    kind: edge.kind,
+                });
+                produced_edge = true;
+            }
         }
-        return;
+        match next_rest {
+            Some(after) => {
+                left_ids = Some(to_ids);
+                rest = after;
+            }
+            None => break,
+        }
     }
-    upsert_node(graph, line);
+    if !produced_edge {
+        upsert_node(graph, line);
+    }
+}
+
+/// Resolves a `&`-joined endpoint group (`A & B[x] & C`) into its node ids,
+/// declaring each node on first use. A lone token is a one-element group; an
+/// unparseable member is skipped so a stray `&` cannot lose the rest. A `&`
+/// *inside* a bracketed/quoted label (`A["a & b"]`) is not a separator.
+fn group_ids(graph: &mut MermaidGraph, group: &str) -> Vec<String> {
+    split_top_level(group, '&')
+        .into_iter()
+        .filter_map(|tok| upsert_node(graph, tok.trim()))
+        .collect()
+}
+
+/// Splits `s` at every `sep` that sits at bracket depth 0 and outside a
+/// double-quoted span, so a separator buried in a node label is preserved.
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut in_quote = false;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        if in_quote {
+            if c == '"' {
+                in_quote = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_quote = true,
+            '[' | '(' | '{' => depth += 1,
+            ']' | ')' | '}' => depth = (depth - 1).max(0),
+            _ if c == sep && depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 /// An edge token's resolved style and label, between its two endpoints.
@@ -497,25 +594,55 @@ struct EdgeToken {
     label: Option<String>,
 }
 
-/// Splits a statement at its first edge operator into
+/// Splits a statement at its *first* edge operator into
 /// `(left_node, edge, right_node)`, or `None` if the line has no edge.
 ///
 /// Recognises `-->`, `---`, `-.->`, `==>`, the inline-label forms
-/// `-->|text|` / `-- text -->`, and their thick/dotted variants. Only the
-/// first operator is split (chained `A --> B --> C` is a documented
-/// deferral — the remainder is parsed as the right endpoint's label-less
-/// text, which still declares the middle node).
-fn split_edge(line: &str) -> Option<(&str, EdgeToken, String)> {
+/// `-->|text|` / `-- text -->`, and their thick/dotted variants. The scan
+/// skips over bracketed (`[]` `()` `{}`) and double-quoted node-label spans so
+/// an arrow-like sequence *inside* a label (`A["x-->y"]`) is never mistaken
+/// for an operator. [`parse_statement`] re-applies this on the tail to walk a
+/// chained `A --> B --> C` link by link.
+fn split_edge(line: &str) -> Option<(&str, EdgeToken, &str)> {
     let bytes = line.as_bytes();
     let mut i = 0;
+    // Bracket nesting depth and whether we are inside a `"..."` label; an
+    // operator is only recognised at depth 0 outside quotes.
+    let mut depth = 0i32;
+    let mut in_quote = false;
     while i < bytes.len() {
-        // An operator starts at a run of `-` or `=` (after a node char), or a
-        // `-.` dotted opener. Scan from each candidate start.
         let c = bytes[i] as char;
-        if (c == '-' || c == '=') && i > 0 {
+        if in_quote {
+            if c == '"' {
+                in_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_quote = true;
+                i += 1;
+                continue;
+            }
+            '[' | '(' | '{' => {
+                depth += 1;
+                i += 1;
+                continue;
+            }
+            ']' | ')' | '}' => {
+                depth = (depth - 1).max(0);
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        // An operator starts at a run of `-` or `=` (after a node char), or a
+        // `-.` dotted opener — only at the top level, outside any label.
+        if depth == 0 && (c == '-' || c == '=') && i > 0 {
             if let Some((op_end, kind, label)) = scan_operator(line, i) {
                 let left = &line[..i];
-                let right = line[op_end..].to_owned();
+                let right = &line[op_end..];
                 if !left.trim().is_empty() && !right.trim().is_empty() {
                     return Some((left, EdgeToken { kind, label }, right));
                 }
@@ -1053,9 +1180,132 @@ fn lay_out(graph: &MermaidGraph) -> Canvas {
     }
 }
 
-/// Routes every edge for a top-down graph: a vertical drop from the parent's
-/// bottom, a horizontal jog at the mid-gap row to the child's column, then a
-/// vertical drop into the child's top with a `▼` head.
+/// The four orthogonal neighbours a routed cell connects to, plus the texture
+/// of the straight run that owns it. Choosing the glyph from the *merged* set
+/// of arms (rather than per edge) makes a fan-out's junctions always the right
+/// `┌┐└┘├┤┬┴┼`, while the kept texture keeps a dotted/thick run intact.
+#[derive(Clone, Copy, Default)]
+struct Conn {
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    /// The line texture of the straight segment that owns this cell, if any.
+    /// A junction (more than two arms, or an `L`/`T`/`+`) always uses the
+    /// solid set, so this only matters for a plain run.
+    kind: Option<EdgeKind>,
+}
+
+impl Conn {
+    /// The box-drawing glyph for this connection set. A straight run keeps its
+    /// own edge texture (a dotted/thick link stays dotted/thick); every corner
+    /// or junction falls back to the solid set, which reads cleanly there.
+    fn glyph(self) -> char {
+        let kind = self.kind.unwrap_or(EdgeKind::Arrow);
+        match (self.up, self.down, self.left, self.right) {
+            // Straight runs keep the edge texture.
+            (true, true, false, false) => kind.line(true),
+            (false, false, true, true) => kind.line(false),
+            // Corners.
+            (false, true, false, true) => '┌',
+            (false, true, true, false) => '┐',
+            (true, false, false, true) => '└',
+            (true, false, true, false) => '┘',
+            // Tees.
+            (true, true, false, true) => '├',
+            (true, true, true, false) => '┤',
+            (false, true, true, true) => '┬',
+            (true, false, true, true) => '┴',
+            // Cross.
+            (true, true, true, true) => '┼',
+            // A lone stub (one arm only) reads as the run along that arm.
+            (true, false, false, false) | (false, true, false, false) => kind.line(true),
+            (false, false, true, false) | (false, false, false, true) => kind.line(false),
+            (false, false, false, false) => ' ',
+        }
+    }
+}
+
+/// Accumulates every edge's orthogonal segments into one connection grid
+/// before any glyph is chosen, so overlapping runs (a fan-out's shared bus, a
+/// fan-in's converging column, two edges that cross) merge into the correct
+/// junction glyph instead of one edge overwriting another.
+///
+/// `conn` is the merged line mask per cell; `marks` are the glyphs that *take
+/// over* a cell (arrowheads, back-edge `↺`) and are painted last so a head is
+/// never buried under a line.
+#[derive(Default)]
+struct Router {
+    conn: BTreeMap<(i32, i32), Conn>,
+    marks: BTreeMap<(i32, i32), char>,
+}
+
+impl Router {
+    /// Adds one orthogonal `kind`-textured segment between two cells on a
+    /// shared row or column, setting the connecting arms at every cell along
+    /// it (so the run is continuous and merges with anything already there).
+    fn segment(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, kind: EdgeKind) {
+        if y0 == y1 {
+            let (lo, hi) = (x0.min(x1), x0.max(x1));
+            for x in lo..=hi {
+                let c = self.conn.entry((x, y0)).or_default();
+                if x > lo {
+                    c.left = true;
+                }
+                if x < hi {
+                    c.right = true;
+                }
+                c.kind = Some(kind);
+            }
+        } else if x0 == x1 {
+            let (lo, hi) = (y0.min(y1), y0.max(y1));
+            for y in lo..=hi {
+                let c = self.conn.entry((x0, y)).or_default();
+                if y > lo {
+                    c.up = true;
+                }
+                if y < hi {
+                    c.down = true;
+                }
+                c.kind = Some(kind);
+            }
+        }
+    }
+
+    /// Records the connection arm by which a node box touches a routed cell
+    /// (the parent's exit / the child's entry), so the junction glyph there
+    /// reads as joined to the box rather than a dangling stub.
+    fn tap(&mut self, x: i32, y: i32, arm: impl FnOnce(&mut Conn)) {
+        arm(self.conn.entry((x, y)).or_default());
+    }
+
+    /// Flushes the grid onto `canvas`: every connected cell as its merged
+    /// glyph (each straight run in its own texture), then the take-over marks
+    /// on top.
+    fn flush(self, canvas: &mut Canvas) {
+        for (&(x, y), &c) in &self.conn {
+            if self.marks.contains_key(&(x, y)) {
+                continue;
+            }
+            canvas.put(x, y, c.glyph(), CellRole::Edge);
+        }
+        for (&(x, y), &ch) in &self.marks {
+            canvas.put(x, y, ch, CellRole::Edge);
+        }
+    }
+}
+
+/// Routes every edge of a top-down graph with a per-parent fan-out bus.
+///
+/// Forward edges out of one node share a single horizontal *bus* on the row
+/// just below the parent, then each drops in its child's own column with a
+/// `▼` head — so every label sits on its child's distinct column and a
+/// fan-out's labels never overprint (the historic `yes`/`no` → `nos` bug).
+/// All segments land in one [`Router`] grid first, so corners, tees, a
+/// fan-in's converging column, and crossings resolve to exact `┌┐└┘├┤┬┴┼`
+/// glyphs while every straight run keeps its own dotted/thick texture.
+/// Back-edges and self-loops keep a short `↺` stub (a documented limit: no
+/// orthogonal back-edge routing).
 fn route_top_down(
     canvas: &mut Canvas,
     graph: &MermaidGraph,
@@ -1063,6 +1313,8 @@ fn route_top_down(
     rank: &[usize],
 ) {
     let idx = |id: &str| graph.index_of(id);
+    let mut r = Router::default();
+
     for e in &graph.edges {
         let (Some(a), Some(b)) = (idx(&e.from), idx(&e.to)) else {
             continue;
@@ -1070,63 +1322,50 @@ fn route_top_down(
         let (Some(pa), Some(pb)) = (boxes.get(&a), boxes.get(&b)) else {
             continue;
         };
-        let line = e.kind.line(true);
-        // Self-loop or a back-edge to an equal/earlier rank: draw a short
-        // straight stub rather than a misleading long line (documented v1
-        // limit — no orthogonal back-edge routing).
         if rank[a] >= rank[b] {
+            // Self-loop / back-edge: a short stub, not a misleading long line.
             let (sx, sy) = pa.bottom_center();
-            canvas.put(sx, sy + 1, '↺', CellRole::Edge);
+            r.marks.insert((sx, sy + 1), '↺');
             continue;
         }
         let (sx, sy) = pa.bottom_center();
         let (tx, ty) = pb.top_center();
-        let mid = sy + (ty - sy) / 2;
-        // Down from the parent to the jog row.
-        for y in (sy + 1)..=mid {
-            canvas.put(sx, y, line, CellRole::Edge);
-        }
-        // Horizontal jog across to the child's column.
-        let (lo, hi) = (sx.min(tx), sx.max(tx));
-        for x in lo..=hi {
-            let g = if x == sx && sx != tx {
-                if tx > sx { '└' } else { '┘' }
-            } else if x == tx && sx != tx {
-                if tx > sx { '┐' } else { '┌' }
-            } else {
-                e.kind.line(false)
-            };
-            // Don't stamp the jog over the vertical we just drew at the
-            // corner column when they coincide.
-            if !(x == sx && sx == tx) {
-                canvas.put(x, mid, g, CellRole::Edge);
+        let by = sy + 1; // the bus row, shared by this parent's fan-out
+        // Parent feeds the bus from above at its column; child taps it from
+        // below at its own (distinct) column.
+        r.tap(sx, by, |c| c.up = true);
+        r.tap(tx, by, |c| c.down = true);
+        // The bus hop across to the child column, then the drop into it.
+        r.segment(sx, by, tx, by, e.kind);
+        r.segment(tx, by, tx, ty - 1, e.kind);
+        let head_y = ty - 1;
+        if head_y >= by {
+            if e.kind.has_head() {
+                r.marks.insert((tx, head_y), '▼');
             }
-        }
-        // Down from the jog into the child, leaving room for the arrowhead.
-        for y in (mid + 1)..ty {
-            canvas.put(tx, y, line, CellRole::Edge);
-        }
-        if e.kind.has_head() {
-            canvas.put(tx, ty - 1, '▼', CellRole::Edge);
-        } else {
-            canvas.put(tx, ty - 1, line, CellRole::Edge);
+            r.tap(tx, head_y, |c| c.down = true);
         }
         if let Some(label) = &e.label {
-            // Place the label on the parent's vertical-drop segment, just to
-            // its right — clear of the jog corner so a fan-out's labels stay
-            // legible (overlapping fan-out labels still collide; that is the
-            // documented v1 simple-routing limit).
-            let ly = (sy + 1).min(mid.max(sy + 1));
-            canvas.put_str(sx + 1, ly, label, CellRole::EdgeLabel);
+            // The label rides the child's own column (distinct per child), one
+            // row under the bus — so sibling labels never overprint.
+            canvas.put_str(tx + 1, by + 1, label, CellRole::EdgeLabel);
         }
     }
+    r.flush(canvas);
 }
 
-/// Routes every edge for a left-right graph: a horizontal run from the
-/// parent's right edge, a vertical jog at the mid-gap column to the child's
-/// row, then a horizontal run into the child's left with a `▶` head.
+/// Routes every edge of a left-right graph with a per-parent fan-out bus —
+/// the column-wise transpose of [`route_top_down`].
+///
+/// Forward edges out of one node share a vertical *bus* in the column just
+/// right of the parent, then each runs into its child's own row with a `▶`
+/// head; each label sits above its child's distinct row so siblings never
+/// overprint. Junctions resolve through the same [`Router`] grid.
+/// Back-/self-edges keep the `↺` stub (a documented limit).
 fn route_left_right(canvas: &mut Canvas, graph: &MermaidGraph, boxes: &BTreeMap<usize, PlacedBox>) {
     let idx = |id: &str| graph.index_of(id);
+    let mut r = Router::default();
+
     for e in &graph.edges {
         let (Some(a), Some(b)) = (idx(&e.from), idx(&e.to)) else {
             continue;
@@ -1135,45 +1374,32 @@ fn route_left_right(canvas: &mut Canvas, graph: &MermaidGraph, boxes: &BTreeMap<
             continue;
         };
         if pb.x <= pa.x {
-            // Back-/self-edge: a short stub (documented v1 limit).
             let (sx, sy) = pa.right_center();
-            canvas.put(sx + 1, sy, '↺', CellRole::Edge);
+            r.marks.insert((sx + 1, sy), '↺');
             continue;
         }
-        let line = e.kind.line(false);
         let (sx, sy) = pa.right_center();
         let (tx, ty) = pb.left_center();
-        let mid = sx + (tx - sx) / 2;
-        for x in (sx + 1)..=mid {
-            canvas.put(x, sy, line, CellRole::Edge);
-        }
-        let (lo, hi) = (sy.min(ty), sy.max(ty));
-        for y in lo..=hi {
-            let g = if y == sy && sy != ty {
-                if ty > sy { '┌' } else { '└' }
-            } else if y == ty && sy != ty {
-                if ty > sy { '┘' } else { '┐' }
-            } else {
-                e.kind.line(true)
-            };
-            if !(y == sy && sy == ty) {
-                canvas.put(mid, y, g, CellRole::Edge);
+        let bx = sx + 1; // the bus column, shared by this parent's fan-out
+        r.tap(bx, sy, |c| c.left = true);
+        r.tap(bx, ty, |c| c.right = true);
+        r.segment(bx, sy, bx, ty, e.kind);
+        r.segment(bx, ty, tx - 1, ty, e.kind);
+        let head_x = tx - 1;
+        if head_x >= bx {
+            if e.kind.has_head() {
+                r.marks.insert((head_x, ty), '▶');
             }
-        }
-        for x in (mid + 1)..tx {
-            canvas.put(x, ty, line, CellRole::Edge);
-        }
-        if e.kind.has_head() {
-            canvas.put(tx - 1, ty, '▶', CellRole::Edge);
-        } else {
-            canvas.put(tx - 1, ty, line, CellRole::Edge);
+            r.tap(head_x, ty, |c| c.right = true);
         }
         if let Some(label) = &e.label {
-            // Centre the label above the horizontal run.
-            let lx = (sx + 1).max(mid - label.chars().count() as i32 / 2);
-            canvas.put_str(lx, sy.saturating_sub(1).max(0), label, CellRole::EdgeLabel);
+            // The label rides above the child's own row (distinct per child),
+            // so sibling labels never overprint.
+            let lx = (bx + 1).max(tx - 1 - label.chars().count() as i32);
+            canvas.put_str(lx, ty.saturating_sub(1).max(0), label, CellRole::EdgeLabel);
         }
     }
+    r.flush(canvas);
 }
 
 #[cfg(test)]
@@ -1437,6 +1663,151 @@ mod tests {
         assert_eq!(r.len(), 2);
         // The back-edge does not deepen the layering past one step.
         assert!(r.iter().all(|&x| x <= 1));
+    }
+
+    // --- chained / `&` shorthand parse tests ------------------------------
+
+    #[test]
+    fn chained_edges_on_one_line_parse_to_consecutive_links() {
+        // `A --> B --> C` is one statement: two links, the middle node
+        // declared exactly once.
+        let g = Mermaid::parse("graph TD\nA --> B --> C").unwrap();
+        assert_eq!(g.nodes.len(), 3);
+        assert_eq!(
+            g.edges
+                .iter()
+                .map(|e| (e.from.as_str(), e.to.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("A", "B"), ("B", "C")]
+        );
+        // A chain may carry a per-link label and shaped middle nodes.
+        let g = Mermaid::parse("graph TD\nA[Start] -->|go| B(Mid) --> C{End}").unwrap();
+        assert_eq!(g.edges[0].label.as_deref(), Some("go"));
+        assert_eq!(g.edges[1].label, None);
+        let mid = g.nodes.iter().find(|n| n.id == "B").unwrap();
+        assert_eq!(mid.label, "Mid");
+        assert_eq!(mid.shape, Shape::Round);
+        assert_eq!(g.edges.last().unwrap().to, "C");
+    }
+
+    #[test]
+    fn ampersand_shorthand_expands_to_a_cartesian_fan() {
+        // `A & B --> C` is A→C and B→C; `D --> E & F` is D→E and D→F.
+        let g = Mermaid::parse("graph TD\nA & B --> C\nD --> E & F").unwrap();
+        let pairs: Vec<_> = g
+            .edges
+            .iter()
+            .map(|e| (e.from.as_str(), e.to.as_str()))
+            .collect();
+        assert_eq!(pairs, vec![("A", "C"), ("B", "C"), ("D", "E"), ("D", "F")]);
+        // Both sides may be groups, and a shared label rides every link.
+        let g = Mermaid::parse("graph TD\nA & B -->|link| C & D").unwrap();
+        assert_eq!(g.edges.len(), 4);
+        assert!(g.edges.iter().all(|e| e.label.as_deref() == Some("link")));
+        assert_eq!(g.nodes.len(), 4);
+    }
+
+    #[test]
+    fn arrow_inside_a_quoted_label_is_not_an_operator() {
+        // The scan skips bracketed/quoted spans, so `-->` inside a label does
+        // not split the node off.
+        let g = Mermaid::parse("graph TD\nA[\"x --> y\"] --> B").unwrap();
+        assert_eq!(g.nodes.len(), 2);
+        let a = g.nodes.iter().find(|n| n.id == "A").unwrap();
+        assert_eq!(a.label, "x --> y");
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(
+            (g.edges[0].from.as_str(), g.edges[0].to.as_str()),
+            ("A", "B")
+        );
+    }
+
+    #[test]
+    fn ampersand_inside_a_label_is_not_a_group_separator() {
+        // `&` only groups at the top level; one inside a label stays in it.
+        let g = Mermaid::parse("graph TD\nA[\"R & D\"] --> B & C").unwrap();
+        let a = g.nodes.iter().find(|n| n.id == "A").unwrap();
+        assert_eq!(a.label, "R & D");
+        // The trailing `B & C` is still a real two-node group.
+        let pairs: Vec<_> = g
+            .edges
+            .iter()
+            .map(|e| (e.from.as_str(), e.to.as_str()))
+            .collect();
+        assert_eq!(pairs, vec![("A", "B"), ("A", "C")]);
+    }
+
+    // --- render snapshot tests (new routing) ------------------------------
+
+    #[test]
+    fn fan_out_labels_render_separately_not_overprinted() {
+        // The historic v1 bug: a node with two labelled outgoing edges drew
+        // `yes`/`no` on the *same* parent row, colliding into `nos`. Each
+        // label now rides its own child column, one row under the bus.
+        let g = Mermaid::parse("graph TD\nA{Go?}\nA -->|yes| B\nA -->|no| C").unwrap();
+        let txt = canvas_text(&lay_out(&g));
+        assert_eq!(
+            txt,
+            "  ┌───────┐       \n\
+             \u{20}\u{20}│ ◇ Go? │       \n\
+             \u{20}\u{20}└───────┘       \n\
+             \u{20}\u{20}┌───┴───┐       \n\
+             \u{20}\u{20}│yes    │no     \n\
+             \u{20}\u{20}▼       ▼       \n\
+             ┌───┐   ┌───┐     \n\
+             │ B │   │ C │     \n\
+             └───┘   └───┘     \n"
+        );
+        // Both labels are present, intact, and on different rows-of-text only
+        // by column — never fused.
+        assert!(txt.contains("│yes "));
+        assert!(txt.contains("│no "));
+        assert!(!txt.contains("nos"));
+        // Orthogonal junction glyphs are present on the fan-out bus.
+        assert!(txt.contains("┌───┴───┐"));
+        assert_eq!(txt.matches('▼').count(), 2);
+    }
+
+    #[test]
+    fn fan_in_converges_with_a_tee_not_an_overwrite() {
+        // Two parents into one child must merge into a `┬`, not have one
+        // edge's corner stomp the other's.
+        let g = Mermaid::parse("graph TD\nA --> C\nB --> C").unwrap();
+        let txt = canvas_text(&lay_out(&g));
+        assert!(txt.contains("└───┬───┘"), "fan-in tee missing:\n{txt}");
+        assert_eq!(txt.matches('▼').count(), 1);
+    }
+
+    #[test]
+    fn left_right_fan_out_labels_render_separately() {
+        // The LR transpose of the fan-out fix: each label above its own
+        // child row.
+        let g = Mermaid::parse("graph LR\nA -->|hot| B\nA -->|cold| C").unwrap();
+        let txt = canvas_text(&lay_out(&g));
+        assert_eq!(
+            txt,
+            "       hot ┌───┐      \n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}┌────▶│ B │      \n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}│     └───┘      \n\
+             ┌───┐│                \n\
+             │ A │┤                \n\
+             └───┘│                \n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}│cold ┌───┐      \n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}└────▶│ C │      \n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}└───┘      \n"
+        );
+        assert!(txt.contains("hot") && txt.contains("cold"));
+        assert_eq!(txt.matches('▶').count(), 2);
+    }
+
+    #[test]
+    fn chained_edges_render_as_a_three_box_column() {
+        // `A --> B --> C` lays out as three stacked ranks linked top-down.
+        let out = lines(Mermaid::new("graph TD\nA --> B --> C"), 9, 15);
+        assert!(out.contains("│ A │"));
+        assert!(out.contains("│ B │"));
+        assert!(out.contains("│ C │"));
+        assert_eq!(out.matches('▼').count(), 2);
     }
 
     /// The canvas glyphs as one newline-terminated string per row (test-only,

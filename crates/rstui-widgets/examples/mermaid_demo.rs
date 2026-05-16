@@ -1,6 +1,9 @@
 //! Renders a small realistic Mermaid flowchart through [`Mermaid`] inside a
-//! [`Block`]: shaped nodes (rectangle, round, diamond), a labelled edge, and a
-//! fan-out — the supported top-down subset exercised end to end.
+//! [`Block`]: shaped nodes (rectangle, round, diamond, circle), a **chained**
+//! spine (`A --> B --> C`), a labelled **fan-out** whose `yes`/`no` labels now
+//! render on their own child columns (no more `nos` overprint), and the `&`
+//! group shorthand fanning one node into two — the supported top-down subset
+//! exercised end to end with the orthogonal bus router.
 //!
 //! Running over a [`TestBackend`] keeps it TTY-free, so it doubles as a
 //! deterministic snapshot smoke test of the Mermaid layer:
@@ -14,14 +17,13 @@ use rstui_widgets::{Block, Mermaid};
 
 const FLOW: &str = "\
 graph TD
-  A[Start] --> B(Load config)
-  B --> C{Valid?}
+  A[Start] --> B(Load config) --> C{Valid?}
   C -->|yes| D[Run pipeline]
   C -->|no| E[Report error]
-  D --> F((Done))";
+  D --> F((Done)) & G[Notify]";
 
 fn main() {
-    let mut terminal = Terminal::new(TestBackend::new(56, 31)).expect("TestBackend is infallible");
+    let mut terminal = Terminal::new(TestBackend::new(64, 33)).expect("TestBackend is infallible");
 
     terminal
         .draw(|frame| {
