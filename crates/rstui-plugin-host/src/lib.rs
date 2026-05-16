@@ -49,6 +49,9 @@
 //!   is host-canonicalised, policy-checked, and only *then* (if allowed)
 //!   run through [`effects`], returning an auditable
 //!   [`host::PluginRunReport`].
+//! - [`plugin_sdk`]: the plugin author's counterpart —
+//!   [`plugin_sdk::PluginConnection`] does the handshake and typed
+//!   request/response so a plugin binary never hand-rolls the wire.
 //!
 //! Every nondeterministic edge is an injected trait with a `std` impl and a
 //! scripted in-memory fake, so a denied capability, a malformed frame, a
@@ -83,6 +86,7 @@ pub mod host;
 pub mod manifest;
 pub mod message;
 pub mod permission;
+pub mod plugin_sdk;
 pub mod process;
 pub mod protocol;
 pub mod std_process;
@@ -99,6 +103,7 @@ pub use message::{
     encode_response,
 };
 pub use permission::{Decision, ManifestPolicy, PermissionPolicy, RecordingPolicy};
+pub use plugin_sdk::{PluginConnection, SdkError};
 pub use process::{
     ExitOutcome, FakePluginProcess, FakeProcessRunner, PluginProcess, PluginSpawnSpec,
     ProcessRunner,
