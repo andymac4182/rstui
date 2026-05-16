@@ -7,8 +7,9 @@ Stream: `fullscreen-runtime`
 First read the full brief from the repo and follow it as the source of truth.
 Do not summarize it and stop. Execute it.
 
-Goal: create your own worktree from latest `origin/main`, then make substantial,
-validated progress on full-screen TUI runtime support. Own
+Goal: use the current Claude `--worktree` if launched there, otherwise create
+your own worktree from latest `origin/main`; then make substantial, validated
+progress on full-screen TUI runtime support. Own
 `crates/rstui-runtime/**`, `crates/rstui-crossterm/**`, runtime/crossterm
 examples, and only focused `rstui-core` event/focus/terminal/event_source
 changes needed by the runtime boundary. Avoid widget catalog, rich rendering,

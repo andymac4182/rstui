@@ -26,6 +26,27 @@ pbcopy < scripts/claude-goals/goal-conditions/plugins.md
 pbcopy < scripts/claude-goals/goal-conditions/quality-dx.md
 ```
 
+For unattended overnight runs, prefer the launchers. They copy the compact
+goal condition to the clipboard, launch Claude with a dedicated worktree, start
+it under tmux, keep macOS awake with `caffeinate`, use Opus 4.7 with max
+effort, and bypass tool permission prompts:
+
+```sh
+scripts/claude-goals/run-widgets.sh
+scripts/claude-goals/run-fullscreen-runtime.sh
+scripts/claude-goals/run-rich-rendering.sh
+scripts/claude-goals/run-plugins.sh
+scripts/claude-goals/run-quality-dx.sh
+```
+
+The relevant Claude switches are:
+
+- `--worktree <name>`: create a dedicated git worktree for that Claude session.
+- `--tmux`: run the worktree session under tmux so it can keep going.
+- `--dangerously-skip-permissions`: bypass tool permission prompts.
+- `--model claude-opus-4-7 --effort max`: use the requested model and thinking
+  effort.
+
 The detailed briefs in `scripts/claude-goals/*.md` intentionally repeat the
 shared rules. That keeps each Claude run self-contained after it reads the file
 from disk.

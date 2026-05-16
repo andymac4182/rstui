@@ -7,8 +7,9 @@ Stream: `plugins`
 First read the full brief from the repo and follow it as the source of truth.
 Do not summarize it and stop. Execute it.
 
-Goal: create your own worktree from latest `origin/main`, then make substantial,
-validated progress on rstui's permissioned plugin system. Own plugin
+Goal: use the current Claude `--worktree` if launched there, otherwise create
+your own worktree from latest `origin/main`; then make substantial, validated
+progress on rstui's permissioned plugin system. Own plugin
 host/runtime crates or modules, plugin ADRs/docs, examples/tests for manifests,
 permissions, process isolation, IO boundaries, and focused runtime integration
 only where plugin events/capabilities require it. Avoid widgets, rich

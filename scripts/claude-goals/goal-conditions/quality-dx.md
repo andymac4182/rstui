@@ -7,8 +7,9 @@ Stream: `quality-dx`
 First read the full brief from the repo and follow it as the source of truth.
 Do not summarize it and stop. Execute it.
 
-Goal: create your own worktree from latest `origin/main`, then make substantial,
-validated progress on project-wide quality and feedback loops. Own
+Goal: use the current Claude `--worktree` if launched there, otherwise create
+your own worktree from latest `origin/main`; then make substantial, validated
+progress on project-wide quality and feedback loops. Own
 `crates/xtask/**`, benchmark/profiling infrastructure, CI/check scripts,
 quality gates, conventions/dev workflow docs, kitchen-sink/demo harness
 infrastructure, and cross-cutting smoke workflows. Avoid feature-owned widget,

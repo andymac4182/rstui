@@ -7,8 +7,9 @@ Stream: `widgets`
 First read the full brief from the repo and follow it as the source of truth.
 Do not summarize it and stop. Execute it.
 
-Goal: create your own worktree from latest `origin/main`, then make substantial,
-validated progress on rstui widget/component authoring. Own
+Goal: use the current Claude `--worktree` if launched there, otherwise create
+your own worktree from latest `origin/main`; then make substantial, validated
+progress on rstui widget/component authoring. Own
 `crates/rstui-widgets/**`, widget examples, widget docs, and only focused
 `rstui-core` primitives that widgets truly need. Avoid runtime, plugin, rich
 rendering, benchmark, CI, and kitchen-sink work except for tiny integration

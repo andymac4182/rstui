@@ -17,9 +17,12 @@ The source repository is:
 /Users/andrewmcclenaghan/dev/andymac4182/rstui
 ```
 
-Before editing, create your own worktree from current `origin/main`. Do not
-work directly in the main checkout except during the serialized merge-back
-protocol.
+Preferred launch mode is Claude's own `--worktree` flag. If this session was
+already launched in a Claude-created worktree, use the current directory as
+`$worktree` and do not create a second worktree. If you were launched from the
+main checkout instead, create your own worktree from current `origin/main`.
+Do not work directly in the main checkout except during the serialized
+merge-back protocol.
 
 ```sh
 repo="/Users/andrewmcclenaghan/dev/andymac4182/rstui"
@@ -33,9 +36,11 @@ git -C "$repo" fetch origin main
 git -C "$repo" status --short
 ```
 
-If the main checkout is dirty, stop and report the dirty files. Do not overwrite
-or stash user work. If the worktree path already exists, choose a new suffixed
-path. Do not delete existing worktrees.
+If you are already in a Claude worktree, set `worktree="$(pwd)"`, set `branch`
+from `git branch --show-current`, and continue. If you are in the main checkout
+and the main checkout is dirty, stop and report the dirty files. Do not
+overwrite or stash user work. If the worktree path already exists, choose a new
+suffixed path. Do not delete existing worktrees.
 
 ```sh
 mkdir -p "$worktree_root"
