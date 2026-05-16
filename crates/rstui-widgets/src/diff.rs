@@ -13,7 +13,7 @@
 //! `@@ … @@`, then a one-char body sign), and the only real algorithm — the
 //! word-level intra-line diff — is a textbook LCS over tokens, the same way
 //! [`Markdown`](crate::Markdown)'s parser is hand-written rather than pulling a
-//! CommonMark crate. So `Diff` is a plain [`Widget`](rstui_core::Widget)
+//! CommonMark crate. So `Diff` is a plain [`Widget`]
 //! module here, zero new dependencies.
 //!
 //! # A real subset, not a fake renderer
@@ -46,7 +46,7 @@
 //!
 //! Rendering is deterministic and width-aware: the same patch and area always
 //! produce the same cells, so output is snapshot-testable through
-//! [`Buffer`](rstui_core::Buffer) exactly like every other widget. Malformed
+//! [`Buffer`] exactly like every other widget. Malformed
 //! input never panics — an unparseable line renders best-effort as context.
 //!
 //! # Example

@@ -14,7 +14,7 @@
 //! hundred lines, the same way [`Markdown`](crate::Markdown)'s parser and
 //! [`Paragraph`](crate::Paragraph)'s wrap composer are hand-written rather
 //! than pulling a crate. So `Mermaid` is a plain
-//! [`Widget`](rstui_core::Widget) module here, zero new dependencies.
+//! [`Widget`] module here, zero new dependencies.
 //!
 //! # Progressive fidelity, not a fake renderer
 //!
@@ -51,7 +51,7 @@
 //! to a child's top with a `▼` arrowhead; for left-right each rank is a
 //! column and connectors run rightwards with `▶`. Spacing is fixed so the
 //! same source and area always produce the same cells — output is
-//! snapshot-testable through [`Buffer`](rstui_core::Buffer) exactly like every
+//! snapshot-testable through [`Buffer`] exactly like every
 //! other widget. Clean trees and DAGs lay out well; overlapping edges between
 //! distant ranks are routed simply (a straight drop/!run that may cross a
 //! sibling) rather than with an orthogonal router — a documented v1 limit.

@@ -5,7 +5,7 @@
 //!
 //! [`Input`](crate::Input) projects a caller-owned single-line
 //! [`TextEdit`](rstui_core::TextEdit); `Editor` projects a caller-owned
-//! **multi-line** [`TextArea`](rstui_core::TextArea) (the `rstui-core`
+//! **multi-line** [`TextArea`] (the `rstui-core`
 //! document model: a `Vec<String>` of logical lines plus a `(row, col)`
 //! character-indexed cursor) plus a `focused: bool`. The widget borrows the
 //! [`TextArea`] — [`Editor::new`] takes `&TextArea` — and only ever *reads*
@@ -31,7 +31,7 @@
 //! §1 — scroll is plain model state the pure `view` reads, never widget- or
 //! runtime-mutated). If the cursor is scrolled out of the visible window the
 //! widget draws **no caret**; keeping it in view (a `scroll_into_view` seam on
-//! [`TextArea`](rstui_core::TextArea)) is the caller's job and a deliberately
+//! [`TextArea`]) is the caller's job and a deliberately
 //! deferred additive — as are selection and undo. None are smuggled into this
 //! slice (the same scoping discipline [`List`](crate::List) records).
 //!
@@ -54,7 +54,7 @@
 //! # A container: an optional framing [`Block`]
 //!
 //! Unlike the single-row leaf [`Input`](crate::Input), an `Editor` is a
-//! panel: it takes an optional framing [`Block`](crate::Block) and renders
+//! panel: it takes an optional framing [`Block`] and renders
 //! the document into the block's [`inner`](crate::Block::inner) area, exactly
 //! like [`List`](crate::List)/[`Table`](crate::Table).
 //!
@@ -63,7 +63,7 @@
 //! Per the [`Gauge`](crate::Gauge) rule (a pure projection must be *total*):
 //! an empty area, a one-cell inner, a document far larger than the panel, a
 //! multi-byte line, a scroll past the end, and an empty document are all safe
-//! clips/no-ops — never a panic. [`TextArea`](rstui_core::TextArea) already
+//! clips/no-ops — never a panic. [`TextArea`] already
 //! guarantees a valid `(row, col)` cursor on a real char boundary, so the
 //! cell math cannot escape the panel.
 
@@ -73,7 +73,7 @@ use crate::block::Block;
 use rstui_core::{Buffer, Modifier, Position, Rect, Style, TextArea, Widget};
 
 /// A multi-line text-entry panel rendered as a pure projection of a
-/// caller-owned [`TextArea`](rstui_core::TextArea), a
+/// caller-owned [`TextArea`], a
 /// [`focused`](Self::focused) `bool`, and a caller-owned 2D
 /// [`scroll`](Self::scroll) offset.
 ///

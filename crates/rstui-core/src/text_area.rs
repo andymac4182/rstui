@@ -3,19 +3,19 @@
 //! [`TextArea`] is the **multi-line dual of [`TextEdit`](crate::text_edit::TextEdit)**:
 //! the same pure-value, total, caller-owned editing model, but a *document*
 //! of logical lines plus a `(row, col)` cursor instead of a single string
-//! plus a character index. Like [`TextEdit`] it lives as a *field in the
+//! plus a character index. Like [`TextEdit`](crate::TextEdit) it lives as a *field in the
 //! application's model*, is mutated only by `update`, and is read by the pure
 //! `view`; the `Editor` widget (in `rstui-widgets`) is a pure projection of
 //! one — it draws [`lines`](TextArea::lines) and a caret at
 //! [`cursor`](TextArea::cursor) and never edits anything itself, exactly as
-//! `Input` projects a caller-owned [`TextEdit`]. Per
+//! `Input` projects a caller-owned [`TextEdit`](crate::TextEdit). Per
 //! [ADR 0004](https://github.com/andymac4182/rstui/blob/main/docs/adr/0004-focus-routing-architecture.md)
 //! this is *forced* by rstui's pure-`view` / immediate-mode design: a widget
 //! is handed only a [`Buffer`](crate::buffer::Buffer) at render time, so it
 //! can neither own the text being typed nor mutate it on a keystroke. The
 //! reducer owns the edit.
 //!
-//! [`TextEdit`] records the decision verbatim: multi-line editing is *"a
+//! [`TextEdit`](crate::TextEdit) records the decision verbatim: multi-line editing is *"a
 //! separate model, not a flag on this one"*. This is that separate model. A
 //! newline is a structural split here (it creates a row), not a literal
 //! `'\n'` character stored in a line — every `String` in
@@ -40,7 +40,7 @@
 //!   [`set_cursor`](TextArea::set_cursor), can panic or leave the cursor
 //!   mid-codepoint, off the document, or on a missing row (the iter-25 "a pure
 //!   projection must be total" rule, the same guarantee
-//!   [`TextEdit`] gives single-line editing).
+//!   [`TextEdit`](crate::TextEdit) gives single-line editing).
 //!
 //! This is **app/widget** state and is unrelated to terminal-window focus
 //! (`Event::FocusGained` / `Event::FocusLost`); the reducer decides when an

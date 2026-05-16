@@ -6,7 +6,7 @@
 //!
 //! [`Checkbox`](crate::Checkbox) projects a caller-owned `bool`,
 //! [`Input`](crate::Input) a caller-owned [`TextEdit`](rstui_core::TextEdit),
-//! [`List`](crate::List) a caller-owned `selected`/`offset`. `Select` projects
+//! [`List`] a caller-owned `selected`/`offset`. `Select` projects
 //! **four** ordinary application-state fields the reducer owns and mutates in
 //! `update`, never the widget at render time (the read-only-state rule
 //! `List`'s `selected`/`offset` establish):
@@ -40,8 +40,8 @@
 //! it, flipping above only when the screen runs out), not centred in an
 //! overlay, and it is sized to its options, not to a `Constraint`. Reusing
 //! `Modal` would force all three modal behaviours the dropdown must not have.
-//! Instead it **reuses [`List`](crate::List) wholesale** for the option panel
-//! (and [`Block`](crate::Block) for its optional frame): the panel *is* a
+//! Instead it **reuses [`List`] wholesale** for the option panel
+//! (and [`Block`] for its optional frame): the panel *is* a
 //! `List`, so its scrolling, highlight bar, and totality are inherited rather
 //! than re-implemented.
 //!
@@ -83,7 +83,7 @@ const DISCLOSURE: char = '▾';
 /// the [`placeholder`](Self::placeholder) when there is none) plus a
 /// right-aligned disclosure marker. [`open`](Self::open) additionally drops an
 /// **opaque** option panel anchored to the field (below it, or flipped above
-/// when the screen runs out), which is an internal [`List`](crate::List) of
+/// when the screen runs out), which is an internal [`List`] of
 /// the options framed by the optional [`block`](Self::block).
 ///
 /// # Example
@@ -174,7 +174,7 @@ impl<'a> Select<'a> {
     /// Sets which option the open panel highlights (the keyboard row while
     /// open). Committed into [`selected`](Self::selected) by the reducer on
     /// `Enter` — never here. Out of range simply paints no bar (inherited
-    /// from [`List`](crate::List)).
+    /// from [`List`]).
     #[must_use]
     pub fn highlight(mut self, highlight: usize) -> Self {
         self.highlight = highlight;
@@ -198,7 +198,7 @@ impl<'a> Select<'a> {
 
     /// Frames the open option panel in `block`; the options render into
     /// [`block.inner`](Block::inner), the same compose pattern
-    /// [`List`](crate::List) uses. Does not frame the closed field (a leaf).
+    /// [`List`] uses. Does not frame the closed field (a leaf).
     #[must_use]
     pub fn block(mut self, block: Block<'a>) -> Self {
         self.block = Some(block);
@@ -225,7 +225,7 @@ impl<'a> Select<'a> {
     ///
     /// Patched **last** across the full field row, so the focus emphasis
     /// overrides per-span colours and reads as one bar — the same role
-    /// [`List`](crate::List)'s `highlight_style` plays for selection.
+    /// [`List`]'s `highlight_style` plays for selection.
     #[must_use]
     pub fn focus_style(mut self, style: Style) -> Self {
         self.focus_style = style;
@@ -233,7 +233,7 @@ impl<'a> Select<'a> {
     }
 
     /// Sets the [`Style`] patched over the highlighted row of the open panel,
-    /// forwarded straight to the internal [`List`](crate::List).
+    /// forwarded straight to the internal [`List`].
     #[must_use]
     pub fn highlight_style(mut self, style: Style) -> Self {
         self.highlight_style = style;
