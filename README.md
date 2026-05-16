@@ -57,7 +57,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit, text_area |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — the core set (`Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Modal`, `StatusBar`, `Toast`, `Tree`, `Select`, `Editor`), the rich-rendering family (`Markdown`, `Link`, `Diff`, `Mermaid`), the form/data family (`Slider`, `Switch`, `Form`, `Sparkline`, `BarChart`, `Calendar`, `DescriptionList`, `Badge`, `Alert`, `Divider`), and the navigation/layout family (`Menu`, `CommandPalette`, `Tooltip`, `Breadcrumb`, `SplitPane`, `Accordion`, `Card`) — ~39 today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — the core set (`Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Modal`, `StatusBar`, `Toast`, `Tree`, `Select`, `Editor`), the rich-rendering family (`Markdown`, `Link`, `Diff`, `Mermaid`), the form/data family (`Slider`, `Switch`, `Form`, `Sparkline`, `BarChart`, `Calendar`, `DescriptionList`, `Badge`, `Alert`, `Divider`), the navigation/layout family (`Menu`, `CommandPalette`, `Tooltip`, `Breadcrumb`, `SplitPane`, `Accordion`, `Card`), and the layout/overlay/control family (`ScrollView`, `Grid`, `Align`, `Popover`, `Drawer`, `Sidebar`, `Skeleton`, `Avatar`, `Kbd`, `HelpOverlay`, `Pagination`, `Stepper`, `MaskedInput`, `DatePicker`) — ~53 today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/rstui-plugin-host` | Dependency-free permissioned plugin host ([ADR 0007](docs/adr/0007-plugin-host-and-secure-execution.md)): plugins run as separate OS processes the host fully mediates, deny-by-default. The closed four-capability model, the strict fail-closed manifest parser, the manifest-derived `PermissionPolicy`, the hand-rolled length-prefixed frame codec, the `PluginHost` mediation loop (host-canonicalised path, policy-checked, effect only if allowed; fail-closed + timeout), a real `env_clear`+allowlist `std::process` runner, and in-memory fakes so every security property is a `Harness`-grade deterministic test (see the `permissioned_plugin` example). No `unsafe`, no dependencies |
@@ -406,6 +406,39 @@ each the same pure-projection, caller-owned-state, total discipline:
 - `card` — `Card`: a titled container, a thin convenience composition over
   `Block` with header/footer lines and an `inner` body accessor.
 
+Wave 3 completes opencode/gpui-component-class coverage with the
+layout/overlay/control family — the same pure-projection, total discipline:
+
+- `scroll_view` — `ScrollView`: the keystone scroll primitive. Clips a
+  **borrowed pre-rendered content `Buffer`** to a window from a caller-owned
+  2D offset and draws a `Scrollbar` per overflowing axis (immediate-mode
+  correct — u16 coords can't negative-translate a child; the `&TextEdit`
+  borrow precedent). `viewport()` accessor; the basis for chat transcripts /
+  log panes.
+- `grid` — `Grid`: a 2-D layout reusing core `Layout` per axis (no new
+  solver); `split`/`cell` accessors, owns no state.
+- `align` — `Align`/`VerticalAlignment`: centres/aligns a `Constraint`-sized
+  child on both axes (the `Modal` centring generalized); a pure accessor.
+- `popover` — `Popover`/`PopoverSide`: the generic anchored opaque panel
+  `Tooltip`/`Menu`/`Select` specialize from; flips to stay on-buffer.
+- `drawer` — `Drawer`/`DrawerSide`: an edge-anchored opaque side sheet with
+  optional backdrop; caller-owned `open` + size `Constraint`.
+- `sidebar` — `Sidebar`/`SidebarItem`: an app navigation rail (collapsible
+  groups, narrow/expanded) reusing `List`.
+- `skeleton` — `Skeleton`/`SkeletonShape`: a loading placeholder whose shimmer
+  is a pure projection of a caller-owned tick (the `Spinner` precedent).
+- `avatar` — `Avatar`: a small initials swatch; a leaf.
+- `kbd` — `Kbd`: an inline keycap glyph cluster (`⌃⇧P`); a leaf.
+- `help_overlay` — `HelpOverlay`/`HelpEntry`: a centred opaque keybinding
+  cheat-sheet reusing `Kbd` + clear-region.
+- `pagination` — `Pagination`: a windowed pager (`‹ 1 … 4 [5] 6 … ›`); a leaf.
+- `stepper` — `Stepper`/`Step`/`StepperOrientation`: a horizontal/vertical
+  wizard progress.
+- `masked_input` — `MaskedInput`: the `Input` projection with a mask glyph +
+  unmask toggle (passwords); `Input` itself untouched.
+- `date_picker` — `DatePicker`: a closed field dropping an opaque anchored
+  `Calendar` panel (the `Select` idiom, self-contained, no date math).
+
 ### `rstui-runtime`
 
 The Elm/Bubble Tea–style application loop, expressed as a contract so the same
@@ -584,6 +617,20 @@ cargo run -p rstui-widgets --example divider_demo
 cargo run -p rstui-widgets --example split_pane_demo
 cargo run -p rstui-widgets --example accordion_demo
 cargo run -p rstui-widgets --example card_demo
+cargo run -p rstui-widgets --example scroll_view_demo
+cargo run -p rstui-widgets --example grid_demo
+cargo run -p rstui-widgets --example align_demo
+cargo run -p rstui-widgets --example popover_demo
+cargo run -p rstui-widgets --example drawer_demo
+cargo run -p rstui-widgets --example sidebar_demo
+cargo run -p rstui-widgets --example skeleton_demo
+cargo run -p rstui-widgets --example avatar_demo
+cargo run -p rstui-widgets --example kbd_demo
+cargo run -p rstui-widgets --example help_overlay_demo
+cargo run -p rstui-widgets --example pagination_demo
+cargo run -p rstui-widgets --example stepper_demo
+cargo run -p rstui-widgets --example masked_input_demo
+cargo run -p rstui-widgets --example date_picker_demo
 cargo run -p rstui-runtime --example counter
 ```
 
