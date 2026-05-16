@@ -181,8 +181,12 @@ crate copies.
   and `focused` (drawn with a `focus_style` patched last, the same
   highlight-wins-last bar `List` uses for selection). It renders a focused
   control but deliberately does **not** decide *which* control is focused:
-  focus *routing* is a separate, expensive-to-reverse decision, not smuggled
-  into a widget. A leaf control like `Scrollbar`/`Spinner` — no framing
+  focus *routing* was kept out of the widget as a separate,
+  expensive-to-reverse decision, now resolved in
+  [ADR 0004](docs/adr/0004-focus-routing-architecture.md) (focus is
+  caller-owned model state the pure `view` projects in — the widget's
+  `focused: bool` is exactly that contract). A leaf control like
+  `Scrollbar`/`Spinner` — no framing
   `Block`, one row — and **total** (narrow/empty/multi-row areas clip safely).
 - `button` — `Button`: a single-line **centred** focusable *action* label,
   the second form control and the first with **no data state at all** — a
@@ -313,6 +317,20 @@ context, the options weighed, the decision, and the evidence behind it.
   [convention](docs/conventions/naming.md)); supply-chain
   (`cargo-deny`, `cargo-machete`) and an MSRV CI leg remain sequenced
   as later independent slices.
+- [ADR 0004 — Focus-routing architecture](docs/adr/0004-focus-routing-architecture.md):
+  focus is **caller-owned model state**, mutated only in `update` and
+  read by the pure `view` to project `focused: bool` into widgets —
+  the only shape compatible with rstui's pure-view, immediate-mode,
+  single-testable-reducer invariants (runtime- and widget-owned focus
+  and retained-tree traversal are rejected). The zero-framework floor
+  (an app's own `enum` + `focused: bool`, the existing
+  `Checkbox`/`Button`/`Radio` contract) is permanent; an optional,
+  pure, model-resident `rstui_core::focus` (`FocusId`/`FocusRing`)
+  primitive reduces the boilerplate. Terminal `FocusGained`/`FocusLost`
+  stay distinct from widget focus. The modal focus
+  capture/restore/declarative-trapping model is decided here and its
+  `Modal`/`FocusScope` mechanical landing is sequenced as a later
+  slice.
 
 ## Build & test
 
