@@ -19,6 +19,9 @@
 //!   draw → diff → flush → swap loop a [`Frame`] at a time.
 //! - [`event`]: the keyboard/mouse/focus/resize [`Event`] vocabulary the
 //!   runtime, components, and focus routing all share.
+//! - [`event_source`]: the [`EventSource`] input boundary (the dual of
+//!   [`Backend`]) plus an in-memory [`TestEventSource`] so whole apps can be
+//!   driven by a scripted event stream without a TTY.
 //! - [`widget`]: the [`Widget`] rendering abstraction plus the foundational
 //!   [`Block`] container (borders, fill, padding, and a styled, aligned
 //!   [`Line`] title).
@@ -54,6 +57,7 @@
 pub mod backend;
 pub mod buffer;
 pub mod event;
+pub mod event_source;
 pub mod geometry;
 pub mod layout;
 pub mod style;
@@ -66,6 +70,7 @@ pub use buffer::{Buffer, Cell};
 pub use event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+pub use event_source::{EventSource, TestEventSource};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Constraint, Direction, Layout};
 pub use style::{Color, Modifier, Style};

@@ -9,7 +9,8 @@ rendering ecosystem of ratatui, and the breadth and polish of gpui-component —
 while staying idiomatic to Rust.
 
 > **Status:** early foundation. The rendering substrate, the terminal
-> `Backend` boundary, the double-buffered `Terminal` frame driver, the
+> `Backend` boundary, the `EventSource` input boundary (with an in-memory
+> `TestEventSource`), the double-buffered `Terminal` frame driver, the
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
 > model, the `Widget` abstraction with the foundational `Block` container, the
 > styled-text model (`Span`/`Line`/`Text`), the Elm-style
@@ -25,15 +26,16 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`      | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget, text |
+| `crates/rstui-core`      | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, event_source, widget, text |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, and the panic-safe RAII lifecycle guard |
 
 The `rstui-crossterm` crate now exists ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md));
 its crossterm → `rstui-core` event-translation layer, its `Backend`
 implementation over `io::Write`, and its panic-safe terminal-lifecycle
-guard have landed, and the crossterm input source (sync `poll`/`read`,
-then a feature-gated async stream) is the next slice. Other planned
+guard have landed. The core `EventSource` boundary it will implement now
+exists; the crossterm input source itself (`EventSource` over sync
+`poll`/`read`, then a feature-gated async stream) is the next slice. Other planned
 boundaries as the framework grows: a broader component set (the `Widget`
 trait lives in core;
 concrete widgets beyond `Block` will graduate to their own crate once there
@@ -66,6 +68,11 @@ loop — so every layer above it can be unit tested without a TTY.
   paste) the runtime, components, and focus routing share. Pure data shaped
   like the de-facto crossterm model so a real backend bridges 1:1, but using
   rstui's own `Position`/`Size`.
+- `event_source` — the `EventSource` input boundary (the dual of `Backend`):
+  one `poll_event(timeout)` call folding crossterm's `poll`+`read`, plus an
+  in-memory `TestEventSource` that replays a scripted event stream so whole
+  apps are drivable end-to-end with no TTY. The real terminal input source
+  lives in the backend crate; the trait and the test source stay here.
 - `widget` — the `Widget` trait (`render(self, area, buf)`) every component
   implements, blanket impls for `&str`/`String`/`Option<W>`, and the
   foundational `Block` container: `Borders`, `BorderType`, `Padding`, a styled
