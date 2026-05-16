@@ -90,6 +90,7 @@ pub mod plugin_sdk;
 pub mod process;
 pub mod protocol;
 pub mod std_process;
+pub mod version;
 
 pub use capability::{Capability, CapabilityGrant, CapabilityRequest, FsMode};
 pub use clock::{Clock, FakeClock, SystemClock};
@@ -110,3 +111,4 @@ pub use process::{
 };
 pub use protocol::{Frame, MAX_FRAME_SIZE, MessageType, ProtocolError, read_frame, write_frame};
 pub use std_process::{StdPluginProcess, StdProcessRunner};
+pub use version::{Version, VersionError, VersionReq, is_compatible};

@@ -248,9 +248,12 @@ pub struct PluginHost {
 }
 
 impl PluginHost {
-    /// Build a host from the injected seams and the host-protocol version
-    /// it implements (compared exactly against each manifest's
-    /// `api_version`; a fuller semver gate is deferred — ADR 0007 §2).
+    /// Build a host from the injected seams and the concrete host-protocol
+    /// version it implements (e.g. `"1.0.0"`). Each manifest's
+    /// `api_version` is a [`VersionReq`](crate::version::VersionReq) the
+    /// host's version must satisfy (ADR 0007 §2, opencode-style); an
+    /// unparseable or unsatisfied requirement refuses the spawn,
+    /// fail-closed.
     #[must_use]
     pub fn new(
         runner: Arc<dyn ProcessRunner>,
@@ -292,7 +295,11 @@ impl PluginHost {
     ) -> Result<PluginRunReport, HostError> {
         let plugin = PluginId(manifest.name.clone());
 
-        if manifest.api_version != self.host_api_version {
+        // Fail-closed: an unsatisfied OR unparseable requirement refuses the
+        // spawn (ADR 0007 §2 — a requirement the host cannot understand is
+        // never optimistically allowed).
+        if crate::version::is_compatible(&self.host_api_version, &manifest.api_version) != Ok(true)
+        {
             return Err(HostError::ApiVersionMismatch {
                 plugin,
                 expected: self.host_api_version.clone(),
