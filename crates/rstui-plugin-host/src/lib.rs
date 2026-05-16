@@ -36,6 +36,19 @@
 //!   spawn-and-pipe seam, with in-memory fakes so the whole boundary is
 //!   deterministically testable with no real process, socket, or clock —
 //!   the `rstui-runtime` `Harness` standard applied to security.
+//! - [`message`]: the hand-rolled, fail-closed codec that gives the opaque
+//!   frame payload meaning — a [`CapabilityRequest`] in, a
+//!   [`message::CapabilityResponse`] back.
+//! - [`effects`]: the [`effects::HostEffects`] performer the host runs an
+//!   *already-permitted* request through, with a recording fake so a test
+//!   asserts a denied request never reached it.
+//! - [`clock`]: the [`clock::Clock`] time seam so plugin timeouts are
+//!   deterministically advanceable in tests, never wall-clock.
+//! - [`host`]: the [`host::PluginHost`] that composes all of the above —
+//!   spawn, handshake, then the mediation loop where every capability call
+//!   is host-canonicalised, policy-checked, and only *then* (if allowed)
+//!   run through [`effects`], returning an auditable
+//!   [`host::PluginRunReport`].
 //!
 //! Every nondeterministic edge is an injected trait with a `std` impl and a
 //! scripted in-memory fake, so a denied capability, a malformed frame, a
@@ -64,13 +77,26 @@
 //! ```
 
 pub mod capability;
+pub mod clock;
+pub mod effects;
+pub mod host;
 pub mod manifest;
+pub mod message;
 pub mod permission;
 pub mod process;
 pub mod protocol;
 
 pub use capability::{Capability, CapabilityGrant, CapabilityRequest, FsMode};
+pub use clock::{Clock, FakeClock, SystemClock};
+pub use effects::{
+    CapabilityOutcome, HostEffectError, HostEffects, RecordingHostEffects, SystemHostEffects,
+};
+pub use host::{HostError, MediationRecord, PluginHost, PluginId, PluginRunReport};
 pub use manifest::{ManifestError, PluginManifest};
+pub use message::{
+    CapabilityResponse, MessageError, decode_request, decode_response, encode_request,
+    encode_response,
+};
 pub use permission::{Decision, ManifestPolicy, PermissionPolicy, RecordingPolicy};
 pub use process::{
     ExitOutcome, FakePluginProcess, FakeProcessRunner, PluginProcess, PluginSpawnSpec,

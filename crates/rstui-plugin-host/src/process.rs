@@ -479,6 +479,21 @@ impl FakePluginProcess {
         self.stdin_buf.lock().expect("lock poisoned").clone()
     }
 
+    /// A shared handle to the stdin-capture buffer, usable *after* the
+    /// process has been moved into a [`FakeProcessRunner`] and spawned by
+    /// the host.
+    ///
+    /// [`written_to_stdin`](Self::written_to_stdin) needs `&self`, but a
+    /// host-level test hands the process to a runner (which moves it), so
+    /// it can no longer call that method. Take this handle *before*
+    /// constructing the runner; the host writes the plugin's stdin through
+    /// the same `Arc`, so the test can lock and decode the host→plugin
+    /// frames once the run returns.
+    #[must_use]
+    pub fn stdin_handle(&self) -> Arc<Mutex<Vec<u8>>> {
+        Arc::clone(&self.stdin_buf)
+    }
+
     /// The exit outcome implied by the current lifecycle state, or `None` if
     /// the process is still running.
     fn current_outcome(&self) -> Option<ExitOutcome> {
