@@ -13,8 +13,9 @@ while staying idiomatic to Rust.
 > `TestEventSource`), the double-buffered `Terminal` frame driver, the
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
 > model, the `Widget` abstraction with the foundational `Block` container,
-> the `Paragraph` text widget (word wrap, scroll, alignment) and the
-> scrollable single-select `List`, the styled-text
+> the `Paragraph` text widget (word wrap, scroll, alignment), the
+> scrollable single-select `List`, and the horizontal `Tabs` strip,
+> the styled-text
 > model (`Span`/`Line`/`Text`) with the `Stylize` fluent shorthand
 > (`"x".green().bold()`, `.on_blue()`), the Elm-style
 > `App`/`Cmd`/`Harness` runtime **plus the live `run` loop (the production
@@ -34,7 +35,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, the `Widget` trait, text |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, and `List` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, and `Tabs` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 
@@ -50,7 +51,8 @@ the *same* `run` the headless harness tests drive. A feature-gated async
 boundaries as the framework grows: a broader component set (the `Widget`
 trait stays in core; concrete widgets live in the grouped `rstui-widgets`
 crate per [ADR 0002](docs/adr/0002-widget-crate-boundary.md), now extracted
-— `Block`, `Paragraph`, and `List` ship there today, with `Buffer::set_cell`
+— `Block`, `Paragraph`, `List`, and `Tabs` ship there today, with
+`Buffer::set_cell`
 the public cell-stamping contract third-party widgets build on; `Alignment`
 stays in `rstui-core::layout` as the placement primitive the text model
 needs), more widgets and examples, and a permissioned plugin host built on
@@ -133,6 +135,11 @@ crate copies.
   `selected`/`offset` state — never mutated at render time — so it composes
   with the Elm `view(&self)` model rather than needing ratatui's
   render-mutating `StatefulWidget`.
+- `tabs` — `Tabs`: a one-row horizontal title strip with a configurable
+  divider, an optional framing `Block`, and one `selected` title emphasised
+  (the highlight covers the title glyphs only, not the padding/dividers). The
+  same caller-owned **pure projection** as `List`, on the horizontal axis —
+  concrete proof the projection model is axis-independent.
 
 ### `rstui-runtime`
 
@@ -253,6 +260,7 @@ cargo run -p rstui-widgets --example block_demo
 cargo run -p rstui-widgets --example text_demo
 cargo run -p rstui-widgets --example paragraph_demo
 cargo run -p rstui-widgets --example list_demo
+cargo run -p rstui-widgets --example tabs_demo
 cargo run -p rstui-runtime --example counter
 ```
 

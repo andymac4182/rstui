@@ -24,6 +24,8 @@
 //! - [`list`]: [`List`] — a scrollable single-select column of [`ListItem`]
 //!   rows with a highlight bar/gutter, rendered as a pure projection of
 //!   caller-owned `selected`/`offset` state.
+//! - [`tabs`]: [`Tabs`] — a one-row horizontal title strip with one selected,
+//!   the same caller-owned pure projection as [`List`] on the other axis.
 //!
 //! # Example
 //!
@@ -42,7 +44,9 @@
 pub mod block;
 pub mod list;
 pub mod paragraph;
+pub mod tabs;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
+pub use tabs::Tabs;
