@@ -1,9 +1,51 @@
 # rstui
 
-A Rust TUI framework for building powerful terminal applications quickly.
+An idiomatic Rust TUI framework for building powerful terminal applications
+quickly.
 
-The project is intended to learn from OpenTUI, OpenCode, Bubble Tea, ratatui,
-and polished component libraries, while staying idiomatic to Rust.
+rstui learns from the architecture of OpenTUI, the real application needs of
+OpenCode, the update/view/event-loop ergonomics of Bubble Tea, the terminal
+rendering ecosystem of ratatui, and the breadth and polish of gpui-component —
+while staying idiomatic to Rust.
+
+> **Status:** early foundation. The rendering substrate exists and is tested;
+> the runtime, components, and plugin host are not built yet.
+
+## Workspace
+
+The project is a Cargo workspace (Rust 2024 edition). Crates are introduced
+only when there is enough real API surface to justify the boundary.
+
+| Crate                | Responsibility                                              |
+| -------------------- | ----------------------------------------------------------- |
+| `crates/rstui-core`  | Dependency-free rendering substrate: geometry, style, buffer |
+
+Planned boundaries as the framework grows: a core runtime (Elm-style
+model/update/view loop), layout, a component set, examples, and a permissioned
+plugin host built on process isolation.
+
+### `rstui-core`
+
+`rstui-core` is pure and deterministic — no terminal, async runtime, or event
+loop — so every layer above it can be unit tested without a TTY.
+
+- `geometry` — `Position`, `Size`, `Rect`, `Margin`. `Rect::new` clamps so
+  edge accessors can never overflow.
+- `style` — `Color`, `Modifier`, and a composable `Style` patch model that
+  themes, focus, and selection highlights build on.
+- `buffer` — `Cell` and the immediate-mode `Buffer` grid widgets draw into and
+  renderers `diff` against.
+
+## Build & test
+
+```sh
+cargo test --all-features
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo run -p rstui-core --example buffer_demo
+```
+
+CI runs the same fmt, clippy, and test gates on every push and pull request.
 
 ## GNHF Claude Runner
 
@@ -32,3 +74,7 @@ scripts/run-gnhf-rstui.sh --worktree --max-iterations 10
 
 Set `RSTUI_CLAUDE_MODEL` or `RSTUI_CLAUDE_EFFORT` to override the Claude model
 or effort level for the wrapper.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).

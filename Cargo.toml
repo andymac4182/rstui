@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/andymac4182/rstui"
+authors = ["The rstui authors"]
+description = "An idiomatic Rust TUI framework for building powerful terminal applications quickly."
+
+[workspace.lints.clippy]
+# Keep the core honest without opting into the full pedantic firehose.
+uninlined_format_args = "warn"
+needless_pass_by_value = "warn"
