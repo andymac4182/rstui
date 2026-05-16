@@ -58,10 +58,21 @@
 //!   [`TextEdit`](rstui_core::TextEdit) plus `focused`, with a rendered (not
 //!   terminal) caret and a stateless caret-following horizontal scroll.
 //! - [`markdown`]: [`Markdown`] — a read-only document view that parses a
-//!   CommonMark-ish subset (headings, emphasis, code, quotes, lists, rules)
-//!   with a hand-written zero-dependency parser and lays it out width-aware
-//!   into the styled-text model (ADR 0002 §4: a grammar is not a "heavy,
-//!   alien" dependency, so it is a plain module here, not a feature or crate).
+//!   CommonMark-ish subset (headings, emphasis, code, quotes, lists, tables,
+//!   rules, links) with a hand-written zero-dependency parser and lays it out
+//!   width-aware into the styled-text model (ADR 0002 §4: a grammar is not a
+//!   "heavy, alien" dependency, so it is a plain module here, not a feature or
+//!   crate). The rich-rendering family below shares that hand-written ethos.
+//! - [`link`]: [`Link`] / [`LinkActivation`] — the link-span model and its
+//!   activation event shape; documents expose links in reading order and the
+//!   app owns the focused index, the same pure-projection discipline as
+//!   [`List`] selection (activation is the reducer's concern, not smuggled in).
+//! - [`diff`]: [`Diff`] — a unified-diff view (hunk headers, +/- gutters,
+//!   line numbers, word-level intra-line highlight), the document analogue of
+//!   `Paragraph` for code review panes.
+//! - [`mermaid`]: [`Mermaid`] — a narrow Mermaid flowchart subset parsed to a
+//!   public AST ([`mermaid::MermaidGraph`]) and laid out as a deterministic
+//!   Unicode box-and-arrow diagram.
 //! - [`modal`]: [`Modal`] — a centred, **opaque**, optionally-[`Block`]-framed
 //!   dialog over an overlay area; the visual half of the
 //!   [`FocusRing`](rstui_core::FocusRing) scope-stack modal model (ADR 0004
@@ -106,10 +117,13 @@
 pub mod block;
 pub mod button;
 pub mod checkbox;
+pub mod diff;
 pub mod gauge;
 pub mod input;
+pub mod link;
 pub mod list;
 pub mod markdown;
+pub mod mermaid;
 pub mod modal;
 pub mod paragraph;
 pub mod radio;
@@ -125,10 +139,18 @@ pub mod tree;
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use button::Button;
 pub use checkbox::Checkbox;
+pub use diff::{Diff, DiffTheme};
 pub use gauge::Gauge;
 pub use input::Input;
+pub use link::{Link, LinkActivation};
 pub use list::{List, ListItem};
 pub use markdown::{Markdown, MarkdownTheme};
+// The Mermaid AST types (`Direction`, `Node`, `Edge`, `EdgeKind`, `Shape`,
+// `MermaidGraph`) are intentionally reached via `mermaid::` rather than
+// re-exported at the crate root: `Direction`/`Node`/`Edge` are generic enough
+// to collide with `rstui_core` and future widgets, so only the widget and its
+// configuration/error surface are promoted.
+pub use mermaid::{Mermaid, MermaidError, MermaidTheme};
 pub use modal::Modal;
 pub use paragraph::{Paragraph, Wrap};
 pub use radio::Radio;

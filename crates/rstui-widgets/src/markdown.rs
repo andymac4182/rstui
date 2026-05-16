@@ -31,11 +31,15 @@
 //! - thematic breaks (`---`/`***`/`___`)
 //! - GFM pipe tables with a `:`-aligned delimiter row, drawn as a
 //!   width-fitted box-drawing grid with per-column alignment
+//! - `[text](href)` links and `<autolink>`s: the label is styled and the
+//!   targets are exposed in reading order by [`Markdown::links`] (the
+//!   [`Link`](crate::Link) activation registry), keeping the href out of the
+//!   rendered glyphs
 //!
 //! Deliberately out of scope for this slice (each an additive follow-up that
-//! does not change this shape): links/images (the link-span slice owns
-//! activation), indented code blocks, setext headings, HTML passthrough,
-//! reference definitions.
+//! does not change this shape): images, a focused-link highlight (the registry
+//! is what enables a host to implement focus/click), indented code blocks,
+//! setext headings, HTML passthrough, reference definitions.
 //!
 //! Rendering is deterministic and width-aware: the same source and area always
 //! produce the same cells, so output is snapshot-testable through
@@ -58,6 +62,7 @@
 use std::borrow::Cow;
 
 use crate::block::Block;
+use crate::link::Link;
 use rstui_core::{Alignment, Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
 
 /// The styles [`Markdown`] applies to each kind of element.
@@ -88,6 +93,9 @@ pub struct MarkdownTheme {
     pub marker: Style,
     /// The `─` glyphs of a thematic break.
     pub rule: Style,
+    /// A `[text](href)` / autolink label. The href is kept out of the render
+    /// (retrieve it via [`Markdown::links`]); only the label is shown, styled.
+    pub link: Style,
 }
 
 impl Default for MarkdownTheme {
@@ -108,6 +116,9 @@ impl Default for MarkdownTheme {
             quote: Style::new().fg(Color::Green),
             marker: Style::new().fg(Color::Cyan),
             rule: Style::new().fg(Color::DarkGray),
+            link: Style::new()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
         }
     }
 }
@@ -213,6 +224,19 @@ impl<'a> Markdown<'a> {
         layout_blocks(&blocks, width as usize, &self.theme, true, &mut rows);
         rows
     }
+
+    /// The document's links, in reading order — the activation registry.
+    ///
+    /// The index into this list is the focus key: a host tracks a focused
+    /// index in its own state (the [`FocusRing`](rstui_core::FocusRing) /
+    /// [`List`](crate::List) selection shape), and the reducer turns Enter or
+    /// a click into a [`LinkActivation`](crate::link::LinkActivation) via
+    /// [`Link::activate`](crate::Link::activate). Width-independent, so it can
+    /// be called once per frame regardless of layout.
+    #[must_use]
+    pub fn links(&self) -> Vec<Link<'static>> {
+        document_links(self.source.as_ref())
+    }
 }
 
 impl Widget for Markdown<'_> {
@@ -280,9 +304,31 @@ enum MdBlock {
     Rule,
 }
 
-/// Splits `src` into [`MdBlock`]s. Line-oriented, single pass, no lookahead
-/// beyond fence/list continuation scanning.
+/// Splits `src` into [`MdBlock`]s, discarding links. The render/measurement
+/// and test entry point.
 fn parse_blocks(src: &str) -> Vec<MdBlock> {
+    blocks_into(src, &mut Vec::new())
+}
+
+/// Every `[text](href)` / autolink in `src`, in reading order — the registry
+/// [`Markdown::links`] exposes for focus and activation.
+fn document_links(src: &str) -> Vec<Link<'static>> {
+    let mut links = Vec::new();
+    blocks_into(src, &mut links);
+    links
+}
+
+/// Builds the spans for `text` and appends any links it carries to `links`.
+fn inline(text: &str, links: &mut Vec<Link<'static>>) -> Vec<Span<'static>> {
+    let (spans, mut found) = inline_spans_and_links(text);
+    links.append(&mut found);
+    spans
+}
+
+/// Splits `src` into [`MdBlock`]s, appending links to `links` in reading
+/// order. Line-oriented, single pass, no lookahead beyond fence/list
+/// continuation scanning.
+fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
     let lines: Vec<&str> = src
         .split('\n')
         .map(|l| l.strip_suffix('\r').unwrap_or(l))
@@ -325,7 +371,7 @@ fn parse_blocks(src: &str) -> Vec<MdBlock> {
             let text = atx_heading_text(trimmed, level);
             out.push(MdBlock::Heading {
                 level,
-                spans: parse_inline(text),
+                spans: inline(text, links),
             });
             i += 1;
             continue;
@@ -347,17 +393,17 @@ fn parse_blocks(src: &str) -> Vec<MdBlock> {
                     i += 1;
                 }
             }
-            out.push(MdBlock::Quote(parse_blocks(&quoted.join("\n"))));
+            out.push(MdBlock::Quote(blocks_into(&quoted.join("\n"), links)));
             continue;
         }
 
         if starts_table(&lines, i) {
             let aligns = table_delim_aligns(lines[i + 1]).expect("starts_table verified it");
             let ncols = aligns.len();
-            let header = normalize_row(split_table_row(line), ncols)
-                .into_iter()
-                .map(|c| parse_inline(&c))
-                .collect();
+            let mut header = Vec::with_capacity(ncols);
+            for c in normalize_row(split_table_row(line), ncols) {
+                header.push(inline(&c, links));
+            }
             i += 2;
             let mut rows = Vec::new();
             while i < lines.len() {
@@ -366,12 +412,11 @@ fn parse_blocks(src: &str) -> Vec<MdBlock> {
                 if t.is_empty() || !t.contains('|') || table_delim_aligns(row).is_some() {
                     break;
                 }
-                rows.push(
-                    normalize_row(split_table_row(row), ncols)
-                        .into_iter()
-                        .map(|c| parse_inline(&c))
-                        .collect(),
-                );
+                let mut cells = Vec::with_capacity(ncols);
+                for c in normalize_row(split_table_row(row), ncols) {
+                    cells.push(inline(&c, links));
+                }
+                rows.push(cells);
                 i += 1;
             }
             out.push(MdBlock::Table {
@@ -383,7 +428,7 @@ fn parse_blocks(src: &str) -> Vec<MdBlock> {
         }
 
         if let Some(marker) = list_marker(line) {
-            let (block, next) = parse_list(&lines, i, marker);
+            let (block, next) = parse_list(&lines, i, marker, links);
             out.push(block);
             i = next;
             continue;
@@ -411,7 +456,7 @@ fn parse_blocks(src: &str) -> Vec<MdBlock> {
             buf.push_str(t);
             i += 1;
         }
-        out.push(MdBlock::Paragraph(parse_inline(&buf)));
+        out.push(MdBlock::Paragraph(inline(&buf, links)));
     }
     out
 }
@@ -473,7 +518,12 @@ fn list_marker(line: &str) -> Option<ListMarker> {
 /// index of the first line after it. Items collect their own marker line plus
 /// any following lines indented past the marker (nested lists, lazy
 /// continuation), which are recursively parsed as block content.
-fn parse_list(lines: &[&str], start: usize, first: ListMarker) -> (MdBlock, usize) {
+fn parse_list(
+    lines: &[&str],
+    start: usize,
+    first: ListMarker,
+    links: &mut Vec<Link<'static>>,
+) -> (MdBlock, usize) {
     let ordered = first.ordered.is_some();
     let list_start = first.ordered.unwrap_or(1);
     let mut items: Vec<Vec<MdBlock>> = Vec::new();
@@ -523,7 +573,7 @@ fn parse_list(lines: &[&str], start: usize, first: ListMarker) -> (MdBlock, usiz
         while body.last().is_some_and(|s| s.is_empty()) {
             body.pop();
         }
-        items.push(parse_blocks(&body.join("\n")));
+        items.push(blocks_into(&body.join("\n"), links));
         if end_list {
             break;
         }
@@ -694,6 +744,10 @@ enum InlineTok {
     Delim(char),
     /// A resolved code span's literal content; never re-parsed.
     Code(String),
+    /// A resolved `[label](href)` or `<autolink>`. `label` is raw markdown
+    /// (re-parsed for display so emphasis inside link text works); `href` is
+    /// the literal target, kept out of the rendered glyphs.
+    Link { label: String, href: String },
 }
 
 /// Parses inline markdown into owned styled spans.
@@ -705,11 +759,28 @@ enum InlineTok {
 /// `**a *b* c**` nests. `_` does not open or close inside a word so
 /// `snake_case` is left alone.
 fn parse_inline(text: &str) -> Vec<Span<'static>> {
+    inline_spans_and_links(text).0
+}
+
+/// Like [`parse_inline`] but also returns the links it contains, in order.
+/// The registry label is the link's *rendered plain text* (markup stripped),
+/// which is what a host shows in a "links in this document" affordance.
+fn inline_spans_and_links(text: &str) -> (Vec<Span<'static>>, Vec<Link<'static>>) {
     let toks = lex_inline(text);
+    let mut links = Vec::new();
+    for t in &toks {
+        if let InlineTok::Link { label, href } = t {
+            let plain: String = parse_inline(label)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            links.push(Link::new(plain, href.clone()));
+        }
+    }
     let theme = MarkdownTheme::default();
     let mut out = Vec::new();
     render_toks(&toks, Style::new(), &theme, &mut out);
-    coalesce(out)
+    (coalesce(out), links)
 }
 
 /// Lexes `text` into [`InlineTok`]s: backslash escapes and code spans are
@@ -739,6 +810,28 @@ fn lex_inline(text: &str) -> Vec<InlineTok> {
             i += fence;
             continue;
         }
+        if c == '[' {
+            if let Some((label, href, next)) = scan_link(&chars, i) {
+                toks.push(InlineTok::Link { label, href });
+                i = next;
+                continue;
+            }
+        }
+        if c == '<' {
+            if let Some((target, next)) = scan_autolink(&chars, i) {
+                let href = if is_email(&target) {
+                    format!("mailto:{target}")
+                } else {
+                    target.clone()
+                };
+                toks.push(InlineTok::Link {
+                    label: target,
+                    href,
+                });
+                i = next;
+                continue;
+            }
+        }
         toks.push(if c == '*' || c == '_' {
             InlineTok::Delim(c)
         } else {
@@ -765,6 +858,110 @@ fn find_backtick_run(chars: &[char], from: usize, len: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Scans `[label](href)` starting at `chars[i] == '['`. Returns the raw label,
+/// the cleaned href, and the index just past the `)`, or `None` if the shape
+/// is incomplete (then `[` is treated as a literal). Brackets and parens are
+/// balanced; `\]`/`\)` are escaped; an optional `"title"` and `<…>` wrapper on
+/// the destination are dropped. Link labels do not contain another link.
+fn scan_link(chars: &[char], i: usize) -> Option<(String, String, usize)> {
+    let n = chars.len();
+    let mut j = i + 1;
+    let mut depth = 1;
+    while j < n {
+        match chars[j] {
+            '\\' if j + 1 < n => j += 2,
+            '[' => {
+                depth += 1;
+                j += 1;
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                j += 1;
+            }
+            _ => j += 1,
+        }
+    }
+    if depth != 0 || j + 1 >= n || chars[j + 1] != '(' {
+        return None;
+    }
+    let label: String = chars[i + 1..j].iter().collect();
+    let mut k = j + 2;
+    let mut pdepth = 1;
+    while k < n {
+        match chars[k] {
+            '\\' if k + 1 < n => k += 2,
+            '(' => {
+                pdepth += 1;
+                k += 1;
+            }
+            ')' => {
+                pdepth -= 1;
+                if pdepth == 0 {
+                    break;
+                }
+                k += 1;
+            }
+            _ => k += 1,
+        }
+    }
+    if pdepth != 0 {
+        return None;
+    }
+    let dest: String = chars[j + 2..k].iter().collect();
+    let dest = dest.trim();
+    // Drop an optional `"title"`: the href is the first whitespace-free run.
+    let href = dest.split_whitespace().next().unwrap_or("");
+    let href = href
+        .strip_prefix('<')
+        .and_then(|h| h.strip_suffix('>'))
+        .unwrap_or(href);
+    Some((label, href.to_owned(), k + 1))
+}
+
+/// Scans an `<scheme:…>` / `<email>` autolink at `chars[i] == '<'`. Returns
+/// the inner target and the index past `>`, or `None` if it is not a valid
+/// autolink (no spaces/controls; an absolute scheme or an email shape).
+fn scan_autolink(chars: &[char], i: usize) -> Option<(String, usize)> {
+    let n = chars.len();
+    let mut j = i + 1;
+    while j < n && chars[j] != '>' {
+        if chars[j].is_whitespace() || chars[j] == '<' {
+            return None;
+        }
+        j += 1;
+    }
+    if j >= n {
+        return None;
+    }
+    let inner: String = chars[i + 1..j].iter().collect();
+    let scheme_uri = inner.split_once(':').is_some_and(|(s, _)| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-')
+    });
+    if scheme_uri || is_email(&inner) {
+        Some((inner, j + 1))
+    } else {
+        None
+    }
+}
+
+/// A minimal `local@domain.tld` shape check for autolink emails.
+fn is_email(s: &str) -> bool {
+    match s.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        }
+        None => false,
+    }
 }
 
 /// One leading and one trailing space are stripped from a code span iff it is
@@ -819,6 +1016,16 @@ fn emit_literal(
                     out.push(Span::styled(std::mem::take(&mut buf), base));
                 }
                 out.push(Span::styled(s.clone(), base.patch(theme.code)));
+            }
+            InlineTok::Link { label, .. } => {
+                if !buf.is_empty() {
+                    out.push(Span::styled(std::mem::take(&mut buf), base));
+                }
+                // The label is re-parsed so emphasis/code inside link text
+                // works; the link style sits beneath it. The href never
+                // reaches the glyphs — `Markdown::links()` exposes it instead.
+                let inner = lex_inline(label);
+                render_toks(&inner, base.patch(theme.link), theme, out);
             }
         }
     }
@@ -1414,6 +1621,77 @@ mod tests {
         // Every rendered row is clipped to the 16-cell area, grid stays intact.
         assert!(out.lines().all(|l| l.chars().count() == 16));
         assert!(out.starts_with('┌'));
+    }
+
+    #[test]
+    fn link_renders_only_the_label_and_registers_the_href() {
+        let md = Markdown::new("see [the docs](https://example.com/d) now");
+        assert_eq!(
+            md.links(),
+            vec![Link::new("the docs", "https://example.com/d")]
+        );
+        // The href never reaches the glyphs — only the label is drawn.
+        assert_eq!(
+            lines(Markdown::new("[the docs](https://example.com/d)"), 8, 1),
+            "the docs\n"
+        );
+        // The label carries the link style (underlined cyan).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        Markdown::new("[the docs](x)").render(buf.area(), &mut buf);
+        let cell = buf.get(Position::new(0, 0)).unwrap();
+        assert_eq!(cell.symbol, 't');
+        assert_eq!(cell.fg, Color::Cyan);
+        assert!(cell.modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn autolink_url_and_email_register_targets() {
+        assert_eq!(
+            Markdown::new("ping <https://a.test/x>").links(),
+            vec![Link::new("https://a.test/x", "https://a.test/x")]
+        );
+        // A bare email autolink gets a `mailto:` href, label unchanged.
+        assert_eq!(
+            Markdown::new("mail <her@a.test>").links(),
+            vec![Link::new("her@a.test", "mailto:her@a.test")]
+        );
+    }
+
+    #[test]
+    fn link_label_keeps_inline_formatting_but_registry_is_plain() {
+        let md = Markdown::new("[**bold** word](u)");
+        // Registry label is the rendered plain text (markup stripped).
+        assert_eq!(md.links(), vec![Link::new("bold word", "u")]);
+        // …while the rendered label keeps the bold run.
+        let spans = parse_inline("[**bold** word](u)");
+        assert!(
+            spans.iter().any(
+                |s| s.content.contains("bold") && s.style.add_modifier.contains(Modifier::BOLD)
+            )
+        );
+    }
+
+    #[test]
+    fn an_escaped_bracket_is_not_a_link() {
+        let md = Markdown::new(r"\[not a link](x)");
+        assert!(md.links().is_empty());
+        // Width wide enough that the (unwrapped) literal stays on one row.
+        assert_eq!(lines(md, 16, 1), "[not a link](x) \n");
+    }
+
+    #[test]
+    fn links_are_collected_in_reading_order_across_blocks() {
+        let src = "# [h](1)\n\npara [p](2)\n\n- [l](3)\n\n| [t](4) |\n| --- |\n| x |";
+        assert_eq!(
+            Markdown::new(src).links(),
+            vec![
+                Link::new("h", "1"),
+                Link::new("p", "2"),
+                Link::new("l", "3"),
+                Link::new("t", "4"),
+            ]
+        );
+        assert!(Markdown::new("no links here").links().is_empty());
     }
 
     #[test]
