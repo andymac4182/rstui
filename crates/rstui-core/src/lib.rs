@@ -25,6 +25,9 @@
 //! - [`event_source`]: the [`EventSource`] input boundary (the dual of
 //!   [`Backend`]) plus an in-memory [`TestEventSource`] so whole apps can be
 //!   driven by a scripted event stream without a TTY.
+//! - [`focus`]: the optional, caller-owned focus model — [`FocusId`] value
+//!   tokens and a pure, total [`FocusRing`] the app stores and `view` reads,
+//!   never runtime- or widget-owned ([ADR 0004](https://github.com/andymac4182/rstui/blob/main/docs/adr/0004-focus-routing-architecture.md)).
 //! - [`widget`]: the [`Widget`] rendering abstraction every component
 //!   implements. Concrete widgets (`Block`, `Paragraph`, …) live in the
 //!   separate `rstui-widgets` crate so this crate stays primitives-only
@@ -59,6 +62,7 @@ pub mod backend;
 pub mod buffer;
 pub mod event;
 pub mod event_source;
+pub mod focus;
 pub mod geometry;
 pub mod layout;
 pub mod style;
@@ -73,6 +77,7 @@ pub use event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 pub use event_source::{EventSource, TestEventSource};
+pub use focus::{FocusId, FocusRing};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Alignment, Constraint, Direction, Layout};
 pub use style::{Color, Modifier, Style};
