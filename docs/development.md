@@ -30,7 +30,7 @@ with CI's `check` job; changing one without the other fails that test.
 
 ### Additional CI legs (not in the fast loop)
 
-CI also runs two **separate jobs** that are deliberately *not* part of
+CI also runs **separate jobs** that are deliberately *not* part of
 `cargo xtask ci` — they are slow or need an extra tool, so folding them into
 the inner loop would tax every slice (ADR 0003 §7/§8, Phase 3). A green
 `cargo xtask ci` does not by itself prove these pass; run them on demand:
@@ -39,9 +39,14 @@ the inner loop would tax every slice (ADR 0003 §7/§8, Phase 3). A green
 |--------|---------|-------------|
 | `msrv` | new-language-feature creep past the declared `rust-version` | `rustup toolchain install 1.85.0 && cargo +1.85.0 check --workspace --all-targets --all-features` |
 | `unused-deps` | dependencies declared but unused | `cargo install cargo-machete && cargo machete` |
+| `supply-chain` | disallowed licenses, foreign registries/git, yanked crates (advisories non-blocking initially) | `cargo install cargo-deny && cargo deny check` |
 
-Keep the `msrv` toolchain pin in `ci.yml` in lock-step with
-`[workspace.package] rust-version` in the root `Cargo.toml`.
+The `msrv` pin and the publishable crates' internal-dependency versions are
+not kept in lock-step by discipline: the `xtask` `release` tests fail
+`cargo test` (gate 5) if `ci.yml`'s pinned MSRV ≠ `[workspace.package]
+rust-version`, or if a publishable crate's `rstui-*` path-dependency
+`version` ≠ the workspace version. `deny.toml` documents the license
+allow-list and why advisories are non-blocking for now.
 
 On failure you get a single banner naming the gate and the defect class it
 catches, and later gates are skipped. Fix it, re-run `cargo xtask ci`.

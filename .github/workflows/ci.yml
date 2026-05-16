@@ -89,3 +89,31 @@ jobs:
 
       - name: Check for unused dependencies
         run: cargo machete
+
+  # ADR 0003 §7 / Phase 3: the supply-chain leg (cargo-deny). Separate job —
+  # needs an external tool, so it stays out of the dependency-free `xtask`
+  # fast loop. Per ADR 0003 §7 licenses/bans/sources are the *hard* gate;
+  # advisories run non-blocking initially (a fresh CVE must not red-wall
+  # every stream mid-flight) and are promoted to gating in a later slice.
+  # Config + the license allow-list rationale live in `deny.toml`.
+  supply-chain:
+    name: supply-chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Licenses, bans, sources (gating)
+        run: cargo deny check licenses bans sources
+
+      - name: Advisories (non-blocking, ADR 0003 §7)
+        continue-on-error: true
+        run: cargo deny check advisories

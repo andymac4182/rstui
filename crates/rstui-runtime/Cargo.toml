@@ -12,4 +12,7 @@ description = "The Elm-style App/Cmd runtime and deterministic headless harness 
 workspace = true
 
 [dependencies]
-rstui-core = { path = "../rstui-core" }
+# `version` (not just `path`) so this crate is publishable to crates.io —
+# a bare path dep makes a public crate unpublishable. Kept equal to the
+# workspace version by the `crate_dep_versions_match_workspace` xtask guard.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
