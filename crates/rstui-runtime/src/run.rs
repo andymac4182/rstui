@@ -147,6 +147,18 @@ use crate::cmd::{Cmd, CommandExecutor, InlineExecutor};
 /// inline [`run`] never uses this — it still blocks purely on input.
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
+/// Max input events folded in one burst before forcing a repaint, so a
+/// pathological never-ending input flood can still never starve rendering,
+/// commands, or ticks.
+///
+/// A fast resize-drag or scroll-wheel spin emits *bursts* of events; folding
+/// the whole burst and repainting **once** (the latest state) instead of
+/// once-per-event removes the render backlog that is the actual source of
+/// resize/scroll lag. Real bursts are far below this cap (it is the safety
+/// valve, not the common path); `view` is a pure projection of state, so the
+/// skipped intermediate frames are never observable.
+const COALESCE_LIMIT: usize = 1024;
+
 /// The default cap on `update`/`perform` steps a single input may produce
 /// before the command loop gives up. Generous enough for real cascades, low
 /// enough to fail a runaway reducer fast.
@@ -229,6 +241,23 @@ fn step<A: App>(
 ) -> Settled {
     let cmd = app.update(message);
     settle(app, cmd, DEFAULT_COMMAND_BUDGET, exec)
+}
+
+/// Folds one input event through `on_event` → [`step`], or [`Settled::Running`]
+/// if the app maps it to no message.
+///
+/// The single-sourced per-event handling shared by the primary input branch
+/// **and** the burst-coalescing drain, in *both* the sync [`run_core`] and the
+/// async [`run_async`], so those four sites cannot drift.
+fn handle_input<A: App>(
+    app: &mut A,
+    event: rstui_core::Event,
+    exec: &mut dyn CommandExecutor<A::Message>,
+) -> Settled {
+    match app.on_event(event) {
+        Some(message) => step(app, message, exec),
+        None => Settled::Running,
+    }
 }
 
 /// Returns how long to wait so a wake lands on the next wall-clock multiple of
@@ -785,10 +814,35 @@ where
 
             event = events.next_event() => match event {
                 Ok(Some(event)) => {
-                    if let Some(message) = app.on_event(event) {
-                        if step(&mut app, message, &mut exec) == Settled::Quit {
-                            running = false;
+                    let mut outcome = handle_input(&mut app, event, &mut exec);
+                    // Coalesce a burst the same way the sync loop does, but
+                    // with no real clock: a `biased` inner `select!` tries the
+                    // next event first and falls through to a *ready* future
+                    // the instant input would block — draining exactly what is
+                    // buffered, then one repaint with the latest state. So a
+                    // fast resize/scroll has zero render-backlog latency.
+                    // `next_event` is cancel-safe (the trait's contract), so
+                    // dropping the losing future never loses an event.
+                    let mut coalesced = 0usize;
+                    while outcome == Settled::Running && coalesced < COALESCE_LIMIT {
+                        tokio::select! {
+                            biased;
+                            more = events.next_event() => match more {
+                                Ok(Some(next)) => {
+                                    outcome = handle_input(&mut app, next, &mut exec);
+                                    coalesced += 1;
+                                }
+                                Ok(None) => {
+                                    running = false;
+                                    break;
+                                }
+                                Err(error) => return Err(RunError::Input(error)),
+                            },
+                            () = std::future::ready(()) => break,
                         }
+                    }
+                    if outcome == Settled::Quit {
+                        running = false;
                     }
                     render(&mut terminal, &app).map_err(RunError::Backend)?;
                 }
@@ -915,10 +969,28 @@ where
             Some(event) => {
                 // `on_event` (&self) decides intent; `update` (&mut self) is
                 // the sole mutation; `settle` folds any follow-up commands.
-                if let Some(message) = app.on_event(event) {
-                    if step(&mut app, message, exec) == Settled::Quit {
-                        running = false;
+                let mut outcome = handle_input(&mut app, event, exec);
+                // Coalesce a burst (fast resize-drag / scroll-wheel spin):
+                // fold every event already buffered, then repaint **once**
+                // with the latest state. A non-blocking `ZERO` poll drains
+                // exactly what is ready and stops the instant nothing is —
+                // so the UI tracks the newest size/scroll with no per-event
+                // render backlog, the actual cause of resize/scroll lag.
+                let mut coalesced = 0usize;
+                while outcome == Settled::Running && coalesced < COALESCE_LIMIT {
+                    match events
+                        .poll_event(Some(Duration::ZERO))
+                        .map_err(RunError::Input)?
+                    {
+                        Some(next) => {
+                            outcome = handle_input(&mut app, next, exec);
+                            coalesced += 1;
+                        }
+                        None => break, // nothing more immediately ready
                     }
+                }
+                if outcome == Settled::Quit {
+                    running = false;
                 }
                 // Repaint even when no message was produced, so a resize the
                 // backend already absorbed still repaints (an empty diff sends
@@ -1548,6 +1620,145 @@ mod tests {
         assert_eq!(app.value, 1);
         // The final frame the production loop presented, asserted end-to-end.
         assert_eq!(format!("{}", shared.borrow()), "n=1     \n");
+    }
+
+    /// A `Backend` counting `draw` calls (one per presented frame) through a
+    /// shared `Cell`, so a test can prove burst coalescing collapses N input
+    /// events into **one** repaint instead of N.
+    #[derive(Clone)]
+    struct RenderCountingBackend {
+        inner: Rc<RefCell<TestBackend>>,
+        draws: Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Backend for RenderCountingBackend {
+        type Error = Infallible;
+
+        fn draw<'a, Iter>(&mut self, cells: Iter) -> Result<(), Self::Error>
+        where
+            Iter: IntoIterator<Item = (Position, &'a Cell)>,
+        {
+            self.draws.set(self.draws.get() + 1);
+            self.inner.borrow_mut().draw(cells)
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.borrow_mut().hide_cursor()
+        }
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.borrow_mut().show_cursor()
+        }
+        fn cursor_position(&mut self) -> Result<Position, Self::Error> {
+            self.inner.borrow_mut().cursor_position()
+        }
+        fn set_cursor_position(&mut self, position: Position) -> Result<(), Self::Error> {
+            self.inner.borrow_mut().set_cursor_position(position)
+        }
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.inner.borrow_mut().clear()
+        }
+        fn size(&self) -> Result<Size, Self::Error> {
+            self.inner.borrow().size()
+        }
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.inner.borrow_mut().flush()
+        }
+    }
+
+    /// Records every resize width it is told about and quits on `q` — the
+    /// fixture for asserting a fast resize/scroll *burst* folds every event
+    /// (state is exact) but repaints only once (no render backlog → no lag).
+    #[derive(Default)]
+    struct WidthLog {
+        widths: Vec<u16>,
+    }
+
+    enum WidthMsg {
+        Resized(u16),
+        Quit,
+    }
+
+    impl App for WidthLog {
+        type Message = WidthMsg;
+
+        fn on_event(&self, event: Event) -> Option<WidthMsg> {
+            match event {
+                Event::Resize(size) => Some(WidthMsg::Resized(size.width)),
+                Event::Key(_) if event.is_key(KeyCode::Char('q')) => Some(WidthMsg::Quit),
+                _ => None,
+            }
+        }
+
+        fn update(&mut self, message: WidthMsg) -> Cmd<WidthMsg> {
+            match message {
+                WidthMsg::Resized(width) => {
+                    self.widths.push(width);
+                    Cmd::none()
+                }
+                WidthMsg::Quit => Cmd::quit(),
+            }
+        }
+
+        fn view(&self, frame: &mut rstui_core::Frame<'_>) {
+            let pos = frame.area().position();
+            frame.buffer_mut().set_str(
+                pos,
+                &format!("w={}", self.widths.last().copied().unwrap_or(0)),
+                Style::new(),
+            );
+        }
+    }
+
+    fn resize(w: u16) -> Event {
+        Event::Resize(Size::new(w, 4))
+    }
+
+    #[test]
+    fn sync_loop_coalesces_a_resize_burst_into_one_repaint() {
+        let draws = Rc::new(std::cell::Cell::new(0));
+        let backend = RenderCountingBackend {
+            inner: Rc::new(RefCell::new(TestBackend::new(8, 4))),
+            draws: Rc::clone(&draws),
+        };
+        // Three resizes then quit, all buffered: `TestEventSource` yields them
+        // back-to-back, so the ZERO-poll drain folds the whole burst.
+        let mut input =
+            TestEventSource::with_events([resize(10), resize(20), resize(30), key('q')]);
+
+        let app = run(WidthLog::default(), backend, &mut input).unwrap();
+
+        // Every resize was folded in order (state is exact, never skipped)…
+        assert_eq!(app.widths, vec![10, 20, 30]);
+        // …but the burst produced exactly one repaint after the initial frame
+        // (init render + one coalesced batch), not one-per-event.
+        assert_eq!(draws.get(), 2, "burst must coalesce to a single repaint");
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test(start_paused = true)]
+    async fn async_loop_coalesces_a_resize_burst_into_one_repaint() {
+        let draws = Rc::new(std::cell::Cell::new(0));
+        let backend = RenderCountingBackend {
+            inner: Rc::new(RefCell::new(TestBackend::new(8, 4))),
+            draws: Rc::clone(&draws),
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for event in [resize(10), resize(20), resize(30), key('q')] {
+            tx.send(event).unwrap();
+        }
+        let mut source = ScriptedAsyncSource { rx };
+
+        let app = run_async(WidthLog::default(), backend, &mut source)
+            .await
+            .unwrap();
+        drop(tx); // held until the loop quit, so no premature end-of-input.
+
+        assert_eq!(app.widths, vec![10, 20, 30]);
+        assert_eq!(
+            draws.get(),
+            2,
+            "the async select! drain coalesces the burst to one repaint"
+        );
     }
 
     #[test]
