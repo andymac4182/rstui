@@ -131,10 +131,9 @@ Profiling should make memory and CPU behavior easy to inspect and keep stable.
 Run the strongest relevant validation you can before each commit:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo run -p xtask -- lint-names
+cargo run -p xtask -- ci   # fmt, lint-names, clippy, doc, test — the doc
+                            # (rustdoc) gate is the one the partial list
+                            # omitted and that turned `main` red.
 ```
 
 If a command is unavailable because the repo has evolved, inspect the current
@@ -169,34 +168,48 @@ git commit -m "Improve rstui quality workflow <feature>"
 
 ## Serialized Merge-Back Protocol
 
-Use this exact intent after each validated commit. The lock is important
-because five Claude sessions may be merging to `main` at the same time.
+Use this exact protocol after each validated commit. The lock serializes the
+five Claude sessions that may merge to `main` at once.
+
+**The one rule: validate the _merged_ `main`, not just your worktree.** A
+slice green on your branch can still turn `main` red, because the
+*combination* of independently-green slices trips a gate (most often the
+rustdoc `doc` gate). Your worktree being green proves nothing about `main`
+after the merge. The canonical expanded checklist, with a table of the
+recurring failures and their exact fixes, is `docs/merging.md` — read it.
+
+Acquire the lock. `mkdir` is the atomic gate; a *stale* lock (its owner PID
+is dead) is cleared so a crashed stream cannot block everyone forever:
 
 ```sh
 main_repo="/Users/andrewmcclenaghan/dev/andymac4182/rstui"
 lock="/tmp/rstui-main-merge.lock"
 
 while ! mkdir "$lock" 2>/dev/null; do
+  owner=$(cat "$lock/owner.pid" 2>/dev/null)
+  if [ -n "$owner" ] && ! ps -p "$owner" >/dev/null 2>&1; then
+    rm -f "$lock/owner.pid"; rmdir "$lock" 2>/dev/null || true; continue
+  fi
   echo "Waiting for another rstui stream to finish merging to main..."
   sleep 20
 done
+echo "$$" > "$lock/owner.pid"
 
-cleanup_lock() {
-  rmdir "$lock" 2>/dev/null || true
-}
+cleanup_lock() { rm -f "$lock/owner.pid"; rmdir "$lock" 2>/dev/null || true; }
 trap cleanup_lock EXIT
 ```
 
-While holding the lock:
+While holding the lock, rebase on the true-latest `origin/main` (it moves
+under you) and re-validate on the rebased base with the **one command that
+runs every gate**. `cargo xtask ci` is fmt + lint-names + clippy + **doc** +
+test, exactly CI's set; the older partial `fmt`/`clippy`/`test`/`lint-names`
+list omits the rustdoc `doc` gate and is what let `main` go red:
 
 ```sh
 cd "$worktree"
 git fetch origin main
 git rebase origin/main
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo run -p xtask -- lint-names
+cargo run -p xtask -- ci
 
 git -C "$main_repo" checkout main
 git -C "$main_repo" pull --ff-only origin main
@@ -206,31 +219,43 @@ git -C "$main_repo" status --short
 If the main checkout is dirty, stop and report. Do not stash, reset, or
 overwrite it.
 
-Merge and push:
+Merge, then **validate the merged main checkout — this is the step the one
+rule is about**:
 
 ```sh
 git -C "$main_repo" merge --no-ff "$branch" -m "Merge quality DX goal slice"
-(
-  cd "$main_repo"
-  cargo fmt --all --check
-  cargo clippy --all-targets --all-features -- -D warnings
-  cargo test --all-features
-  cargo run -p xtask -- lint-names
-)
+( cd "$main_repo" && cargo run -p xtask -- ci )
+```
+
+If that `cargo xtask ci` is **not green, DO NOT push** — the merged `main`
+is red and blocks every stream. Either:
+
+- **fix forward** when the breakage is mechanical and side-effect-free (a
+  doc-comment-only rustdoc fix is the recurring case — `docs/merging.md` has
+  the fix table): commit it as its own `Fix … gate: …` slice, re-run
+  `cargo run -p xtask -- ci` in the main checkout until green, then push; or
+- **restore and stop** when the fix is ambiguous or needs a real behavior
+  change: `git -C "$main_repo" reset --hard origin/main`, release the lock,
+  and report. Never push a red `main`; never force.
+
+Push only once the merged main checkout is green:
+
+```sh
 git -C "$main_repo" push origin main
 ```
 
 If merge conflicts occur, abort the merge in the main checkout, release the
-lock, resolve the conflict in your stream worktree by rebasing on the latest
-`origin/main`, rerun validation, recommit if needed, and then retry the
-merge-back protocol. Do not push a broken `main`.
+lock, resolve in your worktree by rebasing on the latest `origin/main`,
+rerun `cargo run -p xtask -- ci`, recommit if needed, then retry. Do not
+push a broken `main`.
 
 After a successful push, release the lock and continue from your stream
-worktree:
+worktree, rebasing so the next slice builds on every stream's just-landed
+work:
 
 ```sh
 trap - EXIT
-rmdir "$lock"
+rm -f "$lock/owner.pid"; rmdir "$lock"
 cd "$worktree"
 git fetch origin main
 git rebase origin/main

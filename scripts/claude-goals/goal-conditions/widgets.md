@@ -32,10 +32,11 @@ the main checkout path directly; use it only for the merge-back commands.
 
 Keep widgets pure projections of caller-owned state, composable, documented,
 agent-friendly, total under tiny/narrow/empty inputs, and consistent with the
-existing ADRs/conventions. Maintain the vague-name ban. Run the strongest
-available gates: `cargo fmt --all --check`, `cargo clippy --all-targets
---all-features -- -D warnings`, `cargo test --all-features`, and
-`cargo run -p xtask -- lint-names`.
+existing ADRs/conventions. Maintain the vague-name ban. Validate with the
+one command that runs every gate including the rustdoc `doc` gate:
+`cargo run -p xtask -- ci` (fmt, lint-names, clippy, doc, test). Validate
+the merged `main` checkout, not just your worktree, before pushing; never
+push a red `main` — see `docs/merging.md`.
 
 Stop instead of forcing state if main is dirty, merge conflicts are ambiguous,
 or validation cannot be made green.
