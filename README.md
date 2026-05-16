@@ -8,18 +8,19 @@ OpenCode, the update/view/event-loop ergonomics of Bubble Tea, the terminal
 rendering ecosystem of ratatui, and the breadth and polish of gpui-component —
 while staying idiomatic to Rust.
 
-> **Status:** early foundation. The rendering substrate and the terminal
-> `Backend` boundary exist and are tested; the runtime, components, and plugin
-> host are not built yet.
+> **Status:** early foundation. The rendering substrate, the terminal
+> `Backend` boundary, and the double-buffered `Terminal` frame driver exist and
+> are tested; the model/update/view runtime, components, and plugin host are
+> not built yet.
 
 ## Workspace
 
 The project is a Cargo workspace (Rust 2024 edition). Crates are introduced
 only when there is enough real API surface to justify the boundary.
 
-| Crate                | Responsibility                                                       |
-| -------------------- | -------------------------------------------------------------------- |
-| `crates/rstui-core`  | Dependency-free rendering substrate: geometry, style, buffer, backend |
+| Crate                | Responsibility                                                                  |
+| -------------------- | ------------------------------------------------------------------------------- |
+| `crates/rstui-core`  | Dependency-free rendering substrate: geometry, style, buffer, backend, terminal |
 
 Planned boundaries as the framework grows: a core runtime (Elm-style
 model/update/view loop), layout, a component set, examples, and a permissioned
@@ -39,6 +40,10 @@ loop — so every layer above it can be unit tested without a TTY.
 - `backend` — the `Backend` trait (the screen boundary that consumes a
   `Buffer` diff) and an in-memory `TestBackend` so UIs are testable without a
   TTY. Real terminal backends will live in their own crate.
+- `terminal` — the `Terminal` frame driver: double buffers plus a
+  `draw(|frame| …)` closure that diffs, flushes, places the cursor, and swaps
+  so redraws are minimal and flicker-free. The seam a model/update/view
+  runtime will sit on.
 
 ## Build & test
 
@@ -47,6 +52,7 @@ cargo test --all-features
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -p rstui-core --example buffer_demo
+cargo run -p rstui-core --example terminal_loop
 ```
 
 CI runs the same fmt, clippy, and test gates on every push and pull request.

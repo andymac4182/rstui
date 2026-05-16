@@ -13,6 +13,8 @@
 //!   draw into and renderers diff.
 //! - [`backend`]: the [`Backend`] screen boundary plus an in-memory
 //!   [`TestBackend`] so every layer above can be tested without a TTY.
+//! - [`terminal`]: the [`Terminal`] frame driver that runs the
+//!   draw → diff → flush → swap loop a [`Frame`] at a time.
 //!
 //! Keeping these pieces dependency-free and panic-light makes them trivial to
 //! unit test without a real terminal, which is the property the rest of the
@@ -43,8 +45,10 @@ pub mod backend;
 pub mod buffer;
 pub mod geometry;
 pub mod style;
+pub mod terminal;
 
 pub use backend::{Backend, TestBackend};
 pub use buffer::{Buffer, Cell};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use style::{Color, Modifier, Style};
+pub use terminal::{CompletedFrame, Frame, Terminal};
