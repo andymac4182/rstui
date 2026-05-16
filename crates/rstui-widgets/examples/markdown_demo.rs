@@ -1,10 +1,18 @@
-//! Renders a real markdown document through [`Markdown`] inside a [`Block`]:
-//! a heading, a soft-wrapped paragraph with inline emphasis/code, a fenced
-//! code block, a block quote, and a nested bullet list — the supported subset
-//! exercised end to end.
+//! Renders a markdown document through [`Markdown`] inside a [`Block`],
+//! exercising the **whole** supported surface end to end so it can be
+//! eyeballed and doubles as a deterministic, TTY-free smoke test:
 //!
-//! Running over a [`TestBackend`] keeps it TTY-free, so it doubles as a
-//! deterministic snapshot smoke test of the markdown layer:
+//! - ATX **and** setext headings, soft-wrapped paragraph with inline
+//!   **bold**/*italic*/`code`/escapes,
+//! - a **fenced code block with a language** (dim caption + generic syntax
+//!   highlight) and a 4-space **indented** code block,
+//! - a **nested** block quote, a **tight** list, a **loose** list (blank
+//!   line between items), an ordered list,
+//! - a GFM **table** with per-column alignment,
+//! - an `![image]()`, an inline `[link]()`, a **reference-style** link, an
+//!   `<autolink>`,
+//! - **HTML passthrough** (entities, a `<b>` tag, a comment, `<br>`), and a
+//!   thematic break.
 //!
 //! ```text
 //! cargo run -p rstui-widgets --example markdown_demo
@@ -16,36 +24,52 @@ use rstui_widgets::{Block, Markdown};
 const DOC: &str = "\
 # rstui Markdown
 
-A **terminal-native** renderer with `inline code`, *emphasis*, and soft
-word-wrap to the pane width.
+Setext Heading
+==============
 
+A **terminal-native** renderer with `inline code`, *emphasis*, an escaped
+\\*star\\*, and soft word-wrap to the pane width.
+
+```rust
+fn render(area: Rect) -> usize {
+    let n = 42; // a comment
+    let s = \"a string\";
+    /* block
+       comment */
+    return n;
+}
 ```
-fn render(area: Rect) { /* verbatim, never reflowed */ }
-```
 
-> Block quotes draw a rail and can nest.
+    // indented code block: 4 spaces, kept verbatim, *not* italic
 
-- bullet one
-- bullet two
+> Block quotes draw a rail
+> > and can nest.
+
+- tight one
+- tight two
   - nested child
-1. ordered item
-2. and another
+
+1. loose first
+
+2. loose second (blank line above ⇒ spacer rows)
 
 | Feature  | State |
 | :------- | :---: |
 | headings | done  |
 | tables   | done  |
 
-HTML &amp; entities work, and a <b>bold</b> tag too.<br>Line after a break.
+An ![inline image](logo.png), an [inline link](https://rust-lang.org), a
+[reference link][rs], and an <https://github.com/andymac4182/rstui> autolink.
 
-A [reference link][rs] resolves from a definition.
+HTML &amp; entities (&copy; &mdash; &#x2713;), a <b>bold</b> tag, a
+<!-- hidden --> comment, and a hard break<br>onto the next line.
 
 [rs]: https://rust-lang.org
 
 ---";
 
 fn main() {
-    let mut terminal = Terminal::new(TestBackend::new(48, 34)).expect("TestBackend is infallible");
+    let mut terminal = Terminal::new(TestBackend::new(50, 46)).expect("TestBackend is infallible");
 
     terminal
         .draw(|frame| {
