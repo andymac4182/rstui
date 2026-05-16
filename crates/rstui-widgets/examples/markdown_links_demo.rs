@@ -46,8 +46,12 @@ fn main() {
     let mut terminal = Terminal::new(TestBackend::new(56, 12)).expect("TestBackend is infallible");
     terminal
         .draw(|frame| {
+            // The focused link renders with the selection style — the visual
+            // half of the keyboard focus loop a host drives over `links()`.
             frame.render_widget(
-                Markdown::new(DOC).block(Block::bordered().title("links")),
+                Markdown::new(DOC)
+                    .focused_link(focused)
+                    .block(Block::bordered().title("links")),
                 frame.area(),
             );
         })

@@ -34,12 +34,14 @@
 //! - `[text](href)` links and `<autolink>`s: the label is styled and the
 //!   targets are exposed in reading order by [`Markdown::links`] (the
 //!   [`Link`] activation registry), keeping the href out of the
-//!   rendered glyphs
+//!   rendered glyphs; [`Markdown::focused_link`] highlights one for keyboard
+//!   focus, completing the registry → focus → activation loop
 //!
 //! Deliberately out of scope for this slice (each an additive follow-up that
-//! does not change this shape): images, a focused-link highlight (the registry
-//! is what enables a host to implement focus/click), indented code blocks,
-//! setext headings, HTML passthrough, reference definitions.
+//! does not change this shape): images, mouse hit-testing (needs a
+//! geometry-reporting story owned by the runtime layer; keyboard focus via the
+//! registry works today), indented code blocks, setext headings, HTML
+//! passthrough, reference definitions.
 //!
 //! Rendering is deterministic and width-aware: the same source and area always
 //! produce the same cells, so output is snapshot-testable through
@@ -96,6 +98,10 @@ pub struct MarkdownTheme {
     /// A `[text](href)` / autolink label. The href is kept out of the render
     /// (retrieve it via [`Markdown::links`]); only the label is shown, styled.
     pub link: Style,
+    /// The label of the link at [`Markdown::focused_link`] — patched over
+    /// [`link`](Self::link) so the focused reference reads as selected (the
+    /// same "selection bar" idea [`List`](crate::List) uses, for links).
+    pub link_focused: Style,
 }
 
 impl Default for MarkdownTheme {
@@ -119,6 +125,7 @@ impl Default for MarkdownTheme {
             link: Style::new()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::UNDERLINED),
+            link_focused: Style::new().add_modifier(Modifier::REVERSED),
         }
     }
 }
@@ -164,6 +171,7 @@ pub struct Markdown<'a> {
     style: Style,
     scroll: u16,
     theme: MarkdownTheme,
+    focused_link: Option<usize>,
 }
 
 impl<'a> Markdown<'a> {
@@ -175,6 +183,7 @@ impl<'a> Markdown<'a> {
             style: Style::new(),
             scroll: 0,
             theme: MarkdownTheme::default(),
+            focused_link: None,
         }
     }
 
@@ -209,6 +218,21 @@ impl<'a> Markdown<'a> {
         self
     }
 
+    /// Highlights the link at this index into [`links`](Self::links) with the
+    /// theme's [`link_focused`](MarkdownTheme::link_focused) style.
+    ///
+    /// A pure projection of caller-owned focus, exactly like
+    /// [`Checkbox`](crate::Checkbox)'s `focused`: the app owns which link is
+    /// focused (cycling it with Tab/arrows over the `links()` registry) and
+    /// the reducer turns Enter into a
+    /// [`LinkActivation`](crate::link::LinkActivation). An out-of-range index
+    /// simply highlights nothing — a caller-owned number never panics.
+    #[must_use]
+    pub fn focused_link(mut self, index: usize) -> Self {
+        self.focused_link = Some(index);
+        self
+    }
+
     /// Parses the source and lays it out to display rows for a content area
     /// `width` columns wide. Public so a host can measure a document (its row
     /// count) for scroll math or a surrounding scrollbar without re-rendering.
@@ -219,7 +243,8 @@ impl<'a> Markdown<'a> {
         if width == 0 {
             return Vec::new();
         }
-        let blocks = parse_blocks(self.source.as_ref());
+        let mut links = Vec::new();
+        let blocks = blocks_into(self.source.as_ref(), &mut links, self.focused_link);
         let mut rows = Vec::new();
         layout_blocks(&blocks, width as usize, &self.theme, true, &mut rows);
         rows
@@ -304,23 +329,31 @@ enum MdBlock {
     Rule,
 }
 
-/// Splits `src` into [`MdBlock`]s, discarding links. The render/measurement
-/// and test entry point.
+/// Splits `src` into [`MdBlock`]s, discarding links and focus — a test-only
+/// convenience over [`blocks_into`] (the render path threads links/focus, so
+/// this thin wrapper is exercised solely by the block-shape unit tests).
+#[cfg(test)]
 fn parse_blocks(src: &str) -> Vec<MdBlock> {
-    blocks_into(src, &mut Vec::new())
+    blocks_into(src, &mut Vec::new(), None)
 }
 
 /// Every `[text](href)` / autolink in `src`, in reading order — the registry
 /// [`Markdown::links`] exposes for focus and activation.
 fn document_links(src: &str) -> Vec<Link<'static>> {
     let mut links = Vec::new();
-    blocks_into(src, &mut links);
+    blocks_into(src, &mut links, None);
     links
 }
 
-/// Builds the spans for `text` and appends any links it carries to `links`.
-fn inline(text: &str, links: &mut Vec<Link<'static>>) -> Vec<Span<'static>> {
-    let (spans, mut found) = inline_spans_and_links(text);
+/// Builds the spans for `text`, appending its links to `links` (so
+/// `links.len()` is the running document index) and flagging the one at
+/// `focused` for the focus style.
+fn inline(
+    text: &str,
+    links: &mut Vec<Link<'static>>,
+    focused: Option<usize>,
+) -> Vec<Span<'static>> {
+    let (spans, mut found) = inline_spans_and_links(text, links.len(), focused);
     links.append(&mut found);
     spans
 }
@@ -328,7 +361,7 @@ fn inline(text: &str, links: &mut Vec<Link<'static>>) -> Vec<Span<'static>> {
 /// Splits `src` into [`MdBlock`]s, appending links to `links` in reading
 /// order. Line-oriented, single pass, no lookahead beyond fence/list
 /// continuation scanning.
-fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
+fn blocks_into(src: &str, links: &mut Vec<Link<'static>>, focused: Option<usize>) -> Vec<MdBlock> {
     let lines: Vec<&str> = src
         .split('\n')
         .map(|l| l.strip_suffix('\r').unwrap_or(l))
@@ -371,7 +404,7 @@ fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
             let text = atx_heading_text(trimmed, level);
             out.push(MdBlock::Heading {
                 level,
-                spans: inline(text, links),
+                spans: inline(text, links, focused),
             });
             i += 1;
             continue;
@@ -393,7 +426,11 @@ fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
                     i += 1;
                 }
             }
-            out.push(MdBlock::Quote(blocks_into(&quoted.join("\n"), links)));
+            out.push(MdBlock::Quote(blocks_into(
+                &quoted.join("\n"),
+                links,
+                focused,
+            )));
             continue;
         }
 
@@ -402,7 +439,7 @@ fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
             let ncols = aligns.len();
             let mut header = Vec::with_capacity(ncols);
             for c in normalize_row(split_table_row(line), ncols) {
-                header.push(inline(&c, links));
+                header.push(inline(&c, links, focused));
             }
             i += 2;
             let mut rows = Vec::new();
@@ -414,7 +451,7 @@ fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
                 }
                 let mut cells = Vec::with_capacity(ncols);
                 for c in normalize_row(split_table_row(row), ncols) {
-                    cells.push(inline(&c, links));
+                    cells.push(inline(&c, links, focused));
                 }
                 rows.push(cells);
                 i += 1;
@@ -428,7 +465,7 @@ fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
         }
 
         if let Some(marker) = list_marker(line) {
-            let (block, next) = parse_list(&lines, i, marker, links);
+            let (block, next) = parse_list(&lines, i, marker, links, focused);
             out.push(block);
             i = next;
             continue;
@@ -456,7 +493,7 @@ fn blocks_into(src: &str, links: &mut Vec<Link<'static>>) -> Vec<MdBlock> {
             buf.push_str(t);
             i += 1;
         }
-        out.push(MdBlock::Paragraph(inline(&buf, links)));
+        out.push(MdBlock::Paragraph(inline(&buf, links, focused)));
     }
     out
 }
@@ -523,6 +560,7 @@ fn parse_list(
     start: usize,
     first: ListMarker,
     links: &mut Vec<Link<'static>>,
+    focused: Option<usize>,
 ) -> (MdBlock, usize) {
     let ordered = first.ordered.is_some();
     let list_start = first.ordered.unwrap_or(1);
@@ -573,7 +611,7 @@ fn parse_list(
         while body.last().is_some_and(|s| s.is_empty()) {
             body.pop();
         }
-        items.push(blocks_into(&body.join("\n"), links));
+        items.push(blocks_into(&body.join("\n"), links, focused));
         if end_list {
             break;
         }
@@ -746,8 +784,13 @@ enum InlineTok {
     Code(String),
     /// A resolved `[label](href)` or `<autolink>`. `label` is raw markdown
     /// (re-parsed for display so emphasis inside link text works); `href` is
-    /// the literal target, kept out of the rendered glyphs.
-    Link { label: String, href: String },
+    /// the literal target, kept out of the rendered glyphs. `focused` is set
+    /// only on the one link at [`Markdown::focused_link`].
+    Link {
+        label: String,
+        href: String,
+        focused: bool,
+    },
 }
 
 /// Parses inline markdown into owned styled spans.
@@ -759,21 +802,35 @@ enum InlineTok {
 /// `**a *b* c**` nests. `_` does not open or close inside a word so
 /// `snake_case` is left alone.
 fn parse_inline(text: &str) -> Vec<Span<'static>> {
-    inline_spans_and_links(text).0
+    inline_spans_and_links(text, 0, None).0
 }
 
-/// Like [`parse_inline`] but also returns the links it contains, in order.
-/// The registry label is the link's *rendered plain text* (markup stripped),
-/// which is what a host shows in a "links in this document" affordance.
-fn inline_spans_and_links(text: &str) -> (Vec<Span<'static>>, Vec<Link<'static>>) {
-    let toks = lex_inline(text);
+/// Like [`parse_inline`] but also returns the links it contains, in order,
+/// and flags the one whose *document* index (`base` + its local position)
+/// equals `focused` so it renders with the focus style. The registry label
+/// is the link's *rendered plain text* (markup stripped), which is what a
+/// host shows in a "links in this document" affordance.
+fn inline_spans_and_links(
+    text: &str,
+    base: usize,
+    focused: Option<usize>,
+) -> (Vec<Span<'static>>, Vec<Link<'static>>) {
+    let mut toks = lex_inline(text);
     let mut links = Vec::new();
-    for t in &toks {
-        if let InlineTok::Link { label, href } = t {
+    for t in &mut toks {
+        if let InlineTok::Link {
+            label,
+            href,
+            focused: is_focused,
+        } = t
+        {
             let plain: String = parse_inline(label)
                 .iter()
                 .map(|s| s.content.as_ref())
                 .collect();
+            if focused == Some(base + links.len()) {
+                *is_focused = true;
+            }
             links.push(Link::new(plain, href.clone()));
         }
     }
@@ -812,7 +869,11 @@ fn lex_inline(text: &str) -> Vec<InlineTok> {
         }
         if c == '[' {
             if let Some((label, href, next)) = scan_link(&chars, i) {
-                toks.push(InlineTok::Link { label, href });
+                toks.push(InlineTok::Link {
+                    label,
+                    href,
+                    focused: false,
+                });
                 i = next;
                 continue;
             }
@@ -827,6 +888,7 @@ fn lex_inline(text: &str) -> Vec<InlineTok> {
                 toks.push(InlineTok::Link {
                     label: target,
                     href,
+                    focused: false,
                 });
                 i = next;
                 continue;
@@ -1017,15 +1079,21 @@ fn emit_literal(
                 }
                 out.push(Span::styled(s.clone(), base.patch(theme.code)));
             }
-            InlineTok::Link { label, .. } => {
+            InlineTok::Link { label, focused, .. } => {
                 if !buf.is_empty() {
                     out.push(Span::styled(std::mem::take(&mut buf), base));
                 }
                 // The label is re-parsed so emphasis/code inside link text
-                // works; the link style sits beneath it. The href never
-                // reaches the glyphs — `Markdown::links()` exposes it instead.
+                // works; the link style sits beneath it (the focused link
+                // gets the selection patch on top). The href never reaches
+                // the glyphs — `Markdown::links()` exposes it instead.
+                let link_style = if *focused {
+                    base.patch(theme.link).patch(theme.link_focused)
+                } else {
+                    base.patch(theme.link)
+                };
                 let inner = lex_inline(label);
-                render_toks(&inner, base.patch(theme.link), theme, out);
+                render_toks(&inner, link_style, theme, out);
             }
         }
     }
@@ -1692,6 +1760,58 @@ mod tests {
             ]
         );
         assert!(Markdown::new("no links here").links().is_empty());
+    }
+
+    #[test]
+    fn focused_link_gets_the_selection_style_on_only_that_link() {
+        let src = "[a](1) and [b](2)";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 9, 1));
+        Markdown::new(src)
+            .focused_link(1)
+            .render(buf.area(), &mut buf);
+        let a = buf.get(Position::new(0, 0)).unwrap(); // link 0: "a"
+        let b = buf.get(Position::new(6, 0)).unwrap(); // link 1: "b" (focused)
+        assert_eq!((a.symbol, b.symbol), ('a', 'b'));
+        // Both are links (underlined); only the focused one is reversed.
+        assert!(a.modifier.contains(Modifier::UNDERLINED));
+        assert!(!a.modifier.contains(Modifier::REVERSED));
+        assert!(b.modifier.contains(Modifier::UNDERLINED));
+        assert!(b.modifier.contains(Modifier::REVERSED));
+        // Focus is purely visual: the registry is unchanged.
+        assert_eq!(
+            Markdown::new(src).focused_link(1).links(),
+            vec![Link::new("a", "1"), Link::new("b", "2")]
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_focused_link_highlights_nothing() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        // Index 9 with one link: no panic, no reversed cell.
+        Markdown::new("[a](1)")
+            .focused_link(9)
+            .render(buf.area(), &mut buf);
+        assert!((0..3).all(|x| {
+            !buf.get(Position::new(x, 0))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        }));
+    }
+
+    #[test]
+    fn focus_index_is_the_document_registry_order() {
+        // Link 2 ("third") spans two blocks of preceding links; focusing it
+        // must land on "third", proving the index is the global reading order.
+        let src = "[one](1) [two](2)\n\nthen [three](3)";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
+        Markdown::new(src)
+            .focused_link(2)
+            .render(buf.area(), &mut buf);
+        // Row 0 "one two", row 1 blank spacer, row 2 "then three".
+        let t = buf.get(Position::new(5, 2)).unwrap();
+        assert_eq!(t.symbol, 't'); // "three" starts at col 5 of "then three"
+        assert!(t.modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
