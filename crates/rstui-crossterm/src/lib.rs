@@ -7,13 +7,16 @@
 //! [`Event`](rstui_core::event::Event) vocabulary, never on crossterm directly,
 //! so the backend can be swapped without touching apps.
 //!
-//! The crate's eventual responsibilities are the `Backend` implementation over
-//! an [`std::io::Write`], a panic-safe RAII terminal-lifecycle guard, and the
-//! crossterm input source. Three have landed: the pure, terminal-free input
-//! translation ([`from_crossterm`]), the [`CrosstermBackend`] drawing seam, and
-//! the [`TerminalGuard`] panic-safe lifecycle guard. The crossterm input
-//! source (sync `poll`/`read`, then a feature-gated async stream) is the
-//! remaining slice.
+//! The crate's responsibilities are the `Backend` implementation over an
+//! [`std::io::Write`], a panic-safe RAII terminal-lifecycle guard, the pure
+//! crossterm→rstui input translation, and the crossterm input source. **All
+//! four have landed**: the terminal-free input translation
+//! ([`from_crossterm`]), the [`CrosstermBackend`] drawing seam, the
+//! [`TerminalGuard`] panic-safe lifecycle guard, and the
+//! [`CrosstermEventSource`] input source. The framework now composes end to
+//! end — the same `rstui_runtime::run` the headless harness tests drive runs an
+//! unmodified app on a real terminal (see the `run_app` example). A
+//! feature-gated async `EventStream` source is a future enhancement.
 //!
 //! # Output: the backend
 //!
@@ -83,6 +86,38 @@
 //! .is_none());
 //! ```
 //!
+//! # Input: the event source
+//!
+//! [`CrosstermEventSource`] implements `rstui-core`'s
+//! [`EventSource`](rstui_core::event_source::EventSource) — the input dual of
+//! [`CrosstermBackend`]. It folds crossterm's `poll`/`read` into one timed call
+//! and translates each native event through [`from_crossterm`]. The blocking
+//! mode **skips** input rstui does not model (so a CapsLock press is ignored,
+//! not read as end-of-input that would stop the app); the timed mode does one
+//! poll and at most one read so an animation tick can never be starved. Only
+//! the real reader's two `crossterm::event::{poll, read}` calls touch a TTY;
+//! every decision branch is asserted in memory. See the [`event_source`] module
+//! for the full rationale.
+//!
+//! ```no_run
+//! use rstui_core::event_source::EventSource;
+//! use rstui_crossterm::CrosstermEventSource;
+//!
+//! // Reads the real terminal (hence `no_run`). The same value, with a
+//! // `CrosstermBackend`, is what `rstui_runtime::run` drives an app over.
+//! let mut input = CrosstermEventSource::new();
+//!
+//! // Unbounded poll blocks until the next *modeled* event; unmodeled input
+//! // (e.g. CapsLock) is skipped, never reported as end-of-input.
+//! match input.poll_event(None)? {
+//!     Some(event) => {
+//!         let _ = event;
+//!     }
+//!     None => {} // a real terminal does not reach this (see module docs)
+//! }
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
 //! # Lifecycle: the panic-safe RAII guard
 //!
 //! [`TerminalGuard`] enables the requested terminal modes (raw mode, alternate
@@ -114,8 +149,10 @@
 
 pub mod backend;
 pub mod event;
+pub mod event_source;
 pub mod lifecycle;
 
 pub use backend::CrosstermBackend;
 pub use event::from_crossterm;
+pub use event_source::CrosstermEventSource;
 pub use lifecycle::{LifecycleOptions, TerminalGuard};
