@@ -84,7 +84,7 @@ pub mod run;
 pub use app::App;
 pub use cmd::Cmd;
 pub use harness::Harness;
-pub use run::{DEFAULT_COMMAND_BUDGET, RunError, run, run_threaded};
+pub use run::{DEFAULT_COMMAND_BUDGET, RunError, run, run_pooled, run_threaded};
 
 // Re-exported so an `App` implementor needs only `rstui_runtime` in scope for
 // the trait's own signatures.
