@@ -26,7 +26,9 @@
 //!   [`Backend`]) plus an in-memory [`TestEventSource`] so whole apps can be
 //!   driven by a scripted event stream without a TTY.
 //! - [`focus`]: the optional, caller-owned focus model — [`FocusId`] value
-//!   tokens and a pure, total [`FocusRing`] the app stores and `view` reads,
+//!   tokens and a pure, total [`FocusRing`] (with a model-owned modal
+//!   focus-scope stack: `push_scope`/`pop_scope`, validated capture/restore,
+//!   declarative reducer-gated trapping) the app stores and `view` reads,
 //!   never runtime- or widget-owned ([ADR 0004](https://github.com/andymac4182/rstui/blob/main/docs/adr/0004-focus-routing-architecture.md)).
 //! - [`widget`]: the [`Widget`] rendering abstraction every component
 //!   implements. Concrete widgets (`Block`, `Paragraph`, …) live in the

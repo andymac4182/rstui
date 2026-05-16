@@ -22,7 +22,9 @@ while staying idiomatic to Rust.
 > label, the exclusive-choice `Radio` control and the single-line
 > text-entry `Input` field (the form-control family, with a focus
 > visual), the optional caller-owned `focus` model (`FocusId` value
-> tokens plus a pure, total, wrapping `FocusRing`) those controls'
+> tokens plus a pure, total, wrapping `FocusRing` with a model-owned
+> modal **focus-scope stack** — `push_scope`/`pop_scope`, validated
+> capture/restore, declarative reducer-gated trapping) those controls'
 > `focused: bool` projects from, the optional caller-owned single-line
 > text-editing model (`TextEdit`, a pure, total
 > `String`+character-cursor value the `Input` widget projects with a
@@ -114,9 +116,15 @@ loop — so every layer above it can be unit tested without a TTY.
   opaque `Copy` value-identity token the app mints, and `FocusRing`, a pure
   value type (explicit ordered ids + the focused one) that lives as a field in
   the app's model — `update` calls `focus`/`focus_next`/`focus_prev` (wrapping
-  and **total**), `view` reads `is_focused`. Never runtime- or widget-owned,
-  and distinct from terminal-window `FocusGained`/`FocusLost`. Not required —
-  an app may use its own `enum`; this just removes the boilerplate.
+  and **total**), `view` reads `is_focused`. `FocusRing` also carries a
+  **modal scope stack** (ADR 0004 §6): `push_scope`/`pop_scope` trap focus to
+  a modal's own ids (every traversal/lookup is scope-constrained while active),
+  capture-and-validate-restore the prior focus, and expose
+  `in_scope`/`scope_depth` so the reducer gates background input declaratively.
+  An un-scoped ring is byte-for-byte the pre-scope behavior. Never runtime- or
+  widget-owned, and distinct from terminal-window `FocusGained`/`FocusLost`.
+  Not required — an app may use its own `enum`; this just removes the
+  boilerplate.
 - `widget` — the `Widget` trait (`render(self, area, buf)`) every component
   implements, plus blanket impls for `&str`/`String`/`Option<W>`. Only the
   trait lives here; the concrete widget set is the separate `rstui-widgets`
@@ -370,11 +378,14 @@ context, the options weighed, the decision, and the evidence behind it.
   `rstui_core::text_edit::TextEdit` and the `rstui-widgets` `Input`
   widget that projects a borrowed `TextEdit` + `focused` (the first
   `FocusRing` consumer), driven across two fields via `Harness` in
-  the `input_demo` example — **Follow-up §2 is complete**. Terminal
-  `FocusGained`/`FocusLost` stay distinct from widget focus. The
-  modal focus capture/restore/declarative-trapping model is decided
-  here and its `Modal`/`FocusScope` mechanical landing is the next
-  sequenced slice (Follow-up §3).
+  the `input_demo` example — **Follow-up §2 is complete**. The §6
+  modal model has landed in `rstui_core::focus` as the `FocusRing`
+  scope stack (`push_scope`/`pop_scope`, scope-constrained traversal,
+  captured/validate-restored focus, `in_scope`/`scope_depth` for
+  declarative reducer-gated trapping); the `Modal` widget and its
+  first concrete consumer are the remaining mechanical part of
+  **Follow-up §3**. Terminal `FocusGained`/`FocusLost` stay distinct
+  from widget focus.
 
 ## Build & test
 
