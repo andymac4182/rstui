@@ -177,18 +177,21 @@ pub(crate) fn run(root: &Path) -> ExitCode {
 mod tests {
     use super::*;
 
-    /// The sequence must cover precisely CI's gate set. If a future slice
-    /// removes a gate from `xtask ci` (silently weakening the local loop) or
-    /// adds an unlabelled one, this fails — the gate set is a contract, not
-    /// an incidental list.
+    /// The sequence must cover precisely CI's **`check`-job** gate set. If a
+    /// future slice removes a gate from `xtask ci` (silently weakening the
+    /// local loop) or adds an unlabelled one, this fails — the gate set is a
+    /// contract, not an incidental list. CI's separate `msrv` / `unused-deps`
+    /// legs (ADR 0003 §7/§8) are deliberately *not* gates and are not in this
+    /// set; see `docs/development.md` ("Additional CI legs").
     #[test]
     fn step_set_matches_ci_gates() {
         let labels: Vec<&str> = STEPS.iter().map(|s| s.label).collect();
         assert_eq!(
             labels,
             ["fmt", "lint-names", "clippy", "doc", "test"],
-            "xtask ci must run exactly CI's gates; update .github/workflows/ci.yml \
-             and docs/development.md together if this changes"
+            "xtask ci must run exactly CI's check-job gates; update \
+             .github/workflows/ci.yml and docs/development.md together if this \
+             changes (the msrv/unused-deps CI legs are separate, not gates)"
         );
     }
 

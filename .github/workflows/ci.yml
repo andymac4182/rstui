@@ -48,3 +48,44 @@ jobs:
 
       - name: Test
         run: cargo test --all-features
+
+  # ADR 0003 §8 / Phase 3: the MSRV compatibility leg. Separate job, *not*
+  # part of the 5-gate fast loop (`cargo xtask ci`) — its only job is to
+  # catch new-language-feature creep past the declared `rust-version`,
+  # cheaply, on one pinned toolchain (the ratatui model the ADR cites).
+  msrv:
+    name: msrv (rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep this pinned to `[workspace.package] rust-version` in Cargo.toml.
+      - name: Install pinned MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check on MSRV
+        run: cargo check --workspace --all-targets --all-features
+
+  # ADR 0003 §7 / Phase 3: the unused-dependency hygiene leg (reinforces
+  # "do not add dependencies speculatively"). Separate job — needs an
+  # external tool, so it stays out of the dependency-free `xtask` fast loop.
+  unused-deps:
+    name: unused-deps (cargo-machete)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+
+      - name: Check for unused dependencies
+        run: cargo machete

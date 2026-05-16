@@ -21,12 +21,27 @@ That runs every project gate, fail-fast, in this order:
 | 4 | `doc` | Broken intra-doc links / missing docs | `cargo doc --no-deps --all-features --workspace` with `RUSTDOCFLAGS=-D warnings` |
 | 5 | `test` | Failing unit / integration / doc tests | `cargo test --all-features` |
 
-The gate set is exactly what [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
-enforces — a green `cargo xtask ci` locally means a green CI run. The only
-ordering difference is that the instant in-process naming scan runs *before*
-the slow clippy build, so a naming mistake fails in milliseconds. A
-`xtask ci` test asserts this gate set stays in lock-step with CI; changing
-one without the other fails that test.
+This 5-gate set is exactly what the [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+`check` job enforces — a green `cargo xtask ci` locally means a green CI
+`check` job. The only ordering difference is that the instant in-process
+naming scan runs *before* the slow clippy build, so a naming mistake fails
+in milliseconds. A `xtask ci` test asserts this gate set stays in lock-step
+with CI's `check` job; changing one without the other fails that test.
+
+### Additional CI legs (not in the fast loop)
+
+CI also runs two **separate jobs** that are deliberately *not* part of
+`cargo xtask ci` — they are slow or need an extra tool, so folding them into
+the inner loop would tax every slice (ADR 0003 §7/§8, Phase 3). A green
+`cargo xtask ci` does not by itself prove these pass; run them on demand:
+
+| CI job | Catches | Run locally |
+|--------|---------|-------------|
+| `msrv` | new-language-feature creep past the declared `rust-version` | `rustup toolchain install 1.85.0 && cargo +1.85.0 check --workspace --all-targets --all-features` |
+| `unused-deps` | dependencies declared but unused | `cargo install cargo-machete && cargo machete` |
+
+Keep the `msrv` toolchain pin in `ci.yml` in lock-step with
+`[workspace.package] rust-version` in the root `Cargo.toml`.
 
 On failure you get a single banner naming the gate and the defect class it
 catches, and later gates are skipped. Fix it, re-run `cargo xtask ci`.
