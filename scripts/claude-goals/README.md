@@ -78,3 +78,10 @@ Important operating notes:
   state into `main`.
 - No stream should use `git reset --hard`, force push, or delete another
   stream's worktree.
+- Brief/protocol edits take effect only on **stream relaunch** — a running
+  session executes the brief it read at start. So a protocol fix on `main`
+  does not retroactively fix already-running streams: new launches are
+  correct by construction, and stragglers are handled by fix-forwarding
+  their breakage (the quality stream's job). Run `cargo xtask merge-check`
+  before any merge-back: it enforces the rebased-clean-all-gates-green
+  preflight as one GO/NO-GO so a stream cannot skip the `doc` gate.
