@@ -47,6 +47,11 @@
 //! - [`button`]: [`Button`] — a single-line centred focusable *action* label,
 //!   the first form control with **no data** — a pure projection of only a
 //!   caller-owned `focused` `bool`; the press action is the reducer's concern.
+//! - [`radio`]: [`Radio`] — a single-line labelled *exclusive-choice* control,
+//!   the exclusive-selection sibling of [`Checkbox`]; a pure projection of
+//!   caller-owned `selected` (the data, the [`List`]-style selection concept)
+//!   and `focused`. Exactly-one-per-group is the caller's invariant, not the
+//!   widget's (a `RadioGroup` convenience is a deliberately deferred additive).
 //!
 //! # Example
 //!
@@ -68,6 +73,7 @@ pub mod checkbox;
 pub mod gauge;
 pub mod list;
 pub mod paragraph;
+pub mod radio;
 pub mod scrollbar;
 pub mod spinner;
 pub mod table;
@@ -79,6 +85,7 @@ pub use checkbox::Checkbox;
 pub use gauge::Gauge;
 pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
+pub use radio::Radio;
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};
 pub use spinner::Spinner;
 pub use table::{Row, Table};
