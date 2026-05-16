@@ -62,6 +62,11 @@
 //!   [`FocusRing`](rstui_core::FocusRing) scope-stack modal model (ADR 0004
 //!   §6). A pure projection — the app decides "is a modal open" in its model
 //!   and `view` renders it; the widget never reads focus.
+//! - [`status_bar`]: [`StatusBar`] — a one-row strip with independently
+//!   left-/centre-/right-anchored [`Line`](rstui_core::Line) segments and a
+//!   fixed, documented contention rule; the first multi-anchor layout widget,
+//!   a pure projection of three caller-built segments (the editor/file-manager
+//!   status strip).
 //!
 //! # Example
 //!
@@ -88,6 +93,7 @@ pub mod paragraph;
 pub mod radio;
 pub mod scrollbar;
 pub mod spinner;
+pub mod status_bar;
 pub mod table;
 pub mod tabs;
 
@@ -102,5 +108,6 @@ pub use paragraph::{Paragraph, Wrap};
 pub use radio::Radio;
 pub use scrollbar::{Scrollbar, ScrollbarOrientation};
 pub use spinner::Spinner;
+pub use status_bar::StatusBar;
 pub use table::{Row, Table};
 pub use tabs::Tabs;
