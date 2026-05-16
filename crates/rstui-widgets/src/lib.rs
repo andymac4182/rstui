@@ -99,6 +99,11 @@
 //!   caller-owned `open`/`selected`/`highlight`/`offset` that **reuses**
 //!   [`List`] for the panel and [`Modal`]'s clear-region opacity (but is
 //!   deliberately not a [`Modal`] — anchored, not modal/centred).
+//! - [`editor`]: [`Editor`] — a multi-line text-entry widget, the [`Input`]
+//!   dual for documents; a pure projection of a borrowed caller-owned
+//!   [`TextArea`](rstui_core::TextArea) model plus caller-owned 2D `scroll`
+//!   and `focused`, with a rendered (not terminal) 2D caret. The reducer owns
+//!   the edit and the scroll (ADR 0004 §1); the widget only reads.
 //!
 //! # Example
 //!
@@ -118,6 +123,7 @@ pub mod block;
 pub mod button;
 pub mod checkbox;
 pub mod diff;
+pub mod editor;
 pub mod gauge;
 pub mod input;
 pub mod link;
@@ -140,6 +146,7 @@ pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use button::Button;
 pub use checkbox::Checkbox;
 pub use diff::{Diff, DiffTheme};
+pub use editor::Editor;
 pub use gauge::Gauge;
 pub use input::Input;
 pub use link::{Link, LinkActivation};

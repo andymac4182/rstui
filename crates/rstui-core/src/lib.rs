@@ -43,6 +43,11 @@
 //!   [`TextEdit`], a pure, total `String`+character-cursor value the app
 //!   stores and `update` mutates, the editing-side dual of [`FocusRing`]
 //!   that an `Input` widget projects ([ADR 0004](https://github.com/andymac4182/rstui/blob/main/docs/adr/0004-focus-routing-architecture.md)).
+//! - [`text_area`]: the optional, caller-owned **multi-line** editing model —
+//!   [`TextArea`], the document dual of [`TextEdit`] (a `Vec<String>` of
+//!   logical lines plus a `(row, col)` char-indexed cursor with a sticky goal
+//!   column); a pure, total value the app stores and `update` mutates, that
+//!   an `Editor` widget projects (ADR 0004 Follow-up §2).
 //!
 //! Keeping these pieces dependency-free and panic-light makes them trivial to
 //! unit test without a real terminal, which is the property the rest of the
@@ -77,6 +82,7 @@ pub mod style;
 pub mod stylize;
 pub mod terminal;
 pub mod text;
+pub mod text_area;
 pub mod text_edit;
 pub mod widget;
 
@@ -93,5 +99,6 @@ pub use style::{Color, Modifier, Style};
 pub use stylize::{Styled, Stylize};
 pub use terminal::{CompletedFrame, Frame, Terminal};
 pub use text::{Line, Span, Text};
+pub use text_area::TextArea;
 pub use text_edit::TextEdit;
 pub use widget::Widget;

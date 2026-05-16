@@ -49,8 +49,8 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Modal`, and `StatusBar` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit, text_area |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Markdown`, `Modal`, `StatusBar`, `Toast`, `Tree`, `Select`, and `Editor` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
@@ -152,6 +152,18 @@ loop — so every layer above it can be unit tested without a TTY.
   (a multi-byte paste or an out-of-range `set_cursor` never panics or
   strands the cursor mid-codepoint). Single-line by convention; not
   required — an app may keep its own `String`+`usize`.
+- `text_area` — the optional, caller-owned **multi-line** editing model
+  ([ADR 0004](docs/adr/0004-focus-routing-architecture.md) Follow-up §2):
+  `TextArea`, the document dual of `TextEdit` — a `Vec<String>` of logical
+  lines (no embedded `'\n'`) plus a `(row, col)` **character-indexed** cursor
+  with an internal sticky goal column for vertical motion. `update` calls
+  `insert_char`/`insert_str`/`insert_newline`/`delete_*`/`move_*` (incl.
+  `move_up`/`down`/`page_*`/`doc_*`); the pure `view` reads `lines`/`cursor`
+  to project it through an `Editor` widget. Every method is **total** (a
+  multi-line paste of arbitrary UTF-8 or an out-of-range `set_cursor` never
+  panics, strands the cursor mid-codepoint, or leaves it off the document) —
+  the same guarantee `TextEdit` gives single-line. A separate model, not a
+  flag on `TextEdit`; not required — an app may keep its own `Vec<String>`.
 
 ### `rstui-widgets`
 
@@ -328,6 +340,19 @@ crate copies.
   areas, out-of-range `selected`/`highlight`, a panel that fits neither way
   all clip safely). The `select_demo` example renders a focused open dropdown
   over a framed form TTY-free.
+- `editor` — `Editor`: a multi-line text-entry widget — the `Input` dual for
+  documents (code/notes/commit-message panes). A **pure projection** of a
+  borrowed caller-owned `rstui_core::TextArea` model plus a caller-owned 2D
+  `scroll` `(row, col)` offset and `focused`, with a **rendered** (not
+  terminal) 2D block caret so it snapshot-tests. The reducer owns the edit
+  *and* the scroll (caller-owned offset, the `List` model — not `Input`'s
+  derived scroll, since a multi-line viewport that re-centres every keystroke
+  is jarring; ADR 0004 §1); the widget only reads. Takes a framing `Block`
+  like the container widgets; renders its own caret like `Input`. **Total**
+  (empty model, zero/!inner areas, scroll past the document, a caret scrolled
+  out of view, one-cell inner, multi-byte lines all clip safely). The
+  `editor_demo` example renders a focused multi-line buffer with a visible 2D
+  caret TTY-free.
 
 ### `rstui-runtime`
 
@@ -489,6 +514,7 @@ cargo run -p rstui-widgets --example status_bar_demo
 cargo run -p rstui-widgets --example toast_demo
 cargo run -p rstui-widgets --example tree_demo
 cargo run -p rstui-widgets --example select_demo
+cargo run -p rstui-widgets --example editor_demo
 cargo run -p rstui-runtime --example counter
 ```
 
