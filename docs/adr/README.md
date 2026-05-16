@@ -36,3 +36,4 @@ MADR-style shape:
 | [0004](0004-focus-routing-architecture.md) | Focus-routing architecture | Accepted |
 | [0005](0005-benchmarking-and-profiling-strategy.md) | Benchmarking and profiling strategy | Accepted |
 | [0006](0006-runtime-tick-and-loop-model.md) | Runtime tick and loop model | Accepted |
+| [0007](0007-plugin-host-and-secure-execution.md) | Plugin host and secure execution | Accepted |
