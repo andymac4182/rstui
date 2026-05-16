@@ -50,7 +50,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, and `Modal` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Modal`, and `StatusBar` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
@@ -68,7 +68,8 @@ boundaries as the framework grows: a broader component set (the `Widget`
 trait stays in core; concrete widgets live in the grouped `rstui-widgets`
 crate per [ADR 0002](docs/adr/0002-widget-crate-boundary.md), now extracted
 — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`,
-`Table`, `Checkbox`, `Button`, `Radio`, `Input`, and `Modal` ship there
+`Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Modal`, and `StatusBar`
+ship there
 today, with `Buffer::set_cell` the public cell-stamping contract third-party widgets
 build on; `Alignment`
 stays in `rstui-core::layout` as the placement primitive the text model
@@ -273,6 +274,17 @@ crate copies.
   derived rects. The `modal_demo` example wires both halves under `Harness`,
   proving declarative trapping, scope-constrained `Tab`, and validated
   capture/restore TTY-free.
+- `status_bar` — `StatusBar`: a one-row strip with independently
+  left-/centre-/right-anchored `Line` segments over a base-style fill — the
+  editor/file-manager status strip (mode + path, a transient message, cursor
+  position). The first **multi-anchor** layout widget and a **pure
+  projection** of three caller-built segments. Contention is resolved by one
+  fixed, documented rule (right is anchored and kept intact; left is clipped
+  before it reaches right; centre draws only in the gap between them), so the
+  output is always well-defined and **total** under any width. A leaf control
+  like `Input` — no framing `Block`; the surrounding `Layout` owns the edge it
+  pins to. The `status_bar_demo` example renders the canonical bottom strip
+  TTY-free.
 
 ### `rstui-runtime`
 
@@ -430,6 +442,7 @@ cargo run -p rstui-widgets --example button_demo
 cargo run -p rstui-widgets --example radio_demo
 cargo run -p rstui-widgets --example input_demo
 cargo run -p rstui-widgets --example modal_demo
+cargo run -p rstui-widgets --example status_bar_demo
 cargo run -p rstui-runtime --example counter
 ```
 
