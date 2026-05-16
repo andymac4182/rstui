@@ -313,6 +313,21 @@ crate copies.
   list, zero/!inner areas, offsets past the end, deep indents all clip
   safely). The `tree_demo` example renders a realistic partially-expanded
   explorer TTY-free.
+- `select` — `Select`: a single-line dropdown — a closed field that drops an
+  **opaque**, field-anchored option panel when the caller-owned `open` flag is
+  set; the seventh interactive control and the first **floating** one. A
+  **pure projection** of four reducer-owned fields — `open` (panel dropped?),
+  `selected` (the committed choice shown closed), `highlight` (the keyboard
+  row while open, committed into `selected` by the reducer on `Enter`), and
+  `offset` (panel scroll, exactly `List`'s). It **reuses `List` wholesale**
+  for the panel (inheriting its scroll/highlight/totality) and `Block` for its
+  optional frame, and borrows `Modal`'s `clear_region` opacity so the
+  background cannot bleed through — but is deliberately **not** a `Modal`: no
+  focus-scope trap, anchored below the field (flipping above when the screen
+  runs out), sized to its options. **Total** (empty options, zero/!inner
+  areas, out-of-range `selected`/`highlight`, a panel that fits neither way
+  all clip safely). The `select_demo` example renders a focused open dropdown
+  over a framed form TTY-free.
 
 ### `rstui-runtime`
 
@@ -473,6 +488,7 @@ cargo run -p rstui-widgets --example modal_demo
 cargo run -p rstui-widgets --example status_bar_demo
 cargo run -p rstui-widgets --example toast_demo
 cargo run -p rstui-widgets --example tree_demo
+cargo run -p rstui-widgets --example select_demo
 cargo run -p rstui-runtime --example counter
 ```
 
