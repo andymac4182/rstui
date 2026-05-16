@@ -23,8 +23,10 @@
 //! - paragraphs with soft line-join and word wrap to the area width
 //! - inline **strong** (`**`/`__`), *emphasis* (`*`/`_`),
 //!   `` `code` ``, and backslash escapes
-//! - fenced code blocks (``` ``` ``` / `~~~`) with an info string, drawn with
-//!   a filled background and never reflowed
+//! - fenced code blocks (``` ``` ``` / `~~~`); the info string's language is
+//!   shown as a dim caption and the code gets a deterministic,
+//!   dependency-free generic syntax highlight (strings/numbers/comments/a
+//!   keyword core), drawn on a filled background and never reflowed
 //! - block quotes (`>`), nesting recursively, drawn with a `│ ` rail
 //! - bullet (`-`/`*`/`+`) and ordered (`1.`/`1)`) lists, including nested
 //!   lists and multi-line items via indentation
@@ -120,6 +122,17 @@ pub struct MarkdownTheme {
     /// An `![alt](src)` image's substitute text (terminals can't show the
     /// bitmap, so the alt text stands in for it, distinctly styled).
     pub image: Style,
+    /// The dim language caption above a fenced code block (its info string).
+    pub code_lang: Style,
+    /// Generic syntax accents inside a code block, patched over [`code`](Self::code):
+    /// string literals.
+    pub code_string: Style,
+    /// …numeric literals.
+    pub code_number: Style,
+    /// …line/block comments.
+    pub code_comment: Style,
+    /// …a common cross-language keyword core.
+    pub code_keyword: Style,
 }
 
 impl Default for MarkdownTheme {
@@ -147,6 +160,15 @@ impl Default for MarkdownTheme {
             image: Style::new()
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::ITALIC),
+            code_lang: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+            code_string: Style::new().fg(Color::Green),
+            code_number: Style::new().fg(Color::Magenta),
+            code_comment: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+            code_keyword: Style::new().fg(Color::Blue),
         }
     }
 }
@@ -437,6 +459,9 @@ enum MdBlock {
     Paragraph(Vec<Span<'static>>),
     Code {
         lines: Vec<String>,
+        /// The fenced info string's first word (the language), or empty for
+        /// an indented code block / a bare fence.
+        lang: String,
     },
     Quote(Vec<MdBlock>),
     List {
@@ -535,8 +560,8 @@ fn blocks_into(
                 body.push(l.to_owned());
                 i += 1;
             }
-            let _ = info; // info string (language) is reserved for a later slice
-            out.push(MdBlock::Code { lines: body });
+            let lang = info.split_whitespace().next().unwrap_or("").to_owned();
+            out.push(MdBlock::Code { lines: body, lang });
             continue;
         }
 
@@ -561,7 +586,10 @@ fn blocks_into(
             while body.last().is_some_and(String::is_empty) {
                 body.pop();
             }
-            out.push(MdBlock::Code { lines: body });
+            out.push(MdBlock::Code {
+                lines: body,
+                lang: String::new(),
+            });
             continue;
         }
 
@@ -1846,14 +1874,27 @@ fn layout_blocks(
                 wrap_spans(&styled, width, &[], out);
             }
             MdBlock::Paragraph(spans) => wrap_spans(spans, width, &[], out),
-            MdBlock::Code { lines } => {
-                for l in lines {
-                    let mut row: String = l.chars().take(width).collect();
-                    // Pad to full width so the code background reads as a block.
-                    while row.chars().count() < width {
-                        row.push(' ');
+            MdBlock::Code { lines, lang } => {
+                // The fenced info string's language, shown as a dim caption.
+                if !lang.is_empty() {
+                    let mut cap: String = lang.chars().take(width).collect();
+                    while cap.chars().count() < width {
+                        cap.push(' ');
                     }
-                    out.push(Line::from(Span::styled(row, theme.code)).style(theme.code));
+                    out.push(
+                        Line::from(Span::styled(cap, theme.code.patch(theme.code_lang)))
+                            .style(theme.code),
+                    );
+                }
+                // Generic, deterministic syntax accents under the code
+                // background; one stateful pass so `/* … */` block comments
+                // spanning lines stay one comment.
+                for mut spans in highlight_block(lines, theme) {
+                    let drawn: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                    if drawn < width {
+                        spans.push(Span::styled(" ".repeat(width - drawn), theme.code));
+                    }
+                    out.push(Line::from(clip_spans(spans, width)).style(theme.code));
                 }
             }
             MdBlock::Quote(inner) => {
@@ -1917,6 +1958,245 @@ fn layout_blocks(
             }
         }
     }
+}
+
+/// A common cross-language keyword core for the code-block highlight — a
+/// reading aid, not a parser, so a word that is a keyword in *some* mainstream
+/// language is accented. Sorted for `binary_search`.
+const CODE_KEYWORDS: &[&str] = &[
+    "abstract",
+    "and",
+    "as",
+    "async",
+    "await",
+    "begin",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "class",
+    "const",
+    "continue",
+    "crate",
+    "def",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dyn",
+    "else",
+    "end",
+    "enum",
+    "export",
+    "extends",
+    "extern",
+    "false",
+    "final",
+    "finally",
+    "float",
+    "fn",
+    "for",
+    "from",
+    "function",
+    "if",
+    "impl",
+    "implements",
+    "import",
+    "in",
+    "int",
+    "interface",
+    "is",
+    "lambda",
+    "let",
+    "match",
+    "mod",
+    "move",
+    "mut",
+    "new",
+    "nil",
+    "none",
+    "not",
+    "null",
+    "or",
+    "override",
+    "package",
+    "private",
+    "protected",
+    "pub",
+    "public",
+    "ref",
+    "return",
+    "self",
+    "static",
+    "string",
+    "struct",
+    "super",
+    "switch",
+    "then",
+    "this",
+    "throw",
+    "trait",
+    "true",
+    "try",
+    "type",
+    "typeof",
+    "unsafe",
+    "use",
+    "var",
+    "virtual",
+    "void",
+    "where",
+    "while",
+    "yield",
+];
+
+/// Stateful generic syntax highlight for a fenced/indented code block: one
+/// left-to-right pass per line carrying `/* … */` block-comment state across
+/// lines. Strings (`"`/`'`/`` ` `` with `\` escapes), numbers, `//` and
+/// leading-`#` line comments, block comments, and the [`CODE_KEYWORDS`] core
+/// are accented over [`MarkdownTheme::code`]; everything else stays base.
+fn highlight_block(lines: &[String], theme: &MarkdownTheme) -> Vec<Vec<Span<'static>>> {
+    let base = theme.code;
+    let kw = base.patch(theme.code_keyword);
+    let st = base.patch(theme.code_string);
+    let num = base.patch(theme.code_number);
+    let com = base.patch(theme.code_comment);
+    let mut in_block = false;
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let chars: Vec<char> = line.chars().collect();
+        let n = chars.len();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut buf = String::new();
+        let mut style = base;
+        let push = |s: &mut Vec<Span<'static>>, buf: &mut String, st: Style| {
+            if !buf.is_empty() {
+                s.push(Span::styled(std::mem::take(buf), st));
+            }
+        };
+        let mut i = 0;
+        while i < n {
+            if in_block {
+                let cstart = i;
+                while i < n && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                    i += 1;
+                }
+                let end = if i < n { i + 2 } else { i };
+                let seg: String = chars[cstart..end.min(n)].iter().collect();
+                spans.push(Span::styled(seg, com));
+                if i < n {
+                    in_block = false;
+                }
+                i = end;
+                continue;
+            }
+            let c = chars[i];
+            if c == '/' && chars.get(i + 1) == Some(&'/') {
+                push(&mut spans, &mut buf, style);
+                spans.push(Span::styled(chars[i..].iter().collect::<String>(), com));
+                break;
+            }
+            if c == '/' && chars.get(i + 1) == Some(&'*') {
+                push(&mut spans, &mut buf, style);
+                in_block = true;
+                i += 2;
+                let cstart = i;
+                while i < n && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                    i += 1;
+                }
+                let end = if i < n { i + 2 } else { i };
+                let mut seg = String::from("/*");
+                seg.extend(chars[cstart..end.min(n)].iter());
+                spans.push(Span::styled(seg, com));
+                if i < n {
+                    in_block = false;
+                }
+                i = end;
+                continue;
+            }
+            if c == '#' && buf.trim().is_empty() && spans.is_empty() {
+                push(&mut spans, &mut buf, style);
+                spans.push(Span::styled(chars[i..].iter().collect::<String>(), com));
+                break;
+            }
+            if c == '"' || c == '\'' || c == '`' {
+                push(&mut spans, &mut buf, style);
+                let mut sbuf = String::from(c);
+                i += 1;
+                while i < n {
+                    sbuf.push(chars[i]);
+                    if chars[i] == '\\' && i + 1 < n {
+                        sbuf.push(chars[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                    if chars[i] == c {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                spans.push(Span::styled(sbuf, st));
+                continue;
+            }
+            if c.is_ascii_digit() {
+                // A bare digit reached here is a number start: an identifier
+                // like `a1` was already consumed whole by the word branch.
+                push(&mut spans, &mut buf, style);
+                let s0 = i;
+                while i < n
+                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
+                {
+                    i += 1;
+                }
+                spans.push(Span::styled(chars[s0..i].iter().collect::<String>(), num));
+                continue;
+            }
+            if c.is_ascii_alphabetic() || c == '_' {
+                let s0 = i;
+                while i < n && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let word: String = chars[s0..i].iter().collect();
+                let is_kw = CODE_KEYWORDS
+                    .binary_search(&word.to_ascii_lowercase().as_str())
+                    .is_ok();
+                push(&mut spans, &mut buf, style);
+                spans.push(Span::styled(word, if is_kw { kw } else { base }));
+                style = base;
+                continue;
+            }
+            buf.push(c);
+            i += 1;
+        }
+        push(&mut spans, &mut buf, style);
+        out.push(spans);
+    }
+    out
+}
+
+/// Truncates `spans` to at most `width` columns, dropping/clipping the span
+/// that crosses the edge.
+fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::with_capacity(spans.len());
+    let mut used = 0;
+    for s in spans {
+        if used >= width {
+            break;
+        }
+        let w = s.content.chars().count();
+        if used + w <= width {
+            used += w;
+            out.push(s);
+        } else {
+            let take = width - used;
+            let clipped: String = s.content.chars().take(take).collect();
+            out.push(Span::styled(clipped, s.style));
+            used = width;
+        }
+    }
+    out
 }
 
 /// The display width of a cell: the `char` count across its spans.
@@ -2236,12 +2516,42 @@ mod tests {
 
     #[test]
     fn fenced_code_block_keeps_text_verbatim_and_fills_width() {
+        // A bare fence (no language) has no caption; glyphs are verbatim
+        // (syntax highlight is colour-only) and the row is width-padded.
         let out = lines(Markdown::new("```\nlet x=*y*;\n```"), 12, 1);
         assert_eq!(out, "let x=*y*;  \n");
-        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 1));
+        // A language fence shows a dim caption row, then the code; the code
+        // row's trailing pad still carries the code background.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 2));
         Markdown::new("```rust\nfn f(){}\n```").render(buf.area(), &mut buf);
-        // Trailing padding still carries the code background style.
-        assert_eq!(buf.get(Position::new(11, 0)).unwrap().fg, Color::Yellow);
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 'r'); // "rust"
+        assert_eq!(buf.get(Position::new(0, 1)).unwrap().symbol, 'f'); // code
+        assert_eq!(buf.get(Position::new(11, 1)).unwrap().fg, Color::Yellow);
+        // `fn` is highlighted as a keyword (colour-only, glyph unchanged).
+        assert_eq!(buf.get(Position::new(0, 1)).unwrap().fg, Color::Blue);
+    }
+
+    #[test]
+    fn fenced_code_syntax_highlight_accents_tokens_deterministically() {
+        // Caption row + a line with a keyword, number, string, comment.
+        let src = "```js\nlet n = 42 + \"hi\"; // note\n```";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 32, 2));
+        Markdown::new(src).render(buf.area(), &mut buf);
+        let row1: String = (0..32)
+            .map(|x| buf.get(Position::new(x, 1)).unwrap().symbol)
+            .collect();
+        // Glyphs are verbatim (highlight is colour-only).
+        assert!(row1.starts_with("let n = 42 + \"hi\"; // note"));
+        let fg = |x| buf.get(Position::new(x, 1)).unwrap().fg;
+        assert_eq!(fg(0), Color::Blue); // `let` keyword
+        assert_eq!(fg(8), Color::Magenta); // `42` number
+        assert_eq!(fg(13), Color::Green); // string `"`
+        assert_eq!(fg(19), Color::DarkGray); // `//` comment
+        // The caption row shows the language.
+        let cap: String = (0..2)
+            .map(|x| buf.get(Position::new(x, 0)).unwrap().symbol)
+            .collect();
+        assert_eq!(cap, "js");
     }
 
     #[test]
@@ -2567,7 +2877,8 @@ mod tests {
         assert_eq!(
             blocks,
             vec![MdBlock::Code {
-                lines: vec!["let x = *y*;".to_owned()]
+                lines: vec!["let x = *y*;".to_owned()],
+                lang: String::new(),
             }]
         );
         // Verbatim: the `*y*` is NOT italicised, and 4 spaces were stripped.
