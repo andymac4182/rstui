@@ -46,11 +46,13 @@ end: the `run_app` example runs an unmodified `App` on a real terminal via
 the *same* `run` the headless harness tests drive. A feature-gated async
 `EventStream` source is a future enhancement. Other planned
 boundaries as the framework grows: a broader component set (the `Widget`
-trait lives in core; core now has two concrete widgets — `Block` and
-`Paragraph` — so the next natural slice is extracting an `rstui-widgets`
-crate, a mechanical relocation done on its own once the move is the only
-change), more examples, and a permissioned plugin host built on process
-isolation.
+trait stays in core; the two concrete widgets — `Block` and `Paragraph` —
+move out to a single grouped `rstui-widgets` crate per
+[ADR 0002](docs/adr/0002-widget-crate-boundary.md), with `set_cell`
+promoted to a public `Buffer` method so third-party widgets share the
+authoring contract — the next slice is that mechanical relocation, done
+on its own once the move is the only change), more examples, and a
+permissioned plugin host built on process isolation.
 
 ### `rstui-core`
 
@@ -191,6 +193,15 @@ context, the options weighed, the decision, and the evidence behind it.
   the trait stays the single seam so an optional high-fidelity `rstui-termwiz`
   crate remains possible later. Also fixes the four-layer end-to-end testing
   contract every new capability must satisfy.
+- [ADR 0002 — Widget crate boundary](docs/adr/0002-widget-crate-boundary.md):
+  concrete widgets move out of `rstui-core` into a single grouped
+  `rstui-widgets` crate (one module per widget, **not** one crate per
+  widget); `rstui-core` keeps the `Widget` trait and the primitives; the
+  bounds-safe cell-stamping helper becomes a public `Buffer` method so
+  third-party widget crates have the same authoring contract; a widget is
+  feature-gated only when it adds a transitive dependency; an umbrella
+  `rstui` crate is deferred until a second backend or a feature-gated
+  widget exists.
 
 ## Build & test
 

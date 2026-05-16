@@ -31,3 +31,4 @@ MADR-style shape:
 | ADR | Title | Status |
 | --- | ----- | ------ |
 | [0001](0001-terminal-backend-strategy.md) | Terminal backend strategy | Accepted |
+| [0002](0002-widget-crate-boundary.md) | Widget crate boundary | Accepted |
