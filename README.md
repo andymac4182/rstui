@@ -222,6 +222,16 @@ context, the options weighed, the decision, and the evidence behind it.
   feature-gated only when it adds a transitive dependency; an umbrella
   `rstui` crate is deferred until a second backend or a feature-gated
   widget exists.
+- [ADR 0003 — Lint and code-quality policy](docs/adr/0003-lint-and-code-quality-policy.md):
+  an evidence-shaped tiered policy rolled out in reviewable phases.
+  Clippy default groups stay denied in CI; `clippy::pedantic` is
+  opt-in at `warn` with an explicit allow-list and lands as its own
+  slice; `nursery`/`cargo`/`restriction` groups are never adopted
+  wholesale; `unsafe_code`/`missing_docs` consolidate into
+  `[workspace.lints.*]`; a `cargo doc` `-D warnings` gate closes the
+  rustdoc silent-failure gap; supply-chain (`cargo-deny`,
+  `cargo-machete`), an MSRV CI leg, and the vague-generic-naming
+  check are sequenced as later independent slices.
 
 ## Build & test
 
