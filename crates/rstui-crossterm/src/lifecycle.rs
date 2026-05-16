@@ -54,7 +54,7 @@
 //! leaves it. That gap is closed one level up by the [`shell`](crate::shell)
 //! module's process-global panic hook, which restores the terminal *before*
 //! the message prints. Restore content is single-sourced here —
-//! [`queue_leave_sequence`] is the *one* definition of the leave sequence, and
+//! `queue_leave_sequence` is the *one* definition of the leave sequence, and
 //! both this guard's [`Drop`] and the shell's panic hook call it — so the
 //! on-panic restore provably cannot drift from normal teardown.
 

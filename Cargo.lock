@@ -187,6 +187,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-bench"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+]
+
+[[package]]
 name = "rstui-core"
 version = "0.0.1"
 

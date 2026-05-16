@@ -14,7 +14,7 @@
 //! input translation ([`from_crossterm`]), the [`CrosstermBackend`] drawing
 //! seam, the [`TerminalGuard`] panic-safe lifecycle guard, the
 //! [`CrosstermEventSource`] input source, and [`run_app`] — the ergonomic
-//! entry point that composes all four with [`rstui_runtime::run`] and a
+//! entry point that composes all four with [`rstui_runtime::run()`] and a
 //! panic-restore hook. The framework now composes end to end: the same
 //! `rstui_runtime::run` the headless harness tests drive runs an unmodified
 //! app on a real terminal in a single call (see the `run_app` example). A

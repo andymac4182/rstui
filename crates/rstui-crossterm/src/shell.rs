@@ -2,10 +2,10 @@
 //!
 //! [`run_app`] is the ergonomic capstone the lower slices built toward. The
 //! `run_app` example used to hand-compose four things —
-//! [`CrosstermBackend`](crate::CrosstermBackend) over stdout, a
-//! [`TerminalGuard`](crate::TerminalGuard), a
-//! [`CrosstermEventSource`](crate::CrosstermEventSource), and
-//! [`rstui_runtime::run`] — in every `main`. That composition is always the
+//! [`CrosstermBackend`] over stdout, a
+//! [`TerminalGuard`], a
+//! [`CrosstermEventSource`], and
+//! [`rstui_runtime::run()`] — in every `main`. That composition is always the
 //! same, so this module owns it once:
 //!
 //! ```no_run
@@ -30,7 +30,7 @@
 //!
 //! # Panic policy: the terminal *and* the panic message both survive
 //!
-//! [`TerminalGuard`](crate::TerminalGuard)'s [`Drop`] already restores the
+//! [`TerminalGuard`]'s [`Drop`] already restores the
 //! terminal while unwinding from a panic — that guarantee is proven in memory
 //! in the [`lifecycle`](crate::lifecycle) tests. What it cannot do alone is
 //! make the panic *message readable*: Rust's default panic hook prints
@@ -135,10 +135,10 @@ fn install_panic_restore_hook() {
 ///
 /// One call replaces the four-seam hand-composition: it installs the
 /// [panic-restore hook](self#panic-policy-the-terminal-and-the-panic-message-both-survive),
-/// builds a [`CrosstermBackend`](crate::CrosstermBackend) over stdout wrapped
-/// in a [`TerminalGuard`](crate::TerminalGuard), reads input through a
-/// [`CrosstermEventSource`](crate::CrosstermEventSource), and drives the
-/// *identical* [`rstui_runtime::run`] loop the headless
+/// builds a [`CrosstermBackend`] over stdout wrapped
+/// in a [`TerminalGuard`], reads input through a
+/// [`CrosstermEventSource`], and drives the
+/// *identical* [`rstui_runtime::run()`] loop the headless
 /// [`Harness`](rstui_runtime::Harness) tests exercise. The app is therefore
 /// unchanged between `cargo test` and production.
 ///
@@ -149,7 +149,7 @@ fn install_panic_restore_hook() {
 ///
 /// Returns [`CrosstermRunError::Backend`] if entering the terminal modes or a
 /// later render fails, or [`CrosstermRunError::Input`] if reading the terminal
-/// fails. On any return path the [`TerminalGuard`](crate::TerminalGuard)'s
+/// fails. On any return path the [`TerminalGuard`]'s
 /// [`Drop`] has already restored the terminal.
 pub fn run_app<A: App>(app: A) -> Result<A, CrosstermRunError> {
     run_app_with(app, LifecycleOptions::default())

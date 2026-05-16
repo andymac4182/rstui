@@ -105,8 +105,9 @@ const STEPS: &[Step] = &[
 
 /// The `cargo` binary to drive sub-gates with: cargo sets `$CARGO` to its own
 /// path when it invokes an xtask, so reusing it pins every gate to the same
-/// toolchain that launched `xtask`; `cargo` on `PATH` is the fallback.
-fn cargo_bin() -> String {
+/// toolchain that launched `xtask`; `cargo` on `PATH` is the fallback. Shared
+/// with the `bench` task so it builds `rstui-bench` with that same toolchain.
+pub(crate) fn cargo_bin() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
@@ -217,6 +218,18 @@ mod tests {
             );
             seen.push(step.label);
         }
+    }
+
+    /// Benchmarks are deliberately *not* a gate: `xtask ci` must stay fast
+    /// for the inner loop (ADR 0005). If a future slice folds a `bench` step
+    /// into the gate sequence, this fails — the fast-loop / slow-loop split
+    /// is a contract, not an accident.
+    #[test]
+    fn bench_is_never_a_ci_gate() {
+        assert!(
+            !STEPS.iter().any(|s| s.label.contains("bench")),
+            "benchmarks must stay out of `xtask ci`; run them via `xtask bench`"
+        );
     }
 
     /// Exactly one gate is the in-process naming scan; everything else is a
