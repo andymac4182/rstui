@@ -239,6 +239,7 @@ context, the options weighed, the decision, and the evidence behind it.
 cargo test --all-features
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace
 cargo run -p rstui-core --example buffer_demo
 cargo run -p rstui-core --example terminal_loop
 cargo run -p rstui-widgets --example block_demo
@@ -247,7 +248,10 @@ cargo run -p rstui-widgets --example paragraph_demo
 cargo run -p rstui-runtime --example counter
 ```
 
-CI runs the same fmt, clippy, and test gates on every push and pull request.
+CI runs the same fmt, clippy, doc (`-D warnings`), and test gates on every
+push and pull request. Lint policy lives in one place — the
+`[workspace.lints.*]` tables in the root `Cargo.toml` — per
+[ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md).
 
 ## GNHF Claude Runner
 

@@ -1,12 +1,12 @@
 //! The crossterm [`EventSource`]: blocking/timed reads, unmodeled input skipped.
 //!
 //! [`CrosstermEventSource`] is the production side of the
-//! [`EventSource`](rstui_core::event_source::EventSource) seam `rstui-core`
+//! [`EventSource`] seam `rstui-core`
 //! defines — the input dual of [`CrosstermBackend`](crate::CrosstermBackend).
 //! It folds crossterm's `poll`-then-`read` pair into the single timed
 //! [`poll_event`](EventSource::poll_event) call the runtime loop wants, and
 //! translates each native event through the already-tested
-//! [`from_crossterm`](crate::from_crossterm) map.
+//! [`from_crossterm`] map.
 //!
 //! With this slice the whole framework composes end to end: the same
 //! `rstui_runtime::run` the headless harness tests drive now runs an
@@ -16,7 +16,7 @@
 //!
 //! # Two poll modes, two meanings of `Ok(None)`
 //!
-//! The [`EventSource`](rstui_core::event_source::EventSource) contract overloads
+//! The [`EventSource`] contract overloads
 //! `Ok(None)` and disambiguates it by the caller's `timeout`:
 //!
 //! - **`Some(timeout)` — a bounded wait.** Exactly one `poll`, then *at most
@@ -49,7 +49,7 @@
 //! # Testability: the one PTY-only surface is two crossterm calls
 //!
 //! Mirroring [`CrosstermBackend`](crate::CrosstermBackend) being generic over
-//! [`std::io::Write`], the source is generic over a private [`RawEventReader`]
+//! [`std::io::Write`], the source is generic over a private `RawEventReader`
 //! seam. The real reader ([`CrosstermReader`]) is the *only* part that touches
 //! the terminal device — its two `crossterm::event::{poll, read}` calls are the
 //! sole ADR 0001 testing-layer L4c (PTY) surface. Every branch of the decision
@@ -84,7 +84,7 @@ trait RawEventReader {
     fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
 }
 
-/// The production [`RawEventReader`]: crossterm's global terminal input.
+/// The production `RawEventReader`: crossterm's global terminal input.
 ///
 /// Zero-sized; it forwards to `crossterm::event::poll`/`read`, which read the
 /// process-global terminal device. This is the sole genuinely TTY-bound surface
@@ -104,7 +104,7 @@ impl RawEventReader for CrosstermReader {
     }
 }
 
-/// An [`EventSource`](rstui_core::event_source::EventSource) reading a crossterm
+/// An [`EventSource`] reading a crossterm
 /// terminal and translating input into rstui's [`Event`] vocabulary.
 ///
 /// Construct it with [`new`](CrosstermEventSource::new) and hand it (with a

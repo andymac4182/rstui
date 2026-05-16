@@ -1,7 +1,7 @@
 //! The crossterm [`Backend`] implementation: rstui cells become queued ANSI.
 //!
 //! [`CrosstermBackend`] is the production side of the
-//! [`Backend`](rstui_core::backend::Backend) seam `rstui-core` defines. It is
+//! [`Backend`] seam `rstui-core` defines. It is
 //! generic over any [`std::io::Write`], which is the property that keeps the
 //! one non-deterministic crate testable: every escape sequence it emits can be
 //! asserted against an in-memory `Vec<u8>` with **no terminal involved** (ADR

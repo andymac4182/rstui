@@ -8,7 +8,7 @@
 //!
 //! Every widget here follows the exact pattern a third-party widget crate
 //! follows — depend on `rstui-core`, implement
-//! [`rstui_core::Widget`](rstui_core::Widget), stamp glyphs through the public
+//! [`rstui_core::Widget`], stamp glyphs through the public
 //! [`Buffer::set_cell`](rstui_core::Buffer::set_cell) /
 //! [`Buffer::set_str`](rstui_core::Buffer::set_str) /
 //! [`Buffer::set_style`](rstui_core::Buffer::set_style) contract, and
@@ -35,9 +35,6 @@
 //! assert_eq!(buf.get(Position::new(1, 0)).unwrap().symbol, 'H');
 //! assert_eq!(Block::bordered().inner(buf.area()), Rect::new(1, 1, 4, 1));
 //! ```
-
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod block;
 pub mod paragraph;

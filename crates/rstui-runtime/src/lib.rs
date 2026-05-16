@@ -14,13 +14,13 @@
 //! - [`Harness`]: a deterministic, terminal-free driver that runs the real
 //!   loop over a [`TestBackend`](rstui_core::TestBackend) so whole apps are
 //!   unit-testable with no TTY, threads, or clock.
-//! - [`run`]: the **live** event loop — generic over a real
+//! - [`run()`]: the **live** event loop — generic over a real
 //!   [`Backend`](rstui_core::Backend) + [`EventSource`](rstui_core::EventSource)
 //!   — that drives an [`App`] on an actual terminal.
 //!
-//! [`run`] and [`Harness`] share one [`settle`](run::settle) command-settling
+//! [`run()`] and [`Harness`] share one `settle` command-settling
 //! core, so the *same* `App`/`Cmd` code runs under the headless [`Harness`] in
-//! tests and under [`run`] on a real terminal with no changes — the harness is
+//! tests and under [`run()`] on a real terminal with no changes — the harness is
 //! not merely *a* reference for the live loop, it is literally the same reducer
 //! logic with a [`TestBackend`](rstui_core::TestBackend) and scripted input
 //! swapped in. [`Event`] and [`Frame`] are re-exported from `rstui-core` so an
@@ -75,9 +75,6 @@
 //! assert_eq!(harness.snapshot(), "hello rstui\n");
 //! assert!(harness.is_running());
 //! ```
-
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod app;
 pub mod cmd;

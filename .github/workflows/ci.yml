@@ -30,5 +30,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # ADR 0003 §4 / Phase 1: the rustdoc gate. Closes the silent-failure
+      # gap where broken intra-doc links and missing docs on new public
+      # items previously passed CI. RUSTDOCFLAGS is scoped to this step so
+      # it does not alter the doctest run in Test.
+      - name: Docs
+        run: cargo doc --no-deps --all-features --workspace
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
       - name: Test
         run: cargo test --all-features

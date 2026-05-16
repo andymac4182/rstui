@@ -138,7 +138,7 @@ impl Default for LifecycleOptions {
 /// An RAII guard that enables terminal modes and restores them on drop.
 ///
 /// Wraps a [`CrosstermBackend`] and *is itself* a
-/// [`Backend`](rstui_core::backend::Backend) (it delegates every method to the
+/// [`Backend`] (it delegates every method to the
 /// inner backend), so it drops straight into
 /// [`Terminal::new`](rstui_core::Terminal::new) and gives a single panic-safe
 /// ownership chain `Terminal -> TerminalGuard -> CrosstermBackend -> W`. When

@@ -38,7 +38,7 @@
 //! This is `std` only, so the core stays dependency-free.
 //!
 //! Width is a [`char`] count, *not* a Unicode display width — the same
-//! single-`char`-cell simplification [`Buffer`](crate::Buffer) already makes;
+//! single-`char`-cell simplification [`Buffer`] already makes;
 //! grapheme clustering and double-width handling remain one deferred renderer
 //! concern rather than leaking into the text model. Word wrapping, scrolling,
 //! and trimming belong to a future `Paragraph` widget, not these primitives: a

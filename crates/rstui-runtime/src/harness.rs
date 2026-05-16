@@ -12,9 +12,10 @@
 //! ## Command settling
 //!
 //! After every input the harness processes commands to a fixed point: a
-//! [`perform`](Cmd::perform) message re-enters [`update`](App::update), whose
-//! returned command is processed too, breadth-first and in order, until no
-//! work remains. A [`quit`](Cmd::quit) stops the program; further input is
+//! [`perform`](crate::Cmd::perform) message re-enters [`update`](App::update),
+//! whose returned command is processed too, breadth-first and in order, until
+//! no work remains. A [`quit`](crate::Cmd::quit) stops the program; further
+//! input is
 //! then ignored. A pathological app that produces messages without end is
 //! bounded by [`command_budget`](Harness::with_command_budget) and panics
 //! rather than hanging a test.
@@ -160,7 +161,8 @@ impl<A: App> Harness<A> {
         &self.app
     }
 
-    /// Whether the app is still running (no [`Cmd::quit`] has settled).
+    /// Whether the app is still running (no [`Cmd::quit`](crate::Cmd::quit) has
+    /// settled).
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.running

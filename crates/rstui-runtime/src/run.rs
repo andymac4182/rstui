@@ -3,7 +3,7 @@
 //! [`run`] drives an [`App`] over a real [`Backend`] and [`EventSource`] with
 //! the *exact same* ordering and command-settling rule the headless
 //! [`Harness`](crate::Harness) uses — because they call the same
-//! [`settle`] state machine. The harness is therefore not merely *a*
+//! `settle` state machine. The harness is therefore not merely *a*
 //! reference for the live loop; it is literally the same reducer logic with a
 //! [`TestBackend`](rstui_core::TestBackend) and a scripted
 //! [`TestEventSource`](rstui_core::TestEventSource) swapped in for the real
@@ -109,7 +109,7 @@ use crate::cmd::Cmd;
 /// before the command loop gives up. Generous enough for real cascades, low
 /// enough to fail a runaway reducer fast.
 ///
-/// This bounds the shared [`settle`] state machine, so it governs both the
+/// This bounds the shared `settle` state machine, so it governs both the
 /// live [`run`] loop and the headless [`Harness`](crate::Harness) identically.
 pub const DEFAULT_COMMAND_BUDGET: usize = 1024;
 
@@ -238,7 +238,7 @@ fn render<A: App, B: Backend>(terminal: &mut Terminal<B>, app: &A) -> Result<(),
 /// Returns [`RunError::Backend`] if a render / terminal operation fails, or
 /// [`RunError::Input`] if reading the next event fails. A runaway reducer
 /// (a command cascade that never settles) panics rather than erroring — see
-/// [`settle`].
+/// `settle`.
 pub fn run<A, B, S>(
     mut app: A,
     backend: B,

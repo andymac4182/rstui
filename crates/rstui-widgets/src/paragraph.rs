@@ -1,7 +1,7 @@
 //! [`Paragraph`] — the multi-line text widget for logs, help text,
 //! descriptions, and any scrollable read-only copy.
 //!
-//! [`Text`](rstui_core::Text) / [`Line`](rstui_core::Line) /
+//! [`Text`] / [`Line`](rstui_core::Line) /
 //! [`Span`](rstui_core::Span) render exactly as written and clip at the right
 //! edge — that is the whole core text model. `Paragraph` is the widget that
 //! adds what real content panes need on top of it: soft word [`Wrap`], a
@@ -27,7 +27,7 @@ pub struct Wrap {
 /// A multi-line text widget with optional word [`Wrap`], scroll, alignment,
 /// and a framing [`Block`].
 ///
-/// [`Text`](rstui_core::Text) / [`Line`](rstui_core::Line) /
+/// [`Text`] / [`Line`](rstui_core::Line) /
 /// [`Span`](rstui_core::Span) render exactly as written and clip at the right
 /// edge — that is the whole text model. `Paragraph` is the widget that adds
 /// what real content panes need on top of it: soft word wrapping to the
@@ -36,7 +36,7 @@ pub struct Wrap {
 /// descriptions, and any scrollable read-only copy.
 ///
 /// Styling cascades paragraph → text → line → span (the same
-/// [`Style::patch`](rstui_core::Style) model [`Text`](rstui_core::Text) uses);
+/// [`Style::patch`](rstui_core::Style) model [`Text`] uses);
 /// the paragraph style also fills the content area so a background covers the
 /// whole region.
 ///

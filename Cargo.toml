@@ -11,7 +11,26 @@ repository = "https://github.com/andymac4182/rstui"
 authors = ["The rstui authors"]
 description = "An idiomatic Rust TUI framework for building powerful terminal applications quickly."
 
+# ADR 0003 makes `[workspace.lints.*]` the single source of truth for lint
+# policy; every crate opts in with `[lints] workspace = true`.
+
+[workspace.lints.rust]
+# ADR 0003 §1: consolidated from the former per-crate `lib.rs` inner
+# attributes (behavior-identical: same lints, same levels, workspace-wide).
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.rustdoc]
+# ADR 0003 §4: close the only silent-failure gap — broken intra-doc links
+# and invalid codeblocks now fail the `cargo doc` CI gate instead of
+# passing silently.
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+invalid_codeblock_attributes = "deny"
+unescaped_backticks = "warn"
+
 [workspace.lints.clippy]
 # Keep the core honest without opting into the full pedantic firehose.
+# ADR 0003 §3 schedules `clippy::pedantic` as its own later (Phase 2) slice.
 uninlined_format_args = "warn"
 needless_pass_by_value = "warn"

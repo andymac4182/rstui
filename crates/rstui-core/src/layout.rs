@@ -4,7 +4,8 @@
 //! [`Direction`], and a list of [`Constraint`]s, and divides the area into one
 //! contiguous [`Rect`] per constraint. The segments always tile the available
 //! span exactly — there are no gap cells the caller has to reason about — which
-//! is the property that makes layouts compose cleanly with [`Buffer`] drawing.
+//! is the property that makes layouts compose cleanly with
+//! [`Buffer`](crate::Buffer) drawing.
 //!
 //! ```text
 //! Layout::horizontal([Length(10), Fill(1)]).split(area)

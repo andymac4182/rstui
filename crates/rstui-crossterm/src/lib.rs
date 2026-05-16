@@ -144,9 +144,6 @@
 //! drop(guard); // matching disable sequence sent (here, and on panic unwind)
 //! ```
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
 pub mod backend;
 pub mod event;
 pub mod event_source;

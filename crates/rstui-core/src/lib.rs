@@ -55,9 +55,6 @@
 //! assert!(cell.modifier.contains(Modifier::BOLD));
 //! ```
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
 pub mod backend;
 pub mod buffer;
 pub mod event;
