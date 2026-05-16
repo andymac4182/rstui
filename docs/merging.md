@@ -35,6 +35,30 @@ checkout, or push: GO means "now do the serialized merge-back below"; the
 merged-main re-validation in step 5 is still mandatory and still yours to
 judge. NO-GO names the one thing to fix.
 
+## Enforcement model
+
+Two layers, deliberately:
+
+- **Pre-push (prevention), by the brief.** `cargo xtask merge-check` plus the
+  serialized protocol below. This is carried by the stream brief, which a
+  session reads *once at start* — so a hardened protocol reaches a stream
+  only on its next launch. New launches are correct by construction;
+  already-running stragglers are not retroactively fixed, and that is
+  accepted: the quality stream fix-forwards their breakage (the recurring
+  rustdoc class has a known, mechanical fix below).
+- **Post-push (backstop), by CI — authoritative.** `.github/workflows/ci.yml`
+  runs on **every push to `main`** and every PR: the 5-gate `check` job
+  *plus* the `msrv`, `unused-deps`, and `supply-chain` legs. A red `main`
+  pushed by any stream is therefore caught by CI within minutes, regardless
+  of whether that stream ran `merge-check`. CI re-running the exact gates on
+  the pushed commit *is* the "the merged tree is green" check — a bespoke
+  equivalent is not built because it would duplicate CI for no added signal
+  (and the fix for a missed red `main` is the same fix-forward either way).
+
+So: prevention is best-effort and improves every relaunch; detection is
+guaranteed and immediate. The one thing never acceptable is *staying* red —
+see below.
+
 ## Checklist
 
 Set up:
