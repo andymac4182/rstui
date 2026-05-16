@@ -39,8 +39,10 @@ while staying idiomatic to Rust.
 > panic-safe RAII lifecycle guard, **and `CrosstermEventSource` input source**
 > exist and are tested. **The framework now composes end to end — the same
 > `run` the headless tests drive runs an unmodified app on a real terminal**
-> (the `run_app` example). A broader component set and the plugin host are
-> not built yet.
+> (the `run_app` example). A broader component set is still growing; the
+> permissioned plugin host has landed its dependency-free foundation crate
+> (`rstui-plugin-host`, [ADR 0007](docs/adr/0007-plugin-host-and-secure-execution.md)),
+> with the host mediation loop the next slice.
 
 ## Workspace
 
@@ -53,6 +55,7 @@ only when there is enough real API surface to justify the boundary.
 | `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Markdown`, `Modal`, `StatusBar`, `Toast`, `Tree`, `Select`, and `Editor` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
+| `crates/rstui-plugin-host` | Dependency-free permissioned plugin host ([ADR 0007](docs/adr/0007-plugin-host-and-secure-execution.md)): plugins run as separate OS processes the host fully mediates, deny-by-default. The closed four-capability model, the strict fail-closed manifest parser, the manifest-derived `PermissionPolicy`, the hand-rolled length-prefixed frame codec, and the `ProcessRunner`/`PluginProcess` seam with in-memory fakes so the security boundary is `Harness`-grade deterministically testable. No `unsafe`, no dependencies |
 | `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
 
 The `rstui-crossterm` crate ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md))
@@ -73,8 +76,13 @@ ship there
 today, with `Buffer::set_cell` the public cell-stamping contract third-party widgets
 build on; `Alignment`
 stays in `rstui-core::layout` as the placement primitive the text model
-needs), more widgets and examples, and a permissioned plugin host built on
-process isolation.
+needs), more widgets and examples, and the permissioned plugin host
+([ADR 0007](docs/adr/0007-plugin-host-and-secure-execution.md)) — whose
+dependency-free, no-`unsafe` foundation crate `rstui-plugin-host`
+(manifest, the closed capability model, the manifest-derived
+`PermissionPolicy`, the fail-closed frame codec, and the fakeable
+`ProcessRunner` seam) has landed, with the host mediation loop and the
+real `std::process` runner as the next slices.
 
 ### `rstui-core`
 

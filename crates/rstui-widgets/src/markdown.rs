@@ -33,7 +33,7 @@
 //!   width-fitted box-drawing grid with per-column alignment
 //! - `[text](href)` links and `<autolink>`s: the label is styled and the
 //!   targets are exposed in reading order by [`Markdown::links`] (the
-//!   [`Link`](crate::Link) activation registry), keeping the href out of the
+//!   [`Link`] activation registry), keeping the href out of the
 //!   rendered glyphs
 //!
 //! Deliberately out of scope for this slice (each an additive follow-up that

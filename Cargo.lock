@@ -207,6 +207,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-plugin-host"
+version = "0.0.1"
+
+[[package]]
 name = "rstui-runtime"
 version = "0.0.1"
 dependencies = [
