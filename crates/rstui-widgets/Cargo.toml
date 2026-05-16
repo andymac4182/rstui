@@ -16,3 +16,9 @@ workspace = true
 # `Widget` trait, `Buffer`/`Cell`, geometry, style, layout, the text model.
 # Any third-party widget crate has exactly this shape.
 rstui-core = { path = "../rstui-core" }
+
+[dev-dependencies]
+# Examples only: the Harness-driven `input_demo` composes the widget with the
+# Elm runtime. Acyclic — `rstui-runtime` never depends on `rstui-widgets`
+# (same pattern as `rstui-crossterm`'s dev-dependency on `rstui-runtime`).
+rstui-runtime = { path = "../rstui-runtime" }

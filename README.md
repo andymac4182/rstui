@@ -19,13 +19,14 @@ while staying idiomatic to Rust.
 > indicator, the animated `Spinner` busy indicator, the column-aligned
 > `Table` grid (optional header, single-row selection), the labelled
 > boolean `Checkbox` control, the centred focusable `Button` action
-> label and the exclusive-choice `Radio` control (the form-control
-> family, with a focus visual), the optional caller-owned `focus` model
-> (`FocusId` value tokens plus a pure, total, wrapping `FocusRing`) those
-> controls' `focused: bool` projects from, the optional caller-owned
-> single-line text-editing model (`TextEdit`, a pure, total
-> `String`+character-cursor value an `Input` widget will project), the
-> styled-text
+> label, the exclusive-choice `Radio` control and the single-line
+> text-entry `Input` field (the form-control family, with a focus
+> visual), the optional caller-owned `focus` model (`FocusId` value
+> tokens plus a pure, total, wrapping `FocusRing`) those controls'
+> `focused: bool` projects from, the optional caller-owned single-line
+> text-editing model (`TextEdit`, a pure, total
+> `String`+character-cursor value the `Input` widget projects with a
+> rendered caret), the styled-text
 > model (`Span`/`Line`/`Text`) with the `Stylize` fluent shorthand
 > (`"x".green().bold()`, `.on_blue()`), the Elm-style
 > `App`/`Cmd`/`Harness` runtime **plus the live `run` loop (the production
@@ -45,7 +46,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, and `Radio` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, and `Input` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
@@ -63,7 +64,7 @@ boundaries as the framework grows: a broader component set (the `Widget`
 trait stays in core; concrete widgets live in the grouped `rstui-widgets`
 crate per [ADR 0002](docs/adr/0002-widget-crate-boundary.md), now extracted
 — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`,
-`Table`, `Checkbox`, `Button`, and `Radio` ship there today, with
+`Table`, `Checkbox`, `Button`, `Radio`, and `Input` ship there today, with
 `Buffer::set_cell` the public cell-stamping contract third-party widgets
 build on; `Alignment`
 stays in `rstui-core::layout` as the placement primitive the text model
@@ -232,6 +233,21 @@ crate copies.
   convenience (one owned index + layout) is a deliberately deferred
   *additive* future widget. A leaf control like `Checkbox` — no framing
   `Block`, one row — and **total** (narrow/empty/multi-row areas clip safely).
+- `input` — `Input`: a single-line **text-entry** field, the fourth form
+  control, the **first text-edit/cursor widget**, and the first
+  [`focus`](docs/adr/0004-focus-routing-architecture.md) consumer. A **pure
+  projection** of a *borrowed* caller-owned `TextEdit` (the rstui-core
+  `String`+character-cursor model) plus `focused`. The widget cannot reach the
+  `Frame`, so it draws its **own** caret (default reverse-video at the cursor
+  column) rather than the terminal hardware cursor — the only TTY-free
+  snapshot-testable choice, and the OpenTUI-aligned one. The caret-following
+  horizontal scroll is a **stateless pure function of cursor + width** (no
+  caller-owned scroll state; a `List`-style owned `offset` is a deferred
+  additive). `focus_style` is the same patched-last full-width bar the other
+  form controls use; an optional `placeholder` shows while empty. A leaf
+  control like `Checkbox` — no framing `Block`, one row — and **total**
+  (one-cell/empty/multi-byte/multi-row areas clip safely). Driven end to end
+  across two fields via `Harness` in the `input_demo` example.
 
 ### `rstui-runtime`
 
@@ -351,13 +367,14 @@ context, the options weighed, the decision, and the evidence behind it.
   pure, model-resident `rstui_core::focus` primitive (`FocusId` +
   a total, wrapping `FocusRing`) that reduces the boilerplate has
   landed (Follow-up §1), as has its editing-side dual
-  `rstui_core::text_edit::TextEdit` (Follow-up §2's caller-owned,
-  total single-line text-edit model); the `Input` widget that
-  projects `TextEdit` + `focused` is the next slice. Terminal
+  `rstui_core::text_edit::TextEdit` and the `rstui-widgets` `Input`
+  widget that projects a borrowed `TextEdit` + `focused` (the first
+  `FocusRing` consumer), driven across two fields via `Harness` in
+  the `input_demo` example — **Follow-up §2 is complete**. Terminal
   `FocusGained`/`FocusLost` stay distinct from widget focus. The
   modal focus capture/restore/declarative-trapping model is decided
-  here and its `Modal`/`FocusScope` mechanical landing is sequenced
-  as a later slice.
+  here and its `Modal`/`FocusScope` mechanical landing is the next
+  sequenced slice (Follow-up §3).
 
 ## Build & test
 
@@ -381,6 +398,7 @@ cargo run -p rstui-widgets --example table_demo
 cargo run -p rstui-widgets --example checkbox_demo
 cargo run -p rstui-widgets --example button_demo
 cargo run -p rstui-widgets --example radio_demo
+cargo run -p rstui-widgets --example input_demo
 cargo run -p rstui-runtime --example counter
 ```
 

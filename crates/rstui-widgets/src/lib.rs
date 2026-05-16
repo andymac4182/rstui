@@ -52,6 +52,11 @@
 //!   caller-owned `selected` (the data, the [`List`]-style selection concept)
 //!   and `focused`. Exactly-one-per-group is the caller's invariant, not the
 //!   widget's (a `RadioGroup` convenience is a deliberately deferred additive).
+//! - [`input`]: [`Input`] — a single-line text-entry field, the first
+//!   text-edit/cursor widget and the first [`focus`](rstui_core::focus)
+//!   consumer; a pure projection of a borrowed caller-owned
+//!   [`TextEdit`](rstui_core::TextEdit) plus `focused`, with a rendered (not
+//!   terminal) caret and a stateless caret-following horizontal scroll.
 //!
 //! # Example
 //!
@@ -71,6 +76,7 @@ pub mod block;
 pub mod button;
 pub mod checkbox;
 pub mod gauge;
+pub mod input;
 pub mod list;
 pub mod paragraph;
 pub mod radio;
@@ -83,6 +89,7 @@ pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use button::Button;
 pub use checkbox::Checkbox;
 pub use gauge::Gauge;
+pub use input::Input;
 pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
 pub use radio::Radio;
