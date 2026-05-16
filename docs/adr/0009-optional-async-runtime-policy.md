@@ -1,11 +1,22 @@
 # ADR 0009: Optional async-runtime policy (feature-gated tokio)
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0011](0011-async-event-loop.md)
 - **Date:** 2026-05-17
 - **Deciders:** rstui maintainers
 - **Supersedes:** — (closes the "async / `EventStream`" item left
   deferred by [ADR 0008](0008-async-command-executor.md) §Follow-up and
   anticipated by [ADR 0001](0001-terminal-backend-strategy.md))
+
+> **Superseded by [ADR 0011](0011-async-event-loop.md) (2026-05-17).** This
+> ADR shipped `run_async` as "sync loop + tokio `spawn_blocking`" and
+> *deferred* the async event loop. That deferral was reversed by an explicit
+> maintainer decision to build the real `tokio::select!` event loop;
+> ADR 0011 redefines the `async` feature accordingly and removes the
+> strictly-inferior sync-loop variant (pre-1.0, feature-gated, no external
+> users). The policy half of this ADR — tokio stays *optional, off by
+> default, justified, documented; the default build is tokio-free* — is
+> **carried forward unchanged** by ADR 0011. Retained as the historical
+> record of why the interim step existed.
 
 ## Context
 
