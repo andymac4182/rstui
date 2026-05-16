@@ -1,6 +1,6 @@
 Build rstui: an idiomatic Rust TUI framework that lets developers build powerful terminal applications quickly.
 
-Continue from the existing code and .gnhf notes. Each iteration should make one small, commit-ready improvement toward a production-quality Rust TUI framework. Use ultrathink-level care for architecture, component APIs, rendering boundaries, and plugin security, while keeping each implementation slice reviewable.
+Continue from the existing code and .gnhf notes. Each iteration should make one substantial, coherent, commit-ready improvement toward a production-quality Rust TUI framework. Prefer meaningful capability increments that include API, tests/examples, docs where useful, and validation over overly cautious micro-slices. Use ultrathink-level care for architecture, component APIs, rendering boundaries, and plugin security, while keeping each implementation slice reviewable.
 
 Reference these upstream projects with npx opensrc when useful:
 npx opensrc@latest path github:anomalyco/opentui
