@@ -17,8 +17,9 @@ while staying idiomatic to Rust.
 > scrollable single-select `List`, the horizontal `Tabs` strip, the
 > sub-cell-precision `Gauge` progress bar, the `Scrollbar` scroll
 > indicator, the animated `Spinner` busy indicator, the column-aligned
-> `Table` grid (optional header, single-row selection),
-> the styled-text
+> `Table` grid (optional header, single-row selection), the labelled
+> boolean `Checkbox` control (the first form control, with a focus
+> visual), the styled-text
 > model (`Span`/`Line`/`Text`) with the `Stylize` fluent shorthand
 > (`"x".green().bold()`, `.on_blue()`), the Elm-style
 > `App`/`Cmd`/`Harness` runtime **plus the live `run` loop (the production
@@ -38,7 +39,7 @@ only when there is enough real API surface to justify the boundary.
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
 | `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, the `Widget` trait, text |
-| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, and `Table` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
+| `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, and `Checkbox` today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 | `crates/xtask`           | Workspace automation (the cargo-xtask convention; dependency-free). Hosts `lint-names`, the project-specific [vague-generic-naming gate](docs/conventions/naming.md) ([ADR 0003](docs/adr/0003-lint-and-code-quality-policy.md) §7) — the one defect class clippy/rustdoc cannot see |
@@ -55,8 +56,8 @@ the *same* `run` the headless harness tests drive. A feature-gated async
 boundaries as the framework grows: a broader component set (the `Widget`
 trait stays in core; concrete widgets live in the grouped `rstui-widgets`
 crate per [ADR 0002](docs/adr/0002-widget-crate-boundary.md), now extracted
-— `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, and
-`Table` ship there today, with `Buffer::set_cell`
+— `Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`,
+`Table`, and `Checkbox` ship there today, with `Buffer::set_cell`
 the public cell-stamping contract third-party widgets build on; `Alignment`
 stays in `rstui-core::layout` as the placement primitive the text model
 needs), more widgets and examples, and a permissioned plugin host built on
@@ -171,6 +172,16 @@ crate copies.
   reserved gutter as `List`. The same caller-owned **pure projection** —
   `selected`/`offset` are read, never render-mutated — and **total**: an
   out-of-range width percentage is clamped where ratatui panics.
+- `checkbox` — `Checkbox`: a single-line labelled boolean control
+  (`[x] Enable logging`), the first of the interactive form-control family
+  and the first widget to model a **focus** visual. A **pure projection** of
+  *two* caller-owned `bool`s — `checked` (the data, like `List`'s `selected`)
+  and `focused` (drawn with a `focus_style` patched last, the same
+  highlight-wins-last bar `List` uses for selection). It renders a focused
+  control but deliberately does **not** decide *which* control is focused:
+  focus *routing* is a separate, expensive-to-reverse decision, not smuggled
+  into a widget. A leaf control like `Scrollbar`/`Spinner` — no framing
+  `Block`, one row — and **total** (narrow/empty/multi-row areas clip safely).
 
 ### `rstui-runtime`
 
@@ -299,6 +310,7 @@ cargo run -p rstui-widgets --example gauge_demo
 cargo run -p rstui-widgets --example scrollbar_demo
 cargo run -p rstui-widgets --example spinner_demo
 cargo run -p rstui-widgets --example table_demo
+cargo run -p rstui-widgets --example checkbox_demo
 cargo run -p rstui-runtime --example counter
 ```
 

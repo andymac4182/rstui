@@ -39,6 +39,11 @@
 //!   fixed header and single-row selection, the 2D generalization of [`List`]
 //!   that reuses the [`Constraint`](rstui_core::Constraint) layout divider for
 //!   column widths.
+//! - [`checkbox`]: [`Checkbox`] — a single-line labelled boolean control, the
+//!   first of the interactive form-control family and the first widget to
+//!   model a focus visual; a pure projection of caller-owned `checked` and
+//!   `focused` state (focus *routing* is deliberately deferred, not smuggled
+//!   in).
 //!
 //! # Example
 //!
@@ -55,6 +60,7 @@
 //! ```
 
 pub mod block;
+pub mod checkbox;
 pub mod gauge;
 pub mod list;
 pub mod paragraph;
@@ -64,6 +70,7 @@ pub mod table;
 pub mod tabs;
 
 pub use block::{Block, BorderSet, BorderType, Borders, Padding};
+pub use checkbox::Checkbox;
 pub use gauge::Gauge;
 pub use list::{List, ListItem};
 pub use paragraph::{Paragraph, Wrap};
