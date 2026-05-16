@@ -33,6 +33,11 @@
 //!
 //! ## The periodic tick (this slice) and what is still deferred
 //!
+//! The full rationale — why a subscription-style tick over the reserved
+//! `poll_event(Some(_))` seam rather than a `Cmd::tick`, and how this keeps
+//! `settle` single-sourced and the harness clock-free — is recorded in
+//! [ADR 0006](https://github.com/andymac4182/rstui/blob/main/docs/adr/0006-runtime-tick-and-loop-model.md).
+//!
 //! The tick is the Elm *subscription* analog, deliberately minimal:
 //! [`tick_rate`](App::tick_rate) declares the cadence as a pure function of
 //! state and [`on_tick`](App::on_tick) maps an elapsed timer to a message,

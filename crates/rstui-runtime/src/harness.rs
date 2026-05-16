@@ -214,7 +214,7 @@ impl<A: App> Harness<A> {
     /// the work settles or the budget is exceeded.
     ///
     /// Delegates to the *exact* [`settle`](crate::run::settle) state machine
-    /// the live [`run`](crate::run) loop uses, so the harness's semantics
+    /// the live [`run`](crate::run()) loop uses, so the harness's semantics
     /// cannot drift from production: the harness is that loop with a
     /// [`TestBackend`] and scripted input swapped in.
     fn settle(&mut self, cmd: crate::Cmd<A::Message>) {
