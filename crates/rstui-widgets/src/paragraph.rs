@@ -141,7 +141,7 @@ impl<'a> Paragraph<'a> {
     /// The number of rows this paragraph composes into at content `width`.
     ///
     /// Exactly the count [`render`](Widget::render) lays out — both go through
-    /// the one [`compose_rows`] wrap path — so a caller that must size a box
+    /// the one `compose_rows` wrap path — so a caller that must size a box
     /// to its wrapped text (the floating `Toast` stack is the first) does so
     /// without a second wrap implementation. It counts the composed text only;
     /// a framing [`block`](Self::block)'s rows are the caller's to add.

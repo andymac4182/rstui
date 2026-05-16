@@ -161,7 +161,7 @@ impl<A: App> Harness<A> {
     /// re-render — the deterministic twin of the live loop's
     /// [`tick_rate`](App::tick_rate) wake.
     ///
-    /// The live [`run`](crate::run) loop calls this same `on_tick` → `update`
+    /// The live [`run`](crate::run()) loop calls this same `on_tick` → `update`
     /// → `settle` → render path when a real timer elapses; the harness exposes
     /// it as an explicit step so a test advances time **by calling `tick`**,
     /// with no wall clock. One `tick()` is exactly one elapsed period: assert a
