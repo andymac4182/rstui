@@ -9,6 +9,8 @@
 //!   [`Rect`], [`Margin`]).
 //! - [`style`]: composable colors and attributes ([`Color`], [`Modifier`],
 //!   [`Style`]).
+//! - [`stylize`]: the [`Stylize`] fluent shorthand trait (`"x".green().bold()`,
+//!   `.on_blue()`) over any [`Styled`] value, including `&str`/[`Span`].
 //! - [`layout`]: dividing a [`Rect`] into contiguous sub-regions with
 //!   [`Constraint`]s ([`Layout`], [`Direction`]).
 //! - [`buffer`]: the immediate-mode [`Cell`] grid ([`Buffer`]) that widgets
@@ -61,6 +63,7 @@ pub mod event_source;
 pub mod geometry;
 pub mod layout;
 pub mod style;
+pub mod stylize;
 pub mod terminal;
 pub mod text;
 pub mod widget;
@@ -74,6 +77,7 @@ pub use event_source::{EventSource, TestEventSource};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Constraint, Direction, Layout};
 pub use style::{Color, Modifier, Style};
+pub use stylize::{Styled, Stylize};
 pub use terminal::{CompletedFrame, Frame, Terminal};
 pub use text::{Line, Span, Text};
 pub use widget::{

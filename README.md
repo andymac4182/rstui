@@ -14,7 +14,8 @@ while staying idiomatic to Rust.
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
 > model, the `Widget` abstraction with the foundational `Block` container and
 > the `Paragraph` text widget (word wrap, scroll, alignment), the styled-text
-> model (`Span`/`Line`/`Text`), the Elm-style
+> model (`Span`/`Line`/`Text`) with the `Stylize` fluent shorthand
+> (`"x".green().bold()`, `.on_blue()`), the Elm-style
 > `App`/`Cmd`/`Harness` runtime **plus the live `run` loop (the production
 > twin of `Harness`, generic over any `Backend` + `EventSource`)**, and the
 > crossterm terminal driver's input translation, `Backend` implementation,
@@ -31,7 +32,7 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`      | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, event_source, widget, text |
+| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, widget, text |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
 
@@ -60,6 +61,10 @@ loop — so every layer above it can be unit tested without a TTY.
   edge accessors can never overflow.
 - `style` — `Color`, `Modifier`, and a composable `Style` patch model that
   themes, focus, and selection highlights build on.
+- `stylize` — the `Stylize` extension trait: fluent `"x".green().bold()` /
+  `.on_blue()` / `.not_bold()` shorthands over any `Styled` value (`&str`,
+  `String`, `Span`, `Line`, `Text`, `Style`). One blanket impl over `Styled`,
+  so a custom widget gets the whole vocabulary by implementing one trait.
 - `layout` — `Layout`, `Direction`, and the `Constraint` vocabulary
   (`Length`/`Percentage`/`Ratio`/`Min`/`Max`/`Fill`) for dividing a `Rect`
   into contiguous regions. A deterministic, integer-only divider (no Cassowary
