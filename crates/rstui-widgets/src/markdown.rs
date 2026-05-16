@@ -12,7 +12,7 @@
 //! rules) is a few hundred lines of line-oriented scanning, the same way
 //! [`Paragraph`](crate::Paragraph)'s wrap composer is hand-written rather than
 //! pulling a text-layout crate. So `Markdown` is a plain
-//! [`Widget`](rstui_core::Widget) module here, zero new dependencies.
+//! [`Widget`] module here, zero new dependencies.
 //!
 //! # Progressive fidelity, not a fake renderer
 //!
@@ -37,7 +37,7 @@
 //!
 //! Rendering is deterministic and width-aware: the same source and area always
 //! produce the same cells, so output is snapshot-testable through
-//! [`Buffer`](rstui_core::Buffer) exactly like every other widget.
+//! [`Buffer`] exactly like every other widget.
 //!
 //! # Example
 //!
