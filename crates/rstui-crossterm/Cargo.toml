@@ -1,0 +1,20 @@
+[package]
+name = "rstui-crossterm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The crossterm-backed terminal driver for the rstui TUI framework: the Backend impl, terminal lifecycle, and crossterm <-> rstui event translation."
+
+[lints]
+workspace = true
+
+[dependencies]
+rstui-core = { path = "../rstui-core" }
+# The single external dependency in the workspace, deliberately isolated here
+# per ADR 0001 so `rstui-core` stays dependency-free. Default features (incl.
+# `windows`) are kept on for the cross-platform support that motivated the
+# decision; feature trimming is revisited when the input-source slice lands.
+crossterm = "0.29"

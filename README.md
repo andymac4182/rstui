@@ -12,9 +12,11 @@ while staying idiomatic to Rust.
 > `Backend` boundary, the double-buffered `Terminal` frame driver, the
 > constraint-based `Layout` divider, the keyboard/mouse/focus/resize `Event`
 > model, the `Widget` abstraction with the foundational `Block` container, the
-> styled-text model (`Span`/`Line`/`Text`), and the Elm-style
-> `App`/`Cmd`/`Harness` runtime exist and are tested; a real terminal driver,
-> a broader component set, and the plugin host are not built yet.
+> styled-text model (`Span`/`Line`/`Text`), the Elm-style
+> `App`/`Cmd`/`Harness` runtime, and the crossterm input-translation layer of
+> the real terminal driver exist and are tested; the rest of the crossterm
+> backend (its `Backend` impl and panic-safe lifecycle guard), a broader
+> component set, and the plugin host are not built yet.
 
 ## Workspace
 
@@ -23,16 +25,18 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`    | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget, text |
-| `crates/rstui-runtime` | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
+| `crates/rstui-core`      | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget, text |
+| `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
+| `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. Currently the crossterm → `rstui-core` event translation |
 
-Planned boundaries as the framework grows: a real terminal driver — decided
-to be a dedicated `rstui-crossterm` crate implementing `rstui-core`'s
-`Backend` ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)) — a
-broader component set (the `Widget` trait lives in core; concrete widgets
-beyond `Block` will graduate to their own crate once there are enough to
-justify it), more examples, and a permissioned plugin host built on process
-isolation.
+The `rstui-crossterm` crate now exists ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md));
+its crossterm → `rstui-core` event-translation layer has landed and its
+`Backend` implementation over `io::Write` plus a panic-safe terminal
+lifecycle guard are the next slices. Other planned boundaries as the
+framework grows: a broader component set (the `Widget` trait lives in core;
+concrete widgets beyond `Block` will graduate to their own crate once there
+are enough to justify it), more examples, and a permissioned plugin host
+built on process isolation.
 
 ### `rstui-core`
 
@@ -89,6 +93,25 @@ app code runs headless today and under a real terminal later.
   over `rstui-core`'s `TestBackend`, so whole apps are unit-testable (assert
   on state and the rendered snapshot) with no TTY, threads, or clock. It is
   the reference semantics for the future real runtime.
+
+### `rstui-crossterm`
+
+The crossterm-backed terminal driver, and the deliberate home of the
+workspace's only external dependency so `rstui-core` stays dependency-free
+(see [ADR 0001](docs/adr/0001-terminal-backend-strategy.md)). Apps never
+import crossterm; they depend on `rstui-core`'s `Backend` trait and `Event`
+vocabulary, so the backend stays swappable.
+
+- `from_crossterm` — a pure, total, terminal-free translation from a
+  `crossterm::event::Event` to an `rstui-core` `Event`. Because rstui shaped
+  its core event model 1:1 like crossterm's on purpose, the map is
+  near-mechanical and fully unit-testable with hand-built events and no TTY
+  (ADR 0001 testing layer L4a). Input rstui deliberately does not model
+  (Kitty-only lock/media/modifier keys, the `HYPER`/`META` modifiers, lock
+  state) is dropped rather than stubbed, matching the core's "defer, do not
+  stub" discipline.
+- Next: the `Backend` implementation over `io::Write` and a panic-safe RAII
+  terminal-lifecycle guard.
 
 ## Architecture decisions
 
