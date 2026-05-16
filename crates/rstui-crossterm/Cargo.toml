@@ -11,6 +11,17 @@ description = "The crossterm-backed terminal driver for the rstui TUI framework:
 [lints]
 workspace = true
 
+[features]
+# Off by default (ADR 0011): the sync `run_app` path stays dependency-light.
+# Opt in with `--features async` for `run_app_async` over the
+# `tokio::select!` event loop. It enables crossterm's runtime-agnostic
+# `event-stream` (a `futures::Stream` of input — crossterm itself pulls no
+# tokio), `futures-util` only for `StreamExt::next`, and
+# `rstui-runtime/async` (the `AsyncEventSource`/`run_async` seam). The caller
+# supplies the tokio runtime (`#[tokio::main]`), so this crate takes **no**
+# direct tokio dependency.
+async = ["dep:futures-util", "crossterm/event-stream", "rstui-runtime/async"]
+
 [dependencies]
 # `version` + `path` so this crate is publishable (a bare path dep makes a
 # public crate unpublishable); kept = workspace version by the
@@ -38,3 +49,7 @@ crossterm = "0.29"
 # API specifically so the restore runs *off* the async-signal handler with no
 # `unsafe` (the workspace forbids `unsafe_code`).
 signal-hook = "0.3"
+# OPTIONAL, only with `--features async`: `StreamExt::next` to drive
+# crossterm's `EventStream`. `default-features = false` keeps it to the
+# `Stream` adapters (no executor/io); the caller's tokio runtime drives it.
+futures-util = { version = "0.3", optional = true, default-features = false }

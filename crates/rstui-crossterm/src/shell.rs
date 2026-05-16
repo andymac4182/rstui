@@ -228,6 +228,61 @@ where
     run_threaded(app, guard, &mut events)
 }
 
+/// Like [`run_app`], but drives the **async event loop**
+/// ([`rstui_runtime::run_async`], ADR 0011) over a crossterm
+/// [`EventStream`](crossterm::event::EventStream). Available only with the
+/// `async` cargo feature; **must be awaited inside a tokio runtime**
+/// (e.g. `#[tokio::main]`).
+///
+/// This is the lowest-latency full-screen entry point: input, command
+/// results, and ticks are `tokio::select!`ed, so a resize, a scroll, or a
+/// finished background command repaints *immediately* with none of the sync
+/// loops' poll-interval, and the process is genuinely idle (zero wakeups)
+/// when nothing is happening. The reducer is the *same* one the headless
+/// `Harness` drives (ADR 0011) — only IO/effect multiplexing is async — so an
+/// app is unchanged between `cargo test` and production.
+///
+/// The panic- and signal-restore hooks are installed exactly as in
+/// [`run_app`]; the terminal is restored however the process ends.
+///
+/// # Errors
+///
+/// Identical to [`run_app`].
+#[cfg(feature = "async")]
+pub async fn run_app_async<A: App>(app: A) -> Result<A, CrosstermRunError>
+where
+    A::Message: Send + 'static,
+{
+    run_app_async_with(app, LifecycleOptions::default()).await
+}
+
+/// Like [`run_app_async`] but with a caller-chosen [`LifecycleOptions`]
+/// preset (see [`run_app_with`]). Available only with the `async` cargo
+/// feature; **must be awaited inside a tokio runtime**.
+///
+/// # Errors
+///
+/// Identical to [`run_app`].
+#[cfg(feature = "async")]
+pub async fn run_app_async_with<A: App>(
+    app: A,
+    options: LifecycleOptions,
+) -> Result<A, CrosstermRunError>
+where
+    A::Message: Send + 'static,
+{
+    install_panic_restore_hook();
+    crate::signal::install_signal_restore_hook();
+
+    let backend = CrosstermBackend::new(io::stdout());
+    let guard = TerminalGuard::with_options(backend, options).map_err(RunError::Backend)?;
+    let mut events = crate::event_source_async::CrosstermAsyncEventSource::new();
+
+    // The `tokio::select!` loop: input/results/ticks, no poll interval. Same
+    // reducer as the sync paths and the headless `Harness`.
+    rstui_runtime::run_async(app, guard, &mut events).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,7 +294,10 @@ mod tests {
     /// `restore_terminal`, and is excluded here by construction).
     #[test]
     fn emit_leave_matches_the_full_preset_teardown_sequence() {
-        use crossterm::event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture};
+        use crossterm::event::{
+            DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
+            PopKeyboardEnhancementFlags,
+        };
         use crossterm::queue;
         use crossterm::terminal::LeaveAlternateScreen;
 
@@ -249,6 +307,10 @@ mod tests {
         let mut expected = Vec::new();
         queue!(
             expected,
+            // The full-screen preset now also negotiates the Kitty keyboard
+            // protocol, so its single-sourced leave sequence pops it first
+            // (release/repeat/disambiguation — see `lifecycle`).
+            PopKeyboardEnhancementFlags,
             DisableFocusChange,
             DisableBracketedPaste,
             DisableMouseCapture,
