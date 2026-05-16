@@ -29,11 +29,13 @@
 //! - bullet (`-`/`*`/`+`) and ordered (`1.`/`1)`) lists, including nested
 //!   lists and multi-line items via indentation
 //! - thematic breaks (`---`/`***`/`___`)
+//! - GFM pipe tables with a `:`-aligned delimiter row, drawn as a
+//!   width-fitted box-drawing grid with per-column alignment
 //!
 //! Deliberately out of scope for this slice (each an additive follow-up that
 //! does not change this shape): links/images (the link-span slice owns
-//! activation), GFM tables (their own slice), indented code blocks, setext
-//! headings, HTML passthrough, reference definitions.
+//! activation), indented code blocks, setext headings, HTML passthrough,
+//! reference definitions.
 //!
 //! Rendering is deterministic and width-aware: the same source and area always
 //! produce the same cells, so output is snapshot-testable through
@@ -56,7 +58,7 @@
 use std::borrow::Cow;
 
 use crate::block::Block;
-use rstui_core::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
+use rstui_core::{Alignment, Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
 
 /// The styles [`Markdown`] applies to each kind of element.
 ///
@@ -268,6 +270,13 @@ enum MdBlock {
         start: u64,
         items: Vec<Vec<MdBlock>>,
     },
+    /// A GFM pipe table: per-column [`Alignment`] from the delimiter row, a
+    /// header row, then body rows. Each cell is already inline-parsed spans.
+    Table {
+        aligns: Vec<Alignment>,
+        header: Vec<Vec<Span<'static>>>,
+        rows: Vec<Vec<Vec<Span<'static>>>>,
+    },
     Rule,
 }
 
@@ -342,6 +351,37 @@ fn parse_blocks(src: &str) -> Vec<MdBlock> {
             continue;
         }
 
+        if starts_table(&lines, i) {
+            let aligns = table_delim_aligns(lines[i + 1]).expect("starts_table verified it");
+            let ncols = aligns.len();
+            let header = normalize_row(split_table_row(line), ncols)
+                .into_iter()
+                .map(|c| parse_inline(&c))
+                .collect();
+            i += 2;
+            let mut rows = Vec::new();
+            while i < lines.len() {
+                let row = lines[i];
+                let t = row.trim();
+                if t.is_empty() || !t.contains('|') || table_delim_aligns(row).is_some() {
+                    break;
+                }
+                rows.push(
+                    normalize_row(split_table_row(row), ncols)
+                        .into_iter()
+                        .map(|c| parse_inline(&c))
+                        .collect(),
+                );
+                i += 1;
+            }
+            out.push(MdBlock::Table {
+                aligns,
+                header,
+                rows,
+            });
+            continue;
+        }
+
         if let Some(marker) = list_marker(line) {
             let (block, next) = parse_list(&lines, i, marker);
             out.push(block);
@@ -361,6 +401,7 @@ fn parse_blocks(src: &str) -> Vec<MdBlock> {
                 || fence_open(t).is_some()
                 || t.starts_with('>')
                 || list_marker(l).is_some()
+                || starts_table(&lines, i)
             {
                 break;
             }
@@ -554,6 +595,85 @@ fn is_thematic_break(trimmed: &str) -> bool {
 fn strip_quote_marker(trimmed: &str) -> String {
     let rest = &trimmed[1..];
     rest.strip_prefix(' ').unwrap_or(rest).to_owned()
+}
+
+/// A GFM pipe table starts at `lines[i]` iff that line has a `|` and the next
+/// line is a valid alignment delimiter row. Requiring the delimiter row is
+/// what keeps an ordinary `a | b` paragraph from being misread as a table.
+fn starts_table(lines: &[&str], i: usize) -> bool {
+    i + 1 < lines.len()
+        && lines[i].contains('|')
+        && !lines[i].trim().is_empty()
+        && table_delim_aligns(lines[i + 1]).is_some()
+}
+
+/// Parses a table delimiter row into per-column [`Alignment`]s, or `None` if
+/// it is not one. Each cell must be `-`s with an optional leading/trailing `:`
+/// (`:--`=left, `:-:`=center, `--:`=right, `---`=left default).
+fn table_delim_aligns(line: &str) -> Option<Vec<Alignment>> {
+    if !line.contains('|') && !line.contains('-') {
+        return None;
+    }
+    let cells = split_table_row(line);
+    if cells.is_empty() {
+        return None;
+    }
+    let mut aligns = Vec::with_capacity(cells.len());
+    for cell in &cells {
+        let c = cell.trim();
+        if c.is_empty() || !c.contains('-') || !c.chars().all(|ch| ch == '-' || ch == ':') {
+            return None;
+        }
+        let left = c.starts_with(':');
+        let right = c.ends_with(':');
+        // A `:` may only sit at the ends: the middle is all dashes.
+        if c[usize::from(left)..c.len() - usize::from(right)]
+            .chars()
+            .any(|ch| ch != '-')
+        {
+            return None;
+        }
+        aligns.push(match (left, right) {
+            (true, true) => Alignment::Center,
+            (false, true) => Alignment::Right,
+            _ => Alignment::Left,
+        });
+    }
+    Some(aligns)
+}
+
+/// Splits one table row into trimmed cell strings: a single optional leading
+/// and trailing `|` is dropped, the row is split on unescaped `|`, and `\|`
+/// is unescaped to a literal pipe.
+fn split_table_row(line: &str) -> Vec<String> {
+    let mut s = line.trim();
+    s = s.strip_prefix('|').unwrap_or(s);
+    if s.ends_with('|') && !s.ends_with("\\|") {
+        s = &s[..s.len() - 1];
+    }
+    let mut cells = Vec::new();
+    let mut cur = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek() == Some(&'|') {
+            cur.push('|');
+            chars.next();
+        } else if c == '|' {
+            cells.push(cur.trim().to_owned());
+            cur = String::new();
+        } else {
+            cur.push(c);
+        }
+    }
+    cells.push(cur.trim().to_owned());
+    cells
+}
+
+/// Pads a row with empty cells (or truncates extras) so it has exactly `ncols`
+/// cells — GFM's rule for ragged rows.
+fn normalize_row(mut cells: Vec<String>, ncols: usize) -> Vec<String> {
+    cells.resize(ncols, String::new());
+    cells
 }
 
 // ---------------------------------------------------------------------------
@@ -876,11 +996,125 @@ fn layout_blocks(
                     }
                 }
             }
+            MdBlock::Table {
+                aligns,
+                header,
+                rows,
+            } => layout_table(aligns, header, rows, width, theme, out),
             MdBlock::Rule => {
                 out.push(Line::from(Span::styled("─".repeat(width), theme.rule)));
             }
         }
     }
+}
+
+/// The display width of a cell: the `char` count across its spans.
+fn cell_width(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
+/// Clips/pads a cell's spans to exactly `colw` columns under `align`. Padding
+/// is unstyled spaces so only the text carries the cell's own styling.
+fn fit_cell(spans: &[Span<'static>], colw: usize, align: Alignment) -> Vec<Span<'static>> {
+    let mut cells: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(|c| (c, s.style)))
+        .collect();
+    cells.truncate(colw);
+    let pad = colw - cells.len();
+    let (left, right) = match align {
+        Alignment::Left => (0, pad),
+        Alignment::Right => (pad, 0),
+        Alignment::Center => (pad / 2, pad - pad / 2),
+    };
+    let mut row: Vec<(char, Style)> = Vec::with_capacity(colw);
+    row.extend((0..left).map(|_| (' ', Style::new())));
+    row.extend(cells);
+    row.extend((0..right).map(|_| (' ', Style::new())));
+    group_cells(&row)
+}
+
+/// Renders a parsed table as a width-fitted box-drawing grid. Column widths
+/// are the natural content widths, scaled down proportionally (never below 1,
+/// clipping cell text) only when the grid would exceed `width`; a narrower
+/// table is left at its natural size rather than stretched.
+fn layout_table(
+    aligns: &[Alignment],
+    header: &[Vec<Span<'static>>],
+    rows: &[Vec<Vec<Span<'static>>>],
+    width: usize,
+    theme: &MarkdownTheme,
+    out: &mut Vec<Line<'static>>,
+) {
+    let ncols = aligns.len();
+    // Each column costs colw + 2 padding spaces; plus one vertical rule
+    // between/around columns (ncols + 1). Too narrow for even 1-wide columns:
+    // skip rather than draw a broken grid.
+    let overhead = (ncols + 1) + 2 * ncols;
+    if ncols == 0 || width <= overhead {
+        return;
+    }
+    let mut colw: Vec<usize> = (0..ncols)
+        .map(|c| {
+            let h = cell_width(&header[c]);
+            rows.iter()
+                .map(|r| cell_width(&r[c]))
+                .chain([h])
+                .max()
+                .unwrap_or(1)
+                .max(1)
+        })
+        .collect();
+    let avail = width - overhead;
+    let natural: usize = colw.iter().sum();
+    if natural > avail {
+        let sum = natural.max(1);
+        for w in &mut colw {
+            *w = (*w * avail / sum).max(1);
+        }
+        // Flooring can leave us a hair over; trim the widest deterministically.
+        while colw.iter().sum::<usize>() > avail {
+            let max = *colw.iter().max().unwrap();
+            let i = colw.iter().position(|&w| w == max).unwrap();
+            colw[i] -= 1;
+        }
+    }
+
+    let rule = |left: char, mid: char, right: char| -> Line<'static> {
+        let mut s = String::new();
+        s.push(left);
+        for (c, w) in colw.iter().enumerate() {
+            s.push_str(&"─".repeat(w + 2));
+            s.push(if c + 1 == ncols { right } else { mid });
+        }
+        Line::from(Span::styled(s, theme.rule))
+    };
+    let content_row = |cells: &[Vec<Span<'static>>], header: bool| -> Line<'static> {
+        let mut spans = Vec::new();
+        for c in 0..ncols {
+            spans.push(Span::styled("│ ", theme.rule));
+            let styled: Vec<Span<'static>> = if header {
+                cells[c]
+                    .iter()
+                    .map(|s| Span::styled(s.content.clone(), s.style.patch(theme.strong)))
+                    .collect()
+            } else {
+                cells[c].clone()
+            };
+            spans.extend(fit_cell(&styled, colw[c], aligns[c]));
+            spans.push(Span::styled(" ", theme.rule));
+        }
+        spans.push(Span::styled("│", theme.rule));
+        Line::from(spans)
+    };
+
+    out.push(rule('┌', '┬', '┐'));
+    out.push(content_row(header, true));
+    out.push(rule('├', '┼', '┤'));
+    for r in rows {
+        out.push(content_row(r, false));
+    }
+    out.push(rule('└', '┴', '┘'));
 }
 
 /// Word-wraps `spans` to `width`, each row prefixed by `prefix`. Wrapping is
@@ -1118,6 +1352,68 @@ mod tests {
     fn thematic_break_fills_the_width_and_is_not_a_list() {
         assert_eq!(lines(Markdown::new("---"), 4, 1), "────\n");
         assert_eq!(lines(Markdown::new("* * *"), 4, 1), "────\n");
+    }
+
+    #[test]
+    fn gfm_table_renders_a_box_drawing_grid() {
+        let src = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+        assert_eq!(
+            lines(Markdown::new(src), 9, 5),
+            "┌───┬───┐\n│ A │ B │\n├───┼───┤\n│ 1 │ 2 │\n└───┴───┘\n"
+        );
+    }
+
+    #[test]
+    fn delimiter_row_sets_per_column_alignment() {
+        let blocks = parse_blocks("| l | c | r |\n| :-- | :-: | --: |\n| a | b | c |");
+        match &blocks[0] {
+            MdBlock::Table { aligns, .. } => assert_eq!(
+                aligns,
+                &[Alignment::Left, Alignment::Center, Alignment::Right]
+            ),
+            other => panic!("expected a table, got {other:?}"),
+        }
+        // Right alignment pushes a short value to the cell's right edge.
+        assert_eq!(
+            lines(Markdown::new("| ab |\n| --: |\n| z |"), 6, 5),
+            "┌────┐\n│ ab │\n├────┤\n│  z │\n└────┘\n"
+        );
+    }
+
+    #[test]
+    fn ragged_rows_are_padded_to_the_column_count() {
+        let src = "| A | B |\n|---|---|\n| 1 |";
+        assert_eq!(
+            lines(Markdown::new(src), 9, 5),
+            "┌───┬───┐\n│ A │ B │\n├───┼───┤\n│ 1 │   │\n└───┴───┘\n"
+        );
+    }
+
+    #[test]
+    fn a_pipe_line_without_a_delimiter_row_is_just_a_paragraph() {
+        // No table without the `---` delimiter row: this stays literal text.
+        assert_eq!(lines(Markdown::new("a | b"), 5, 1), "a | b\n");
+    }
+
+    #[test]
+    fn table_cells_are_inline_parsed() {
+        // `code` inside a body cell keeps the code style.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 9, 5));
+        Markdown::new("| h |\n|---|\n| `c` |").render(buf.area(), &mut buf);
+        // Row 3 (data) col content: "│ c │" → 'c' at x=2.
+        let cell = buf.get(Position::new(2, 3)).unwrap();
+        assert_eq!(cell.symbol, 'c');
+        assert_eq!(cell.fg, Color::Yellow);
+    }
+
+    #[test]
+    fn table_columns_shrink_to_fit_a_narrow_area() {
+        // Natural width far exceeds the area; columns scale down, never panic.
+        let src = "| long header | another |\n|---|---|\n| value one | value two |";
+        let out = lines(Markdown::new(src), 16, 5);
+        // Every rendered row is clipped to the 16-cell area, grid stays intact.
+        assert!(out.lines().all(|l| l.chars().count() == 16));
+        assert!(out.starts_with('┌'));
     }
 
     #[test]

@@ -31,10 +31,15 @@ fn render(area: Rect) { /* verbatim, never reflowed */ }
 1. ordered item
 2. and another
 
+| Feature  | State |
+| :------- | :---: |
+| headings | done  |
+| tables   | done  |
+
 ---";
 
 fn main() {
-    let mut terminal = Terminal::new(TestBackend::new(48, 22)).expect("TestBackend is infallible");
+    let mut terminal = Terminal::new(TestBackend::new(48, 28)).expect("TestBackend is infallible");
 
     terminal
         .draw(|frame| {
