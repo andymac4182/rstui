@@ -26,10 +26,13 @@ only when there is enough real API surface to justify the boundary.
 | `crates/rstui-core`    | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, widget, text |
 | `crates/rstui-runtime` | Elm-style `App`/`Cmd` contract and a deterministic terminal-free test harness  |
 
-Planned boundaries as the framework grows: a real terminal driver, a broader
-component set (the `Widget` trait lives in core; concrete widgets beyond
-`Block` will graduate to their own crate once there are enough to justify it),
-more examples, and a permissioned plugin host built on process isolation.
+Planned boundaries as the framework grows: a real terminal driver — decided
+to be a dedicated `rstui-crossterm` crate implementing `rstui-core`'s
+`Backend` ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)) — a
+broader component set (the `Widget` trait lives in core; concrete widgets
+beyond `Block` will graduate to their own crate once there are enough to
+justify it), more examples, and a permissioned plugin host built on process
+isolation.
 
 ### `rstui-core`
 
@@ -86,6 +89,19 @@ app code runs headless today and under a real terminal later.
   over `rstui-core`'s `TestBackend`, so whole apps are unit-testable (assert
   on state and the rendered snapshot) with no TTY, threads, or clock. It is
   the reference semantics for the future real runtime.
+
+## Architecture decisions
+
+Decisions that are expensive to reverse are recorded as dated, immutable
+Architecture Decision Records in [`docs/adr`](docs/adr). They capture the
+context, the options weighed, the decision, and the evidence behind it.
+
+- [ADR 0001 — Terminal backend strategy](docs/adr/0001-terminal-backend-strategy.md):
+  crossterm behind a dedicated `rstui-crossterm` crate is the default
+  backend; `rstui-core` keeps owning the `Backend` trait and `TestBackend`;
+  the trait stays the single seam so an optional high-fidelity `rstui-termwiz`
+  crate remains possible later. Also fixes the four-layer end-to-end testing
+  contract every new capability must satisfy.
 
 ## Build & test
 
