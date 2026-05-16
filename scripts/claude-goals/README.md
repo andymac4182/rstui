@@ -1,10 +1,10 @@
 # rstui Claude Goal Streams
 
-These prompts are designed to be pasted into Claude Code after starting
-`/goal`. They split rstui into five parallel streams. Each stream creates its
-own worktree, works in larger coherent slices, commits validated work, then
-serializes merge-back to `main` with a local lock so multiple Claude runs do
-not merge at the same time.
+These prompts split rstui into five parallel Claude Code streams. The full
+stream briefs are intentionally detailed and live one directory up. Claude
+`/goal` conditions are limited to 4000 characters, so paste the compact files
+from `goal-conditions/`; each compact goal tells Claude to read and execute the
+full local brief.
 
 Start from a clean `main` checkout:
 
@@ -16,19 +16,19 @@ git pull --ff-only origin main
 ```
 
 Then open five Claude Code sessions and run `/goal` in each one, pasting one
-prompt per session:
+compact goal condition per session:
 
 ```sh
-pbcopy < scripts/claude-goals/widgets.md
-pbcopy < scripts/claude-goals/fullscreen-runtime.md
-pbcopy < scripts/claude-goals/rich-rendering.md
-pbcopy < scripts/claude-goals/plugins.md
-pbcopy < scripts/claude-goals/quality-dx.md
+pbcopy < scripts/claude-goals/goal-conditions/widgets.md
+pbcopy < scripts/claude-goals/goal-conditions/fullscreen-runtime.md
+pbcopy < scripts/claude-goals/goal-conditions/rich-rendering.md
+pbcopy < scripts/claude-goals/goal-conditions/plugins.md
+pbcopy < scripts/claude-goals/goal-conditions/quality-dx.md
 ```
 
-The prompts intentionally repeat the shared rules. That keeps each Claude run
-self-contained if it is launched in a separate terminal, resumed later, or run
-from a different working directory.
+The detailed briefs in `scripts/claude-goals/*.md` intentionally repeat the
+shared rules. That keeps each Claude run self-contained after it reads the file
+from disk.
 
 Important operating notes:
 
