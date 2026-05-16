@@ -15,6 +15,8 @@
 //!   [`TestBackend`] so every layer above can be tested without a TTY.
 //! - [`terminal`]: the [`Terminal`] frame driver that runs the
 //!   draw → diff → flush → swap loop a [`Frame`] at a time.
+//! - [`event`]: the keyboard/mouse/focus/resize [`Event`] vocabulary the
+//!   runtime, components, and focus routing all share.
 //!
 //! Keeping these pieces dependency-free and panic-light makes them trivial to
 //! unit test without a real terminal, which is the property the rest of the
@@ -43,12 +45,16 @@
 
 pub mod backend;
 pub mod buffer;
+pub mod event;
 pub mod geometry;
 pub mod style;
 pub mod terminal;
 
 pub use backend::{Backend, TestBackend};
 pub use buffer::{Buffer, Cell};
+pub use event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use style::{Color, Modifier, Style};
 pub use terminal::{CompletedFrame, Frame, Terminal};
