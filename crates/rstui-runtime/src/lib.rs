@@ -86,10 +86,11 @@ pub use cmd::Cmd;
 pub use harness::Harness;
 pub use run::{DEFAULT_COMMAND_BUDGET, RunError, run, run_pooled, run_threaded};
 
-/// The tokio-backed off-loop entry point, available only with the `async`
-/// cargo feature (the default build stays dependency-free — ADR 0009).
+/// The `tokio::select!` async event loop and its async input seam, available
+/// only with the `async` cargo feature (the default build stays
+/// dependency-free — ADR 0011).
 #[cfg(feature = "async")]
-pub use run::run_async;
+pub use run::{AsyncEventSource, run_async};
 
 // Re-exported so an `App` implementor needs only `rstui_runtime` in scope for
 // the trait's own signatures.

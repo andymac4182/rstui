@@ -13,8 +13,8 @@ workspace = true
 
 [features]
 # Off by default: the synchronous runtime never depends on tokio (ADR 0001,
-# ADR 0009). Opt in with `--features async` to make `run_async` and the
-# tokio-backed `AsyncCommandExecutor` available; the default build, the
+# ADR 0011). Opt in with `--features async` for the `tokio::select!`-driven
+# async event loop (`run_async`, `AsyncEventSource`); the default build, the
 # headless `Harness`, `run`, `run_threaded`, and `run_pooled` stay
 # dependency-free and unchanged.
 async = ["dep:tokio"]
@@ -25,10 +25,18 @@ async = ["dep:tokio"]
 # workspace version by the `crate_dep_versions_match_workspace` xtask guard.
 rstui-core = { path = "../rstui-core", version = "0.0.1" }
 # The single, OPTIONAL, scoped dependency — only compiled with `--features
-# async`. `rt` is the minimal feature set: `spawn_blocking` (the off-loop
-# command pool) + a current-thread runtime; no net/time/macros. The brief
-# forbids a *casual* broad async dep; this is feature-gated, justified, and
-# documented (ADR 0009), and the default build is untouched.
+# async`. The async event loop needs exactly: `rt`
+# (spawn/spawn_blocking), `sync` (the `mpsc` command-result channel the loop
+# `select!`s on), `time` (tick `interval` + `sleep` for `Cmd::tick`/`every`),
+# `macros` (`select!` and `#[tokio::test]`), and `test-util` (paused virtual
+# time so the async loop is tested deterministically with no real clock — the
+# determinism mandate the sync `Harness` also serves). The brief forbids a
+# *casual* broad async dep; this is feature-gated, justified, documented
+# (ADR 0011), and the default build is untouched.
 tokio = { version = "1", optional = true, default-features = false, features = [
     "rt",
+    "sync",
+    "time",
+    "macros",
+    "test-util",
 ] }

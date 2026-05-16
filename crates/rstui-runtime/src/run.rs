@@ -439,34 +439,65 @@ impl<M> Drop for PooledCommandExecutor<M> {
     }
 }
 
-/// An off-loop [`CommandExecutor`] backed by a **tokio** runtime's blocking
-/// pool — available only with the `async` cargo feature.
+/// An asynchronous input source — the async dual of
+/// [`EventSource`], available only with the `async`
+/// cargo feature.
 ///
-/// Functionally [`ThreadCommandExecutor`]'s tokio twin: each
-/// [`perform`](Cmd::perform) closure and each [`tick`](Cmd::tick)/
-/// [`every`](Cmd::every) timer is handed to `tokio::task::spawn_blocking`
-/// instead of a raw `std::thread`, and its message returns on the same channel
-/// [`run_core`] drains. The win is for an app that *already* runs on tokio (a
-/// common backend pattern): command work then shares that runtime's managed,
-/// instrumented blocking pool rather than spawning unmanaged threads, with no
-/// change to the reducer or the loop. It deliberately does **not** introduce an
-/// async event loop or a future-valued `Cmd` — those stay deferred (ADR 0009);
-/// this is purely the executor seam proven to extend to tokio.
+/// Where [`EventSource::poll_event`]
+/// *blocks* (and overloads `Ok(None)` as either "timed out" or "ended"
+/// depending on the timeout argument), this is awaited and has **one** meaning
+/// for each outcome — which is exactly what lets [`run_async`] `select!` it
+/// against command results and a tick timer with no poll interval:
+///
+/// - `Ok(Some(event))` — an input event arrived.
+/// - `Ok(None)` — input ended **permanently** (terminal closed / scripted
+///   source drained). No timeout overload: ticks are a separate `select!`
+///   arm, not a poll deadline.
+/// - `Err(e)` — the underlying device failed.
+///
+/// Native async-fn-in-trait (stable; this crate targets Rust 1.85);
+/// monomorphized like `EventSource`, so it needs no boxing and the returned
+/// future is `Send` for a multi-threaded `select!`.
 #[cfg(feature = "async")]
-pub(crate) struct AsyncCommandExecutor<M> {
+pub trait AsyncEventSource {
+    /// How this source reports failure (`io::Error` for a real terminal,
+    /// [`Infallible`](std::convert::Infallible) for a scripted test source).
+    type Error: std::error::Error;
+
+    /// Awaits the next input event. See the [trait docs](AsyncEventSource) for
+    /// the three outcomes; `Ok(None)` is *only* permanent end-of-input.
+    ///
+    /// Explicit `-> impl Future + Send` (not `async fn`): the `Send` bound is
+    /// required so the future works under a multi-threaded `tokio::select!`,
+    /// and spelling it out is exactly what `async fn`-in-trait cannot do.
+    fn next_event(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<Option<rstui_core::Event>, Self::Error>> + Send;
+}
+
+/// The [`CommandExecutor`] for the async loop: work runs off the loop on the
+/// ambient tokio runtime and its message returns over a **tokio**
+/// `mpsc::UnboundedSender` that [`run_async`] `select!`s on (so a finished
+/// command wakes the loop *immediately*, with none of the sync loop's
+/// poll-interval latency).
+///
+/// `perform` uses `spawn_blocking` (the closure is sync `FnOnce`); a timer
+/// uses `tokio::time::sleep`, so it honors a *paused* clock and the async-loop
+/// tests are deterministic with no real wall time. Returning `None` keeps the
+/// shared `settle` contract: the message is not folded this turn — it arrives
+/// later through the loop, exactly as for every other off-loop executor.
+#[cfg(feature = "async")]
+pub(crate) struct TokioCommandExecutor<M> {
     handle: tokio::runtime::Handle,
-    sender: mpsc::Sender<M>,
+    sender: tokio::sync::mpsc::UnboundedSender<M>,
 }
 
 #[cfg(feature = "async")]
-impl<M: Send + 'static> CommandExecutor<M> for AsyncCommandExecutor<M> {
+impl<M: Send + 'static> CommandExecutor<M> for TokioCommandExecutor<M> {
     fn perform(&mut self, work: Box<dyn FnOnce() -> M + Send + 'static>) -> Option<M> {
         let sender = self.sender.clone();
-        // `spawn_blocking` runs the sync closure on tokio's blocking pool; the
-        // `JoinHandle` is intentionally detached (like the std-thread
-        // executor's thread handle) — the result travels on the channel, not
-        // the handle. Explicit `drop` (not `let _ =`) because the handle is
-        // itself a `Future`.
+        // Detached like the std-thread executor's thread handle; explicit
+        // `drop` (not `let _ =`) because a `JoinHandle` is itself a `Future`.
         drop(self.handle.spawn_blocking(move || {
             let _ = sender.send(work());
         }));
@@ -480,13 +511,15 @@ impl<M: Send + 'static> CommandExecutor<M> for AsyncCommandExecutor<M> {
         work: Box<dyn FnOnce() -> M + Send + 'static>,
     ) -> Option<M> {
         let sender = self.sender.clone();
-        drop(self.handle.spawn_blocking(move || {
+        drop(self.handle.spawn(async move {
             let wait = if aligned {
                 until_next_multiple(delay)
             } else {
                 delay
             };
-            thread::sleep(wait);
+            // `tokio::time::sleep` (not `thread::sleep`) so a paused clock
+            // controls it — the async-loop tests advance virtual time.
+            tokio::time::sleep(wait).await;
             let _ = sender.send(work());
         }));
         None
@@ -658,32 +691,47 @@ where
     run_core(app, backend, events, &mut exec, Some(&results))
 }
 
-/// Runs `app` like [`run_threaded`], but performs commands on a **tokio
-/// runtime's blocking pool** instead of one `std::thread` per command.
-/// Available only with the `async` cargo feature.
+/// The **async event loop**: drives `app` over an [`AsyncEventSource`] with a
+/// `tokio::select!` over input, command results, and ticks. Available only
+/// with the `async` cargo feature; **must be awaited inside a tokio runtime**.
 ///
-/// Same off-loop semantics, same reducer, same stop rules as
-/// [`run_threaded`]/[`run_pooled`] — only the executor differs. Reach for this
-/// when the app already runs on tokio and you want command work on that
-/// runtime's managed, instrumented blocking pool (shared limits, `tracing`,
-/// metrics) rather than unmanaged `std::thread`s; otherwise [`run_threaded`]
-/// (no dependency) is the simpler default and `rstui_crossterm::run_app` uses
-/// it. The reducer is the *same* `settle`, so behavior matches the headless
-/// `Harness` up to *when* (not whether) a command's message lands.
+/// This is the fast-TUI architecture (ADR 0011, superseding ADR 0009). Where
+/// the sync loops ([`run`]/[`run_threaded`]/[`run_pooled`]) wake on a poll
+/// interval to drain off-loop results, this `select!`s three sources and
+/// reacts to whichever is ready *immediately* — no polling latency, and the
+/// process is genuinely idle (no wakeups) when nothing is happening:
 ///
-/// This owns a private current-thread tokio runtime, so the caller need not
-/// already be inside one. It is **not** an async event loop and adds no
-/// future-valued `Cmd`: the event loop stays synchronous and the default build
-/// stays tokio-free — see
-/// [ADR 0009](https://github.com/andymac4182/rstui/blob/main/docs/adr/0009-optional-async-runtime-policy.md)
-/// for the policy and exactly what remains deferred.
+/// - **input** — `events.next_event().await`, mapped through
+///   [`on_event`](App::on_event);
+/// - **command results** — a tokio `mpsc` the off-loop
+///   `TokioCommandExecutor` feeds, folded through
+///   [`update`](App::update) the moment they finish;
+/// - **ticks** — a `tokio::time::interval` when
+///   [`tick_rate`](App::tick_rate) is `Some`, mapped through
+///   [`on_tick`](App::on_tick).
+///
+/// The `select!` is `biased` (input first, then results, then ticks) so input
+/// never starves under load — the deterministic priority the sync loops also
+/// intend. Critically, the **reducer is unchanged**: every arm calls the same
+/// sync `step`/`settle`/`render`, so the headless [`Harness`](crate::Harness)
+/// (which drives that same `settle`) remains the exact deterministic test of
+/// app logic; only effect/IO multiplexing is async. The loop stops on
+/// [`Cmd::quit`](crate::Cmd::quit), on `Ok(None)` from the source (input ended
+/// for good), or returns the source/backend error.
+///
+/// `AsyncEventSource::next_event` must be **cancel-safe** (a `select!` drops
+/// the losing branch's future): it must not lose an event if its future is
+/// dropped before completing. Channel/stream-backed sources (tokio `mpsc`,
+/// crossterm `EventStream`) satisfy this, as do `tokio::mpsc::Receiver::recv`
+/// and `Interval::tick` used here.
 ///
 /// # Errors
 ///
-/// Identical to [`run`].
+/// [`RunError::Backend`] on a render/terminal failure, [`RunError::Input`] if
+/// [`AsyncEventSource::next_event`] fails.
 #[cfg(feature = "async")]
-pub fn run_async<A, B, S>(
-    app: A,
+pub async fn run_async<A, B, S>(
+    mut app: A,
     backend: B,
     events: &mut S,
 ) -> Result<A, RunError<B::Error, S::Error>>
@@ -691,25 +739,94 @@ where
     A: App,
     A::Message: Send + 'static,
     B: Backend,
-    S: EventSource,
+    S: AsyncEventSource,
 {
-    // The lightest runtime that still provides a `spawn_blocking` pool;
-    // constructing a current-thread runtime cannot meaningfully fail in a
-    // healthy process (the same pragmatic `expect` `Harness` uses for its
-    // infallible `TestBackend`).
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("rstui-runtime: tokio current-thread runtime construction");
-    let (sender, results) = mpsc::channel();
-    let mut exec = AsyncCommandExecutor {
-        handle: runtime.handle().clone(),
+    let mut terminal = Terminal::new(backend).map_err(RunError::Backend)?;
+
+    // The command-result channel the loop `select!`s on. `Handle::current()`
+    // is valid because this future is polled inside the caller's tokio
+    // runtime; the sender lives in `exec` (this frame) for the whole loop, so
+    // `rx.recv()` never sees a closed channel while running.
+    let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut exec = TokioCommandExecutor {
+        handle: tokio::runtime::Handle::current(),
         sender,
     };
-    // `run_core` blocks the *caller* thread on `poll_event` — never a runtime
-    // worker — so this is sound: `spawn_blocking` uses tokio's separate
-    // blocking pool, which keeps working as long as `runtime` is alive (it is
-    // held in scope until this returns).
-    run_core(app, backend, events, &mut exec, Some(&results))
+
+    // Mirror `run_core`/`Harness::new`: init, settle, first frame — so an
+    // `init` that quits is observed before any `select!`.
+    let init = app.init();
+    let mut running = settle(&mut app, init, DEFAULT_COMMAND_BUDGET, &mut exec) == Settled::Running;
+    render(&mut terminal, &app).map_err(RunError::Backend)?;
+
+    // Rebuilt only when `tick_rate` toggles/retunes (not every iteration), so
+    // the cadence is a stable wall-clock schedule input does not reset —
+    // `Interval::tick` is cancel-safe, so a `select!` loss keeps the schedule.
+    let mut ticker: Option<tokio::time::Interval> = None;
+    let mut last_rate: Option<Duration> = None;
+
+    while running {
+        let rate = app.tick_rate();
+        if rate != last_rate {
+            ticker = rate.map(|period| {
+                let mut interval =
+                    tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                // Coalesce missed ticks (a slow frame never bursts) — the same
+                // rule the sync loop's `saturating_duration_since` gives.
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval
+            });
+            last_rate = rate;
+        }
+
+        tokio::select! {
+            // Input first so a flood of results/ticks never starves keys.
+            biased;
+
+            event = events.next_event() => match event {
+                Ok(Some(event)) => {
+                    if let Some(message) = app.on_event(event) {
+                        if step(&mut app, message, &mut exec) == Settled::Quit {
+                            running = false;
+                        }
+                    }
+                    render(&mut terminal, &app).map_err(RunError::Backend)?;
+                }
+                // Single, unambiguous meaning (unlike sync `poll_event`):
+                // input ended for good.
+                Ok(None) => running = false,
+                Err(error) => return Err(RunError::Input(error)),
+            },
+
+            Some(message) = rx.recv() => {
+                if step(&mut app, message, &mut exec) == Settled::Quit {
+                    running = false;
+                }
+                render(&mut terminal, &app).map_err(RunError::Backend)?;
+            }
+
+            // An inline future that is `pending()` (never fires) when there is
+            // no ticker, so no `if`-guard / `unwrap` is needed and the arm is
+            // simply inert while the app declares no tick rate.
+            () = async {
+                match ticker.as_mut() {
+                    Some(interval) => {
+                        interval.tick().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                if let Some(message) = app.on_tick() {
+                    if step(&mut app, message, &mut exec) == Settled::Quit {
+                        running = false;
+                    }
+                }
+                render(&mut terminal, &app).map_err(RunError::Backend)?;
+            }
+        }
+    }
+
+    Ok(app)
 }
 
 /// The one loop body both [`run`] (inline, no `results`) and [`run_threaded`]
@@ -1298,16 +1415,36 @@ mod tests {
         assert!(app.ticked && app.worked, "tick fired then pooled work ran");
     }
 
-    /// `run_async` runs the *same* reducer off-loop on a tokio blocking pool:
-    /// `init`'s perform "fails" once, schedules a real `Cmd::tick` retry, then
-    /// succeeds and quits. Exercised only under `--features async` (the
-    /// workspace CI gate runs `--all-features`, so this is covered there while
-    /// the default build never compiles tokio). `run_async` owns its runtime,
-    /// so this is a plain `#[test]` — no `#[tokio::test]`, keeping the tokio
-    /// feature set minimal (`rt` only).
+    /// A scripted [`AsyncEventSource`] backed by a tokio `mpsc`: the async
+    /// dual of `TestEventSource`. `next_event` is cancel-safe (channel-backed),
+    /// so it is sound under the loop's `select!`. While the sender is held and
+    /// idle, `recv().await` stays pending — the loop is then driven purely by
+    /// command results / ticks, exactly the path under test.
     #[cfg(feature = "async")]
-    #[test]
-    fn run_async_drives_the_same_reducer_off_a_tokio_pool() {
+    struct ScriptedAsyncSource {
+        rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
+    }
+
+    #[cfg(feature = "async")]
+    impl AsyncEventSource for ScriptedAsyncSource {
+        type Error = Infallible;
+        async fn next_event(&mut self) -> Result<Option<Event>, Infallible> {
+            // `None` (all senders dropped) is the clean end-of-input signal.
+            Ok(self.rx.recv().await)
+        }
+    }
+
+    /// The async loop drives the *same* reducer as the sync loops: `init`'s
+    /// off-loop perform "fails" once, a real `Cmd::tick` retry then a perform
+    /// succeed and quit. `start_paused` gives virtual time (auto-advanced when
+    /// idle), so the tick resolves deterministically with **no real clock** —
+    /// the async-plumbing analogue of the sync `Harness`'s determinism.
+    /// Exercised only under `--features async`; the workspace CI gate runs
+    /// `--all-features`, so it is covered while the default build never
+    /// compiles tokio.
+    #[cfg(feature = "async")]
+    #[tokio::test(start_paused = true)]
+    async fn run_async_drives_the_same_reducer_over_the_select_loop() {
         #[derive(Default)]
         struct AsyncApp {
             attempts: u32,
@@ -1338,10 +1475,16 @@ mod tests {
             }
             fn view(&self, _: &mut rstui_core::Frame<'_>) {}
         }
-        let mut input = TestEventSource::new();
-        let app = run_async(AsyncApp::default(), TestBackend::new(2, 1), &mut input).unwrap();
+        let (keepalive_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut source = ScriptedAsyncSource { rx };
+        let app = run_async(AsyncApp::default(), TestBackend::new(2, 1), &mut source)
+            .await
+            .unwrap();
+        // Held until after the loop so `next_event` never reports end-of-input
+        // (the app must stop via `Cmd::quit`, not a drained source).
+        drop(keepalive_tx);
         assert_eq!(app.attempts, 1, "the off-loop perform failed once");
-        assert!(app.done, "the tokio-pool tick retry then perform completed");
+        assert!(app.done, "the tick retry then perform completed via select");
     }
 
     /// A `Backend` sharing its in-memory surface through an `Rc<RefCell<_>>`

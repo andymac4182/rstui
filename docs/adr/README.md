@@ -38,5 +38,6 @@ MADR-style shape:
 | [0006](0006-runtime-tick-and-loop-model.md) | Runtime tick and loop model | Accepted |
 | [0007](0007-plugin-host-and-secure-execution.md) | Plugin host and secure execution | Accepted |
 | [0008](0008-async-command-executor.md) | Off-loop command executor (threads, no async dependency) | Accepted |
-| [0009](0009-optional-async-runtime-policy.md) | Optional async-runtime policy (feature-gated tokio) | Accepted |
+| [0009](0009-optional-async-runtime-policy.md) | Optional async-runtime policy (feature-gated tokio) | Superseded by [0011](0011-async-event-loop.md) |
 | [0010](0010-production-ci-and-release-readiness-posture.md) | Production CI and release-readiness posture | Accepted |
+| [0011](0011-async-event-loop.md) | Async event loop (`tokio::select!`) | Accepted |
