@@ -101,16 +101,20 @@ experience screen.
 | `s` `o` `c` `/` `e` | Data Grid: sort · group · collapse · filter · edit cell (`[` `]` pick the active column) |
 | `:` | Command palette — type to filter, `Enter` to jump |
 | `?` | Help overlay — the **live** keymap (reverse-looked-up, follows remaps) |
-| `g` | Settings drawer — the keymap manager (OS, active map, table; capture-to-rebind, disable, theme) |
+| `g` | Settings drawer — the keymap manager, now the shared [`KeymapView`](widgets/overlays-and-control.md#keymapview) widget (capture-to-rebind, disable, theme) |
 | `F2` | Cycle keymap: Default → Vim → opencode-style Leader |
 | `q` / `Esc` | Quit (opens a confirm modal; `y`/`Enter` confirms) |
 | typing | Into focused inputs; filters the palette |
 | mouse / scroll | Click hit-testing; wheel/PageUp-Down scrolling; **drag-and-drop** on the Kanban board (press a card, drag it to another column — see the reusable pointer-gesture recipe in [composition.md](composition.md#mouse-clicks-drags-and-reusable-pointer-gestures)) |
 
 Every shell binding is a semantic `Action` resolved through the shared
-[`rstui-keymap`](keymaps.md) engine (ADR 0015) — so the bindings above are
-the *Default* keymap; switching keymaps or remapping in the drawer changes
-them and the help/footer follow automatically. The displayed chords are
+[`rstui-keymap`](keymaps.md) engine (ADR 0015), and the drawer's keymap
+manager is the shared
+[`KeymapView`](widgets/overlays-and-control.md#keymapview) widget — the
+exact same widget git-review and acp-client use, a pure projection of the
+live keymap. So the bindings above are the *Default* keymap; switching
+keymaps or remapping in the drawer changes them and the help/footer follow
+automatically. The displayed chords are
 per-OS (`⌘` on macOS, `Ctrl` elsewhere). `RSTUI_KEYMAP=Vim` picks a map
 at launch, or point it at a keymap config file to remap actions — no
 rebuild, no drawer needed, mirroring `RSTUI_THEME`

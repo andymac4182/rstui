@@ -97,15 +97,17 @@ fn help_overlay_redrives_from_the_active_keymap() {
 fn drawer_live_rebinds_an_action() {
     let mut h = harness();
     h.handle(ch('g')); // settings drawer
+    let s = h.snapshot();
     assert!(
-        h.snapshot().contains("Keymap:"),
-        "drawer shows the keymap manager:\n{}",
-        h.snapshot()
+        // The shared `KeymapView` widget renders the action rows (the id
+        // column clips in the 36-wide drawer, so assert the stable label).
+        s.contains("Command palette") && s.contains("Settings drawer"),
+        "drawer shows the keymap manager (KeymapView):\n{s}"
     );
     // The first row is the palette action; arm a rebind and capture `p`.
     h.handle(ch('r'));
     assert!(
-        h.snapshot().contains("Press a key to bind"),
+        h.snapshot().contains("press a key to bind"),
         "rebind capture armed:\n{}",
         h.snapshot()
     );
