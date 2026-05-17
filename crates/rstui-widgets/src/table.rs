@@ -390,12 +390,22 @@ impl Widget for Table<'_> {
             inner.width.saturating_sub(gutter_width),
             inner.height,
         );
+        // T3/T5 (the `tree.rs` windowing precedent the audit prescribes):
+        // size columns from the rows that can actually be on screen —
+        // `[offset, offset + data_height)` plus the always-drawn header —
+        // not the whole dataset. `render` only paints that window, so a
+        // 100k-row table no longer scans every row's cell count / width
+        // each frame. This is byte-identical wherever the scan ran on the
+        // full set anyway: the common explicit-`widths` path takes no scan
+        // at all, and at `offset == 0` with the data shorter than the
+        // viewport the window *is* every row. It only differs — by intent,
+        // the immediate-mode "fit the visible content" behaviour — for a
+        // `widths`-empty/`Proportional` table scrolled past rows whose cell
+        // count/width differs from the visible ones.
+        let vis_h = inner.height.saturating_sub(u16::from(header.is_some())) as usize;
+        let sized_rows = || rows.iter().skip(offset).take(vis_h).chain(header.iter());
         let col_count = if widths.is_empty() {
-            rows.iter()
-                .chain(header.iter())
-                .map(|r| r.cells.len())
-                .max()
-                .unwrap_or(0)
+            sized_rows().map(|r| r.cells.len()).max().unwrap_or(0)
         } else {
             widths.len()
         };
@@ -417,7 +427,7 @@ impl Widget for Table<'_> {
                 // Each column's widest cell (header included) as a Length; the
                 // divider scales them down if their sum overflows the area.
                 let mut max_w = vec![0u16; col_count];
-                for r in rows.iter().chain(header.iter()) {
+                for r in sized_rows() {
                     for (i, cell) in r.cells.iter().enumerate().take(col_count) {
                         let w = u16::try_from(cell.width()).unwrap_or(u16::MAX);
                         max_w[i] = max_w[i].max(w);
@@ -807,6 +817,29 @@ mod tests {
         .column_spacing(0)
         .column_fit(TableColumnFit::Proportional);
         assert_eq!(grid(table, 5, 2), "xyyyy\nab   \n");
+    }
+
+    #[test]
+    fn t3_t5_column_sizing_windows_to_the_visible_rows() {
+        // T3/T5 gate: a far-wider row scrolled OUT of the viewport must not
+        // size the columns — sizing windows to `[offset, offset+height)` +
+        // header (the `tree.rs` precedent the audit prescribes). Rows 0–1
+        // are narrow, row 2 is far wider; height 2, offset 0 ⇒ only rows
+        // 0–1 are visible, so Proportional fits *those*: col0 = 2 ("aa"),
+        // col1 = 2 ("bb"), exactly filling width 4. (Pre-windowing it would
+        // have scanned row 2's 12/8-wide cells and the divider would scale
+        // every column down — a visibly different grid.)
+        let table = Table::new(
+            [
+                Row::new(["aa", "bb"]),
+                Row::new(["c", "d"]),
+                Row::new(["WIDEWIDEWIDE", "ALSOWIDE"]),
+            ],
+            Vec::<Constraint>::new(),
+        )
+        .column_spacing(0)
+        .column_fit(TableColumnFit::Proportional);
+        assert_eq!(grid(table, 4, 2), "aabb\nc d \n");
     }
 
     #[test]

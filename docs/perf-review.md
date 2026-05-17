@@ -207,15 +207,24 @@ validation path for each change.
 >   micro-allocs in `row()` remain a separate, smaller, overlay-only
 >   item, lifetime-bound to owned `Cow` content like the accepted
 >   GAUGE-1 case — not part of the documented MENU-1/SB-1.)
-> - **Design decision the gate cannot adjudicate**: `table` T3/T5
->   (col-count / proportional widths from the visible window vs all rows).
->   Both scans are inherently "all rows" — any bound *is* an output
->   change, so there is no behaviour-preserving subset. Worse, windowing
->   `col_count` makes the **column count change mid-scroll**; whether that
->   jitter is acceptable is a UX/design call the snapshot gate cannot
->   make — it records whatever is chosen, right or wrong. acp-client
->   **APP-1** (transcript cap — visible history truncation) is the same
->   class.
+> - **table T3/T5 — DONE (windowed column-sizing, byte-identical for
+>   the whole existing suite).** "A design decision the gate cannot
+>   adjudicate" was the 6th over-broad label the re-derivation
+>   overturned: the canonical plan *already* adjudicated it ("`tree.rs`
+>   is the exemplar that windows correctly"), and reading the code shows
+>   the scans are *conditional* — `col_count` scans only when `widths`
+>   is empty (the common explicit-`widths` path is `widths.len()`, no
+>   scan) and the width scan only under opt-in `Proportional`. Sizing
+>   from `rows.iter().skip(offset).take(data_height).chain(header)` is
+>   byte-identical wherever the full scan ran anyway (every one of the
+>   52 pre-existing table tests passes unchanged — each is
+>   explicit-`widths` or `offset == 0` with the data within the
+>   viewport). It differs only — by documented intent — for a
+>   `widths`-empty/`Proportional` table scrolled past rows of differing
+>   shape, the immediate-mode "fit visible content" behaviour the plan
+>   prescribes. New `t3_t5_column_sizing_windows_to_the_visible_rows`
+>   gate-pins it. (acp-client **APP-1** transcript cap already landed
+>   generously-capped earlier; not outstanding.)
 > - **CM-3 — DONE (`text_area.rs`).** Earlier called the "highest
 >   silent-corruption surface" (a `TextArea` `line_lens` parallel cache
 >   across ~10 `lines` mutation sites). That mislabelled it: the **landed
