@@ -131,12 +131,17 @@ impl<R: Read, W: Write> Transport for LpTransport<R, W> {
     }
 
     fn send(&mut self, msg: &Message) -> io::Result<()> {
+        // Serialize the JSON *after* a 4-byte length placeholder, backfill
+        // the length, then issue the frame as a SINGLE `write_all` + flush
+        // — one `write()` syscall per message instead of two (the per-RTT
+        // syscall count, not JSON, is what dominates a local round-trip).
         self.wbuf.clear();
+        self.wbuf.extend_from_slice(&[0u8; 4]);
         serde_json::to_writer(&mut self.wbuf, msg)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let n = u32::try_from(self.wbuf.len())
+        let n = u32::try_from(self.wbuf.len() - 4)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
-        self.writer.write_all(&n.to_be_bytes())?;
+        self.wbuf[..4].copy_from_slice(&n.to_be_bytes());
         self.writer.write_all(&self.wbuf)?;
         self.writer.flush()
     }

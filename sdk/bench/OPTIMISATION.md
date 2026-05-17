@@ -45,6 +45,62 @@ not the bottleneck for the messages TUI plugins actually send.** The
 blob row shows the *only* regime where a zero-copy codec would win —
 multi-KB structured payloads, which the plugin vocabulary doesn't carry.
 
+## 1a. The real stdio RTT (Rust↔Rust) — and getting under 10 µs
+
+`RESULTS.md` measures a Rust plugin against a **Node** harness, so its
+latency carries libuv + V8 + Promise/microtask overhead *on the measuring
+side*. That is not the production path. The real consumer is the Rust
+client driving an SDK plugin over pipes. `examples/rtt.rs` removes Node:
+a tight Rust host loop times the round-trip against the real SDK plugin.
+
+Apple M1 Pro, release, single in-flight, 50 000 iterations:
+
+| framing | min | **p50** | p95 |
+|---|--:|--:|--:|
+| stdio (newline) | 4.6 µs | **6.5 µs** | 18 µs |
+| stdio-lp | 4.4 µs | **5.3 µs** | 16 µs |
+
+So **typical stdio RTT is already < 10 µs** (5.3 µs with `--lp`); the
+22 µs in `RESULTS.md` was ~75 % Node-harness overhead, not transport.
+What is left in the ~5 µs is irreducible at the OS level: two pipe
+traversals + **two process wake-ups** + one JSON encode/decode each way.
+`min` ≈ 4.5 µs is the wake-up+syscall floor on this machine.
+
+What we changed to get here, and the reasoning per layer:
+
+- **One `write()` syscall per message.** `LpTransport::send` now
+  serialises after a 4-byte length placeholder and emits the whole frame
+  in a single `write_all` + flush (was length-then-body, two buffered
+  writes). Syscall count — not JSON — is what a local RTT is made of, so
+  removing one write per direction is a real ~p50 win, and it is why
+  `stdio-lp` now beats newline (5.3 vs 6.5 µs): exact-length reads + a
+  single write, no newline scan.
+- **Nothing else in the transport is on the critical path.** The read
+  side is already one `read()` into a `BufReader`; JSON is ~1.3 µs (§1).
+
+**p95 is the open item, and it is not a transport bug.** ~16 µs p95 is
+the OS scheduler waking a *sleeping* process — inherent to a two-process
+pipe model. No serializer or framing change removes a context switch.
+The only ways to push p95 (and p99) under 10 µs:
+
+1. **Spin/poll mode** — don't sleep in `read()`; set the fd non-blocking
+   and busy-poll. RTT collapses to ~2–4 µs *including the tail* (no
+   wake-up). Cost: one core pinned at 100 % per spinning end, and
+   non-blocking stdin needs `fcntl`/`O_NONBLOCK` → `libc` + an `unsafe`
+   FFI call. This repo is `unsafe_code = forbid` and zero-dep-by-default,
+   so it is a **policy decision**, gated behind an opt-in
+   `--spin`/`RSTUI_PLUGIN_SPIN` for the rare latency-critical plugin —
+   never the default (a TUI host with many plugins must not burn N cores).
+2. **Shared-memory ring + futex/eventfd** — true sub-µs to low-µs, flat
+   tail. This is a *different transport*, not stdio, and also needs
+   `unsafe`/mmap or a dependency. Justified only if a plugin genuinely
+   needs hard real-time IPC; out of scope for the JSON-RPC plugin model.
+
+Recommendation: **default stdio with `--lp` already meets "< 10 µs"
+for p50/typical** — ship that. Treat sub-10 µs *p95* as opt-in spin
+mode, implemented only if a concrete plugin needs it and the
+`unsafe`/dependency budget is explicitly opened for that path.
+
 ## 2. Hot-path optimisations applied
 
 All three target the dominant cost (per-message work on the hot loop),
@@ -64,10 +120,12 @@ not the serializer:
   whole frames in place and, in the steady state (each chunk carries
   complete frames), simply *adopts* the next chunk — zero copy. Rust
   `stdio-lp` throughput moved ~156 k → ~208 k msg/s across re-runs.
-- **Rust `LpTransport` buffer reuse.** `recv` no longer `vec![0u8; n]`
-  per frame and `send` no longer allocates a temp `Vec` (serialises
-  straight into a reused buffer via `serde_json::to_writer`). A steady
-  stream now allocates once, not per message.
+- **Rust `LpTransport` buffer reuse + single-write send.** `recv` no
+  longer `vec![0u8; n]` per frame; `send` serialises straight into a
+  reused buffer *after a 4-byte length placeholder* and writes the whole
+  frame in **one `write_all` + flush** (was two buffered writes). A
+  steady stream allocates once, not per message, and pays one `write()`
+  syscall per direction — the §1a p50 win.
 
 Net: the JSON-RPC round-trip now does **one decode + one encode** on the
 TS side (down from up to three of each) and **zero per-message heap
@@ -158,6 +216,7 @@ today). It is not a substitute for the local UDS/stdio path.
 ```
 cargo build --release -p rstui-acp-client --bin rstui-acp-plugin-fortune
 node sdk/bench/verify.mjs        # correctness: 3 hosts × 5 transports
-node sdk/bench/bench.mjs         # → sdk/bench/RESULTS.md
+node sdk/bench/bench.mjs         # → sdk/bench/RESULTS.md (vs Node harness)
 node sdk/bench/serde-micro.mjs   # JSON ser/de cost vs round-trip
+cargo run --release --example rtt -p rstui-acp-plugin-sdk  # §1a true Rust↔Rust RTT
 ```
