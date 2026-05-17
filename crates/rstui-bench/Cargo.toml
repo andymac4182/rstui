@@ -12,9 +12,14 @@ description = "rstui hot-path benchmark runner: a dependency-free, deterministic
 [lints]
 workspace = true
 
-# Dependency-free by design, mirroring `xtask` (ADR 0003 §7) and extended by
-# ADR 0005: the benchmark runner measures `rstui-core`'s public API and must
-# not pull a benchmarking framework. `rstui-core` is itself dependency-free,
-# so the only thing built here is rstui code plus std.
+# No external dependency by design, mirroring `xtask` (ADR 0003 §7) and
+# ADR 0005: the benchmark runner must not pull a benchmarking framework.
+# Only **first-party rstui crates** + std are built here — never an external
+# crate. ADR 0005 follow-up #3 explicitly sanctions wiring widget-render
+# hot paths "as their surfaces stabilize, still through the public API
+# only"; `rstui-widgets` is added for the `widget/*/render` scenarios and is
+# itself a `rstui-core`-only crate, so the "rstui code plus std" property
+# holds.
 [dependencies]
 rstui-core = { path = "../rstui-core" }
+rstui-widgets = { path = "../rstui-widgets" }

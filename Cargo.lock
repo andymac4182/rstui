@@ -749,6 +749,7 @@ name = "rstui-bench"
 version = "0.0.1"
 dependencies = [
  "rstui-core",
+ "rstui-widgets",
 ]
 
 [[package]]

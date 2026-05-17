@@ -17,8 +17,10 @@
 //! so numbers are comparable run to run.
 
 use rstui_core::{
-    Buffer, Cell, Constraint, Layout, Position, Rect, Selection, Style, TextArea, selected_text,
+    Buffer, Cell, Constraint, Layout, Position, Rect, Selection, Style, TextArea, Widget,
+    selected_text,
 };
+use rstui_widgets::{List, ListItem, Markdown, Paragraph, Row, Table, Tree, TreeItem, Wrap};
 
 use crate::measure::{Bench, Stats};
 
@@ -168,6 +170,98 @@ fn selection_extract(bench: &Bench) -> Stats {
     bench.run(|| selected_text(&buf, &sel))
 }
 
+/// A representative multi-cell dataset, built once outside the timed
+/// closure (the scenario brief: only the hot op is measured).
+fn rows_data(n: usize) -> Vec<String> {
+    (0..n)
+        .map(|i| format!("{i:>5}  the quick brown fox jumps over the lazy dog 0123456789"))
+        .collect()
+}
+
+/// `widget/list/render` — project + stamp a long `List` (the kitchen-sink
+/// log/menu pane): the immediate-mode per-frame cost of building the
+/// `Vec<ListItem>` from borrowed rows and rendering the visible window.
+fn widget_list_render(bench: &Bench) -> Stats {
+    let data = rows_data(1000);
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        List::new(data.iter().map(|s| ListItem::new(s.as_str()))).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/table/render` — a 200×4 data grid: per-frame `Vec<Row>` build,
+/// column solve, and cell stamping (the `Table` hot path T1/T3/T5 cover).
+fn widget_table_render(bench: &Bench) -> Stats {
+    let data: Vec<[String; 4]> = (0..200)
+        .map(|i| {
+            [
+                format!("row {i}"),
+                format!("value {}", i * 7),
+                "the quick brown fox".to_owned(),
+                format!("{}%", i % 100),
+            ]
+        })
+        .collect();
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        Table::new(
+            data.iter().map(|c| Row::new(c.iter().map(String::as_str))),
+            [Constraint::Fill(1); 4],
+        )
+        .render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/tree/render` — a 300-node tree (the files/navigation pane): the
+/// clean per-widget exemplar, bounded to the visible window.
+fn widget_tree_render(bench: &Bench) -> Stats {
+    let data = rows_data(300);
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        Tree::new(
+            data.iter()
+                .enumerate()
+                .map(|(i, s)| TreeItem::new((i % 5) as u16, s.as_str())),
+        )
+        .render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/paragraph/render` — soft-wrap + stamp a ~400-line document (the
+/// scrollable transcript/description pane); PG-1 caps this to the window.
+fn widget_paragraph_render(bench: &Bench) -> Stats {
+    let text = rows_data(400).join("\n");
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        Paragraph::new(text.as_str())
+            .wrap(Wrap { trim: false })
+            .render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/markdown/render` — the heaviest widget: a full CommonMark
+/// parse + layout on **every** render (MD-1), the dominant cost of any
+/// frame with a Markdown pane until a caller-owned cache lands (Tier-2).
+fn widget_markdown_render(bench: &Bench) -> Stats {
+    let mut src = String::new();
+    for i in 0..120 {
+        src.push_str(&format!(
+            "# Heading {i}\n\nThe quick **brown** fox _jumps_ over the `lazy` dog. \
+             A short paragraph with [a link](https://example.com) and some text.\n\n\
+             - bullet one\n- bullet two\n\n```rust\nfn main() {{ let x = {i}; }}\n```\n\n"
+        ));
+    }
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        Markdown::new(src.as_str()).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
 /// The scenario registry: stable `name` → measuring function. `main` filters
 /// and iterates this; the names are the substring-filter and `--list`
 /// vocabulary, so keep them stable and `/`-segmented.
@@ -182,6 +276,11 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     ("layout/split/nested", layout_split_nested),
     ("edit/textarea/insert", edit_textarea_insert),
     ("selection/extract", selection_extract),
+    ("widget/list/render", widget_list_render),
+    ("widget/table/render", widget_table_render),
+    ("widget/tree/render", widget_tree_render),
+    ("widget/paragraph/render", widget_paragraph_render),
+    ("widget/markdown/render", widget_markdown_render),
 ];
 
 #[cfg(test)]
