@@ -65,10 +65,31 @@ constructors don't cover.
 
 ## User-supplied themes
 
-The on-disk format is gpui-component's `ThemeSet` JSON, unchanged. Load a
-user file with [`Theme::from_set_json`]; it resolves through the exact
-same path as the built-ins (unknown GUI-only keys are ignored, not
-rejected, and a malformed file is a typed `ThemeError`, not a panic).
+Users are not limited to the built-ins. A theme is just a gpui-component
+`ThemeSet` JSON document — the exact format the vendored ones use — and it
+loads through the same resolution path:
+
+| API | Source |
+|---|---|
+| [`Theme::from_set_json`] | an in-memory JSON string |
+| [`Theme::from_set_file`] | a `.json` file |
+| [`Theme::load_dir`] | every `.json` in a directory (a user themes dir) |
+
+```rust
+use rstui_theme::Theme;
+
+// Built-ins plus whatever the user dropped in their config dir.
+let mut all = Theme::all();
+if let Ok(user) = Theme::load_dir("~/.config/myapp/themes") {
+    all.extend(user);
+}
+```
+
+Unknown GUI-only keys are ignored (not rejected), and any failure is a
+typed [`ThemeError`] (`Parse` / `Read`, with the offending path) — never a
+panic. The kitchen-sink wires this end to end: `RSTUI_THEME` accepts
+either a built-in name **or a path to a theme file**, e.g.
+`RSTUI_THEME=./my-theme.json cargo run -p rstui-kitchen-sink`.
 
 ## How the port stays faithful
 
@@ -100,5 +121,8 @@ fallback + the alpha clamps land on their exact expected values.
 [`Theme`]: https://docs.rs/rstui-theme
 [`ThemePalette`]: https://docs.rs/rstui-theme
 [`Theme::from_set_json`]: https://docs.rs/rstui-theme
+[`Theme::from_set_file`]: https://docs.rs/rstui-theme
+[`Theme::load_dir`]: https://docs.rs/rstui-theme
+[`ThemeError`]: https://docs.rs/rstui-theme
 [`Color`]: https://docs.rs/rstui-core
 [`Style`]: https://docs.rs/rstui-core

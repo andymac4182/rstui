@@ -231,13 +231,31 @@ impl KitchenSink {
         }
     }
 
-    /// Skin the whole app with a named gpui-component theme (any of
-    /// [`rstui_theme::Theme::all`], case-insensitive). Unknown names keep the
-    /// built-in default — a typo never leaves a blank screen. This is the one
-    /// seam `RSTUI_THEME` flows through, so every screen reskins for free.
+    /// Skin the whole app with a theme: either a built-in gpui-component
+    /// theme by name (any of [`rstui_theme::Theme::all`], case-insensitive)
+    /// **or a path to your own `ThemeSet` JSON file** — so users theme the
+    /// app without rebuilding. An unknown name or unreadable/invalid file
+    /// keeps the built-in default (a typo never leaves a blank screen). This
+    /// is the one seam `RSTUI_THEME` flows through, so every screen reskins
+    /// for free.
     #[must_use]
-    pub fn with_theme(mut self, name: &str) -> Self {
-        if let Some(t) = rstui_theme::Theme::by_name(name) {
+    pub fn with_theme(mut self, name_or_path: &str) -> Self {
+        // A path (exists on disk) → user's own theme file; pick its default
+        // theme, else the first. Otherwise treat it as a built-in name.
+        let picked = if std::path::Path::new(name_or_path).is_file() {
+            rstui_theme::Theme::from_set_file(name_or_path)
+                .ok()
+                .and_then(|themes| {
+                    themes
+                        .iter()
+                        .find(|t| t.is_default)
+                        .or_else(|| themes.first())
+                        .cloned()
+                })
+        } else {
+            rstui_theme::Theme::by_name(name_or_path)
+        };
+        if let Some(t) = picked {
             self.theme = Theme::from_palette(&t.palette);
             self.theme_name = t.name;
         }

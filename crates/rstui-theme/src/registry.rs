@@ -11,6 +11,8 @@ use crate::cascade::ThemeColor;
 use crate::palette::ThemePalette;
 use crate::schema::{ThemeMode, ThemeSet};
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// gpui-component's shadcn base theme — the light/dark palette every other
@@ -49,17 +51,28 @@ const THEME_SETS: &[(&str, &str)] = &[
     ("twilight.json", include_str!("../themes/twilight.json")),
 ];
 
-/// A failure loading a theme set from JSON (built-in catalogue or user file).
+/// A failure loading a theme set (built-in catalogue, or a user file/dir).
 #[derive(Debug)]
 pub enum ThemeError {
     /// The JSON did not match gpui-component's `ThemeSet` schema.
     Parse(serde_json::Error),
+    /// A theme file or directory could not be read (the path is included so
+    /// the message names the offending file, not just "not found").
+    Read {
+        /// The path that failed to read.
+        path: String,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
 }
 
 impl fmt::Display for ThemeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ThemeError::Parse(e) => write!(f, "invalid theme JSON: {e}"),
+            ThemeError::Read { path, source } => {
+                write!(f, "cannot read theme path {path:?}: {source}")
+            }
         }
     }
 }
@@ -68,6 +81,7 @@ impl std::error::Error for ThemeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ThemeError::Parse(e) => Some(e),
+            ThemeError::Read { source, .. } => Some(source),
         }
     }
 }
@@ -142,6 +156,49 @@ impl Theme {
                 }
             })
             .collect())
+    }
+
+    /// Load and parse a gpui-component `ThemeSet` JSON **file** into its
+    /// themes — the convenience over [`from_set_json`](Self::from_set_json)
+    /// for the common "user keeps their theme in a file" case. The format is
+    /// exactly the vendored one, so a file exported from gpui-component (or
+    /// hand-written against its schema) loads unchanged. A read failure names
+    /// the path.
+    pub fn from_set_file(path: impl AsRef<Path>) -> Result<Vec<Theme>, ThemeError> {
+        let path = path.as_ref();
+        let json = fs::read_to_string(path).map_err(|e| ThemeError::Read {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        Self::from_set_json(&json)
+    }
+
+    /// Load every `*.json` theme set in `dir` (non-recursive, sorted by file
+    /// name) and concatenate their themes — the shape of a user themes
+    /// directory dropped next to a config file. Non-`.json` entries are
+    /// ignored; a `.json` that fails to parse is a hard error (a broken theme
+    /// file should fail loudly, not vanish silently). Combine with the
+    /// built-ins via `Theme::all().into_iter().chain(Theme::load_dir(d)?)`.
+    pub fn load_dir(dir: impl AsRef<Path>) -> Result<Vec<Theme>, ThemeError> {
+        let dir = dir.as_ref();
+        let mut files: Vec<PathBuf> = fs::read_dir(dir)
+            .map_err(|e| ThemeError::Read {
+                path: dir.display().to_string(),
+                source: e,
+            })?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case("json"))
+            })
+            .collect();
+        files.sort();
+        let mut out = Vec::new();
+        for f in &files {
+            out.extend(Self::from_set_file(f)?);
+        }
+        Ok(out)
     }
 
     /// Every built-in theme, sorted the way gpui-component sorts them: any

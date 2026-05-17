@@ -22,8 +22,20 @@
 //! let _ = (list_style, t.palette.background);    // wire into widget builders
 //! ```
 //!
-//! User-supplied theme files in gpui-component's JSON format load through the
-//! same path with [`Theme::from_set_json`].
+//! # Bring your own themes
+//!
+//! The crate is published as `rstui-theme` — depend on it and you get the
+//! whole built-in catalogue. Users are not limited to it: a theme is just a
+//! gpui-component `ThemeSet` JSON document (the exact format the built-ins
+//! use), loaded through the same resolution path —
+//!
+//! - [`Theme::from_set_json`] — from an in-memory string,
+//! - [`Theme::from_set_file`] — from a `.json` file,
+//! - [`Theme::load_dir`] — every `.json` in a user themes directory,
+//!
+//! so an app can offer `Theme::all()` plus whatever the user dropped in their
+//! config dir. The kitchen-sink wires this through `RSTUI_THEME`, which
+//! accepts either a built-in name or a path to a theme file.
 //!
 //! # How the port stays faithful
 //!

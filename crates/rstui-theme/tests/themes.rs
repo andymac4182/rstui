@@ -188,3 +188,54 @@ fn default_dark_is_usable_without_lookup() {
     let sel = d.palette.selection();
     assert!(sel.fg.is_some() && sel.bg.is_some());
 }
+
+#[test]
+fn user_themes_load_from_a_file_and_a_directory() {
+    use std::fs;
+    // A unique scratch dir under the OS temp dir (no extra deps).
+    let dir = std::env::temp_dir().join(format!("rstui-theme-files-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("scratch dir");
+
+    let one = r##"{ "name": "Mine", "themes": [
+        { "name": "Mine Dark", "mode": "dark",
+          "colors": { "background": "#0b0e14", "primary.background": "#39bae6" } }
+    ] }"##;
+    let two = r##"{ "name": "Two", "themes": [
+        { "name": "Two Light", "mode": "light", "colors": { "background": "#fafafa" } }
+    ] }"##;
+    let f1 = dir.join("a-mine.json");
+    fs::write(&f1, one).unwrap();
+    fs::write(dir.join("b-two.json"), two).unwrap();
+    fs::write(dir.join("notes.txt"), "ignored").unwrap();
+
+    // from_set_file: a single user file resolves like the built-ins.
+    let themes = Theme::from_set_file(&f1).expect("file loads");
+    assert_eq!(themes.len(), 1);
+    assert_eq!(themes[0].name, "Mine Dark");
+    assert_eq!(themes[0].set_name, "Mine");
+    assert_near(
+        themes[0].palette.background,
+        (0x0b, 0x0e, 0x14),
+        0,
+        "user file bg",
+    );
+
+    // load_dir: every *.json, sorted by name, non-json ignored.
+    let all = Theme::load_dir(&dir).expect("dir loads");
+    assert_eq!(
+        all.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        ["Mine Dark", "Two Light"]
+    );
+
+    // Errors are typed (with the path), never panics.
+    let missing = Theme::from_set_file(dir.join("nope.json"));
+    assert!(matches!(missing, Err(rstui_theme::ThemeError::Read { .. })));
+    fs::write(dir.join("c-bad.json"), "{ not json").unwrap();
+    assert!(matches!(
+        Theme::load_dir(&dir),
+        Err(rstui_theme::ThemeError::Parse(_))
+    ));
+
+    let _ = fs::remove_dir_all(&dir);
+}
