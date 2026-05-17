@@ -42,6 +42,7 @@ fn number_keys_jump_to_every_screen() {
         ('6', "Containers"),
         ('7', "Rich Text"),
         ('8', "Colour"),
+        ('9', "Data Grid"),
         ('1', "Welcome"),
     ];
     for (digit, expect) in probes {

@@ -37,18 +37,21 @@ fn rail_is_grouped_into_widgets_and_experiences() {
 }
 
 #[test]
-fn nine_jumps_to_chat() {
+fn nine_jumps_to_data_grid() {
+    // Adding the Data Grid as the 9th Widgets screen shifts the digit map:
+    // `9` now lands on it (Chat moved past the digit range — reach it via
+    // the command palette, the index-stable navigation the other tests use).
     let mut h = harness();
     h.handle(ch('9'));
     let s = h.snapshot();
-    assert!(s.contains("Channels"), "Chat rail renders:\n{s}");
-    assert!(s.contains("#general"), "seeded channel shows");
+    assert!(s.contains("Data Grid"), "Data Grid title renders:\n{s}");
+    assert!(s.contains("s sort"), "the grid keymap hint shows:\n{s}");
 }
 
 #[test]
 fn chat_send_appends_message_and_canned_reply() {
     let mut h = harness();
-    h.handle(ch('9')); // Chat, content focused
+    goto(&mut h, "chat"); // Chat, content focused (palette → index-stable)
     typed(&mut h, "hello"); // chars reach the composer (text-entry screen)
     h.handle(key(KeyCode::Enter)); // send
     let s = h.snapshot();
@@ -66,7 +69,7 @@ fn chat_send_appends_message_and_canned_reply() {
 #[test]
 fn chat_switches_channel_with_arrows() {
     let mut h = harness();
-    h.handle(ch('9'));
+    goto(&mut h, "chat"); // palette → index-stable (digit 9 is now Data Grid)
     h.handle(key(KeyCode::Down)); // next channel
     let s = h.snapshot();
     assert!(s.contains("#rust"), "second channel is reachable:\n{s}");

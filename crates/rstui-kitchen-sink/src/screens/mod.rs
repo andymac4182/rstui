@@ -1,7 +1,7 @@
 //! The content screens and the dispatch that routes input + rendering to
 //! whichever one the sidebar has selected.
 //!
-//! Two sections: the **Widgets** screens (a guided tour of the catalog) and
+//! Two sections — the nine **Widgets** screens (a guided tour of the catalog) and
 //! the **Experiences** screens — composed scenes that look and behave like
 //! real apps (a chat client, mail, a file explorer, a dashboard, a music
 //! player, an IDE, settings, a login, a Kanban board, a live log tail).
@@ -16,6 +16,7 @@ pub(crate) mod chat;
 pub(crate) mod colour_lab;
 pub(crate) mod containers;
 pub(crate) mod dashboard;
+pub(crate) mod data_grid;
 pub(crate) mod data_views;
 pub(crate) mod feedback;
 pub(crate) mod files_app;
@@ -153,7 +154,7 @@ impl ScreenOutcome {
     }
 }
 
-/// Every screen, in sidebar order: the eight Widgets screens, the ten
+/// Every screen, in sidebar order: the nine Widgets screens, the ten
 /// Experiences screens, then the three Observability screens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Screen {
@@ -173,6 +174,9 @@ pub(crate) enum Screen {
     RichText,
     /// Full-colour lab: ANSI, 256-indexed, RGB truecolor, modifiers.
     Colour,
+    /// The comprehensive `DataTable`: sort, filter, group, fast scroll,
+    /// mouse hit-testing, and in-cell editing.
+    DataGrid,
     /// A chat / messenger client: channels, a bubble thread, a composer.
     Chat,
     /// A three-pane email client.
@@ -216,7 +220,7 @@ pub(crate) enum SidebarRow {
 impl Screen {
     /// Every screen in fixed display order. The sidebar, the hotkeys, and the
     /// command palette all index this, so they cannot disagree.
-    pub(crate) const ALL: [Screen; 21] = [
+    pub(crate) const ALL: [Screen; 22] = [
         Screen::Welcome,
         Screen::Forms,
         Screen::Navigation,
@@ -225,6 +229,7 @@ impl Screen {
         Screen::Containers,
         Screen::RichText,
         Screen::Colour,
+        Screen::DataGrid,
         Screen::Chat,
         Screen::Mail,
         Screen::Files,
@@ -251,15 +256,15 @@ impl Screen {
     pub(crate) fn is_text_entry(self) -> bool {
         matches!(
             self,
-            Screen::Chat | Screen::Ide | Screen::Login | Screen::Logs
+            Screen::Chat | Screen::Ide | Screen::Login | Screen::Logs | Screen::DataGrid
         )
     }
 
     /// Which sidebar section this screen belongs to.
     pub(crate) fn group(self) -> &'static str {
-        if self.index() < 8 {
+        if self.index() < 9 {
             "WIDGETS"
-        } else if self.index() < 18 {
+        } else if self.index() < 19 {
             "EXPERIENCES"
         } else {
             "OBSERVABILITY"
@@ -277,6 +282,7 @@ impl Screen {
             Screen::Containers => "Containers",
             Screen::RichText => "Rich Text",
             Screen::Colour => "Colour Lab",
+            Screen::DataGrid => "Data Grid",
             Screen::Chat => "Chat",
             Screen::Mail => "Mail",
             Screen::Files => "Files",
@@ -304,6 +310,7 @@ impl Screen {
             Screen::Containers => '▦',
             Screen::RichText => '¶',
             Screen::Colour => '✸',
+            Screen::DataGrid => '⊞',
             Screen::Chat => '✉',
             Screen::Mail => '@',
             Screen::Files => '▣',
@@ -331,6 +338,7 @@ impl Screen {
             Screen::Containers => "Containers — blocks, grids, scrolling",
             Screen::RichText => "Rich Text — Markdown, Mermaid, styled spans",
             Screen::Colour => "Colour Lab — ANSI · 256 · truecolor",
+            Screen::DataGrid => "Data Grid — sort · filter · group · scroll · edit",
             Screen::Chat => "Chat — channels, threads, a live composer",
             Screen::Mail => "Mail — a three-pane email client",
             Screen::Files => "Files — explorer with tree, list & preview",
@@ -399,6 +407,7 @@ pub(crate) struct ScreenState {
     pub(crate) containers: containers::State,
     pub(crate) rich_text: rich_text::State,
     pub(crate) colour: colour_lab::State,
+    pub(crate) data_grid: data_grid::State,
     pub(crate) chat: chat::State,
     pub(crate) mail: mail::State,
     pub(crate) files: files_app::State,
@@ -425,6 +434,7 @@ impl ScreenState {
             containers: containers::State::new(),
             rich_text: rich_text::State::new(),
             colour: colour_lab::State::new(),
+            data_grid: data_grid::State::new(),
             chat: chat::State::new(),
             mail: mail::State::new(),
             files: files_app::State::new(),
@@ -452,6 +462,7 @@ impl ScreenState {
             Screen::Containers => self.containers.on_key(code),
             Screen::RichText => self.rich_text.on_key(code),
             Screen::Colour => self.colour.on_key(code),
+            Screen::DataGrid => self.data_grid.on_key(code),
             Screen::Chat => self.chat.on_key(code),
             Screen::Mail => self.mail.on_key(code),
             Screen::Files => self.files.on_key(code),
@@ -481,6 +492,7 @@ impl ScreenState {
             Screen::Forms => self.forms.on_click(pos, content),
             Screen::Navigation => self.navigation.on_click(pos, content),
             Screen::Colour => self.colour.on_click(pos, content),
+            Screen::DataGrid => self.data_grid.on_click(pos, content),
             Screen::RichText => self.rich_text.on_click(pos, content),
             Screen::Chat => self.chat.on_click(pos, content),
             Screen::Mail => self.mail.on_click(pos, content),
@@ -503,6 +515,7 @@ impl ScreenState {
     pub(crate) fn on_scroll(&mut self, screen: Screen, up: bool) {
         match screen {
             Screen::Navigation => self.navigation.on_scroll(up),
+            Screen::DataGrid => self.data_grid.on_scroll(up),
             Screen::Containers => self.containers.on_scroll(up),
             Screen::RichText => self.rich_text.on_scroll(up),
             Screen::Data => self.data.on_scroll(up),
@@ -596,6 +609,7 @@ impl ScreenState {
             Screen::Containers => self.containers.view(theme, frame, area),
             Screen::RichText => self.rich_text.view(theme, frame, area),
             Screen::Colour => self.colour.view(theme, frame, area),
+            Screen::DataGrid => self.data_grid.view(theme, frame, area),
             Screen::Chat => self.chat.view(theme, tick, frame, area),
             Screen::Mail => self.mail.view(theme, tick, frame, area),
             Screen::Files => self.files.view(theme, tick, frame, area),

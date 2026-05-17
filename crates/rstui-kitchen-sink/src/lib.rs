@@ -11,7 +11,7 @@
 //! [`CommandPalette`](rstui_widgets::CommandPalette) /
 //! [`Drawer`](rstui_widgets::Drawer) / [`Modal`](rstui_widgets::Modal) /
 //! [`Toast`](rstui_widgets::Toast) overlays are not *described* on a slide —
-//! they *are* the chrome you drive, and each of the eight content screens
+//! they *are* the chrome you drive, and each of the nine content screens
 //! makes its widgets respond to the arrow keys, `Tab`, `Enter`, `Space`,
 //! typing, the mouse, and the scroll wheel.
 //!

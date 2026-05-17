@@ -31,7 +31,7 @@ The kitchen sink follows the exact model the rest of the docs describe:
   capture, panic-safe restore) and headless via `Harness` with scripted
   input (its CI tests). Same app, no changes — the rstui guarantee.
 
-## The eight screens
+## The nine screens
 
 | # | Screen | Widgets it shows |
 |---|--------|------------------|
@@ -43,6 +43,7 @@ The kitchen sink follows the exact model the rest of the docs describe:
 | 6 | Containers | `Block`, `Card`, `Grid`, `SplitPane`, `Divider`, `Align`, `ScrollView`, `Scrollbar` |
 | 7 | Rich Text | `Paragraph`, `Markdown`, `Mermaid` |
 | 8 | Colour Lab | ANSI / 256-indexed / RGB truecolor / modifiers |
+| 9 | Data Grid | `DataTable` — sort, filter, group, virtualized scroll, mouse hit-testing, in-cell editing |
 
 The global shell (`chrome.rs`) wraps every screen: a header (brand, title,
 theme + animation tick), a `Sidebar` rail, a `StatusBar` footer, and the
@@ -75,11 +76,12 @@ real-binary gate run by `cargo xtask record e2e --check`.
 
 | Key(s) | Action |
 |--------|--------|
-| `1`–`8` | Jump straight to a screen |
+| `1`–`9` | Jump straight to a screen |
 | `Tab` | Toggle focus between the sidebar and the content pane |
 | `↑ ↓ ← →` | Navigate (sidebar selection or per-widget) |
 | `Enter` / `Space` | Activate / toggle / confirm |
 | `f` | Traces screen: toggle the span waterfall ⇄ flame graph |
+| `s` `o` `c` `/` `e` | Data Grid: sort · group · collapse · filter · edit cell (`[` `]` pick the active column) |
 | `:` | Command palette — type to filter, `Enter` to jump |
 | `?` | Help overlay (the keymap) |
 | `g` | Settings drawer (toggle theme) |

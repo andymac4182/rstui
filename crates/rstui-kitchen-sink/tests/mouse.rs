@@ -485,7 +485,7 @@ fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
     // Chat is editable → its drag-selection is NOT auto-copied; it stays
     // live with a hint, and Ctrl+C performs the copy.
     let mut h = harness();
-    h.handle(ch('9')); // Chat (thread is the selectable container)
+    goto(&mut h, "chat"); // Chat (palette is index-stable; digit 9 is now Data Grid)
     let (x, y) = cell_of(&h, "Morning"); // a seeded thread message word
     drag(&mut h, x, y, x + 6, y);
     assert!(
