@@ -633,3 +633,117 @@ fn failed_tool_keeps_its_body_even_with_details_off() {
         "a failed tool always expands (errors are never collapsed)"
     );
 }
+
+// ---- Iteration 4: plugins in the TUI ----
+
+use rstui_acp_client::plugin::{PluginAction, PluginEvent};
+
+fn plug(plugin: &str, action: PluginAction) -> Msg {
+    Msg::Plugin(PluginEvent {
+        plugin: plugin.to_owned(),
+        action,
+    })
+}
+
+#[test]
+fn plugin_status_and_panel_surface_in_the_sidebar() {
+    let mut h = chatting(120, 40);
+    assert!(!h.app().sidebar_visible(), "nothing to show yet");
+    h.message(plug(
+        "powerline",
+        PluginAction::SetStatus {
+            key: "git".to_owned(),
+            value: "main ✚2".to_owned(),
+        },
+    ));
+    h.message(plug(
+        "btw",
+        PluginAction::Panel {
+            title: "BTW notes".to_owned(),
+            body: vec!["[09:14] ship the thing".to_owned()],
+        },
+    ));
+    assert!(
+        h.app().sidebar_visible(),
+        "a plugin surface auto-shows the sidebar (no todos needed)"
+    );
+    assert_eq!(
+        h.app().statuses().get("git").map(String::as_str),
+        Some("main ✚2")
+    );
+    assert!(h.app().panels().contains_key("btw"));
+    let snap = h.snapshot();
+    assert!(snap.contains("BTW notes"), "plugin panel title rendered");
+    assert!(
+        snap.contains("ship the thing"),
+        "plugin panel body rendered"
+    );
+    assert!(snap.contains("git"), "status key rendered in sidebar");
+}
+
+#[test]
+fn empty_panel_body_removes_the_panel() {
+    let mut h = chatting(120, 40);
+    h.message(plug(
+        "btw",
+        PluginAction::Panel {
+            title: "BTW notes".to_owned(),
+            body: vec!["one".to_owned()],
+        },
+    ));
+    assert!(h.app().panels().contains_key("btw"));
+    h.message(plug(
+        "btw",
+        PluginAction::Panel {
+            title: "BTW notes".to_owned(),
+            body: vec![],
+        },
+    ));
+    assert!(
+        !h.app().panels().contains_key("btw"),
+        "an empty body clears the panel"
+    );
+}
+
+#[test]
+fn plugins_overlay_toggles_and_lists_plugin_commands() {
+    let mut h = chatting(120, 40);
+    h.message(plug(
+        "ask-user",
+        PluginAction::RegisterCommand {
+            name: "ask".to_owned(),
+            description: "structured ask".to_owned(),
+        },
+    ));
+    typ(&mut h, "/plugins");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(h.app().plugins_overlay(), "/plugins opens the overlay");
+    let snap = h.snapshot();
+    assert!(snap.contains("Plugins"), "overlay titled Plugins");
+    assert!(snap.contains("/ask"), "registered plugin command listed");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Esc)));
+    assert!(!h.app().plugins_overlay(), "Esc closes the overlay");
+}
+
+#[test]
+fn plugin_commands_route_and_appear_in_autocomplete() {
+    let mut h = chatting(120, 40);
+    h.message(plug(
+        "btw",
+        PluginAction::RegisterCommand {
+            name: "btw".to_owned(),
+            description: "side note".to_owned(),
+        },
+    ));
+    typ(&mut h, "/bt");
+    let comp = h.app().completion().expect("popup");
+    let btw = comp
+        .items
+        .iter()
+        .find(|c| c.name == "btw")
+        .expect("plugin command in autocomplete");
+    assert!(matches!(
+        btw.source,
+        rstui_acp_client::app::CommandSource::Plugin(_)
+    ));
+}

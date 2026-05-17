@@ -47,6 +47,12 @@ fn main() {
                 key: "btw".to_owned(),
                 value: format!("{} note(s)", notes.len()),
             });
+            // Surface the side-channel live in the TUI sidebar (pi-btw keeps
+            // the side conversation visible but out of the agent's context).
+            emit(PluginAction::Panel {
+                title: "BTW notes".to_owned(),
+                body: notes.clone(),
+            });
             emit(PluginAction::Log {
                 text: format!("btw[{}] {note}", notes.len()),
             });

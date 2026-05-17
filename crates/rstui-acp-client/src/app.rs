@@ -139,6 +139,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("clear", "Clear the transcript"),
     ("todos", "Toggle the todo sidebar"),
     ("details", "Show/hide completed tool-call output"),
+    ("plugins", "Show loaded plugins, commands & status"),
     ("log", "Toggle the diagnostic log"),
     ("cancel", "Interrupt the streaming turn"),
     ("quit", "Exit the client"),
@@ -201,6 +202,8 @@ pub struct ChatApp {
     sidebar: SidebarMode,
     tool_calls: Vec<ToolCallInfo>,
     details: bool,
+    panels: BTreeMap<String, (String, Vec<String>)>,
+    show_plugins: bool,
     toasts: Vec<Toast>,
     log: Vec<String>,
     show_log: bool,
@@ -242,6 +245,8 @@ impl ChatApp {
             sidebar: SidebarMode::Auto,
             tool_calls: Vec::new(),
             details: true,
+            panels: BTreeMap::new(),
+            show_plugins: false,
             toasts: Vec::new(),
             log: Vec::new(),
             show_log: false,
@@ -354,11 +359,50 @@ impl ChatApp {
         match self.sidebar {
             SidebarMode::Hidden => false,
             SidebarMode::Shown => true,
-            SidebarMode::Auto => {
-                !self.todos.is_empty()
-                    && self.todos.iter().any(|t| t.status != TodoStatus::Completed)
-            }
+            SidebarMode::Auto => self.has_open_todos() || self.has_plugin_surface(),
         }
+    }
+    /// `true` while there is unfinished todo work.
+    #[must_use]
+    pub fn has_open_todos(&self) -> bool {
+        !self.todos.is_empty() && self.todos.iter().any(|t| t.status != TodoStatus::Completed)
+    }
+    /// `true` when a plugin contributes sidebar content (panel/status keys),
+    /// so the sidebar is worth showing even before any todos exist.
+    #[must_use]
+    pub fn has_plugin_surface(&self) -> bool {
+        !self.panels.is_empty() || !self.statuses.is_empty()
+    }
+    /// Plugin-contributed sidebar panels: `plugin → (title, body lines)`.
+    #[must_use]
+    pub fn panels(&self) -> &BTreeMap<String, (String, Vec<String>)> {
+        &self.panels
+    }
+    /// Whether the `/plugins` overlay is open.
+    #[must_use]
+    pub fn plugins_overlay(&self) -> bool {
+        self.show_plugins
+    }
+    /// Names of the running plugins (empty headless).
+    #[must_use]
+    pub fn plugin_names(&self) -> Vec<String> {
+        self.plugins
+            .as_ref()
+            .map(|h| h.names().to_vec())
+            .unwrap_or_default()
+    }
+    /// Every plugin known by *any* surface: a running host process, a
+    /// registered command, a contributed panel, or a status key it owns.
+    /// (The host list is empty headless, so the union is what makes the
+    /// `/plugins` overlay correct in tests *and* production.)
+    #[must_use]
+    pub fn plugin_set(&self) -> Vec<String> {
+        let mut set: std::collections::BTreeSet<String> = self.plugin_names().into_iter().collect();
+        for (plugin, _) in self.commands.values() {
+            set.insert(plugin.clone());
+        }
+        set.extend(self.panels.keys().cloned());
+        set.into_iter().collect()
     }
     /// `(completed, total)` todo counts for the sidebar header.
     #[must_use]
@@ -522,6 +566,10 @@ impl ChatApp {
                 } else {
                     SidebarMode::Hidden
                 };
+                Cmd::none()
+            }
+            "plugins" => {
+                self.show_plugins = !self.show_plugins;
                 Cmd::none()
             }
             "details" => {
@@ -762,6 +810,13 @@ impl ChatApp {
                     freeform_focused: false,
                 });
             }
+            PluginAction::Panel { title, body } => {
+                if body.is_empty() {
+                    self.panels.remove(plugin);
+                } else {
+                    self.panels.insert(plugin.to_owned(), (title, body));
+                }
+            }
             PluginAction::Note { text } => {
                 self.toast(format!("{plugin}: {text}"));
                 self.push_system(format!("[{plugin}] {text}"));
@@ -807,6 +862,10 @@ impl ChatApp {
         }
         if self.show_log && key.code == KeyCode::Esc {
             self.show_log = false;
+            return Cmd::none();
+        }
+        if self.show_plugins && matches!(key.code, KeyCode::Esc | KeyCode::F(1)) {
+            self.show_plugins = false;
             return Cmd::none();
         }
         if self.pending_permission.is_some() {

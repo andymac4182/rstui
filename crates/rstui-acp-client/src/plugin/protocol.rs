@@ -110,6 +110,15 @@ pub enum PluginAction {
         #[serde(default)]
         allow_freeform: bool,
     },
+    /// Contribute a named panel to the TUI sidebar (the opencode slot
+    /// analogue: arbitrary plugin-owned content). Sending it again with the
+    /// same `title` replaces that panel; an empty `body` removes it.
+    Panel {
+        /// Panel heading.
+        title: String,
+        /// Panel lines (rendered verbatim, wrapped).
+        body: Vec<String>,
+    },
     /// Post a transient note / toast (the pi side-note analogue).
     Note {
         /// Note body.
