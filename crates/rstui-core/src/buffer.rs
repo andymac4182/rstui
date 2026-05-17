@@ -215,10 +215,14 @@ impl Buffer {
     }
 
     /// Resets every cell to [`Cell::EMPTY`] without changing the area.
+    ///
+    /// A single contiguous `slice::fill` rather than a per-cell method call:
+    /// the runtime blanks the back buffer once per frame in
+    /// `Terminal::swap_buffers`, so this is on the idle render path and the
+    /// fill lowers to a tight, vectorizable store loop instead of N method
+    /// calls.
     pub fn reset(&mut self) {
-        for cell in &mut self.cells {
-            cell.reset();
-        }
+        self.cells.fill(Cell::EMPTY);
     }
 
     /// Resizes the buffer to cover `area`, preserving overlapping cells.
@@ -240,27 +244,37 @@ impl Buffer {
 
     /// The cells that differ from `previous`, as absolute positions.
     ///
-    /// This is the unit of work a backend flushes each frame. When the two
-    /// buffers cover different areas every cell is reported, since a resize
-    /// invalidates the whole surface.
+    /// This is the unit of work a backend flushes each frame, and the single
+    /// hottest per-frame operation (a full-frame diff scans every cell — see
+    /// `docs/benchmarking.md`). Both buffers store their cells in the same
+    /// row-major order over [`Buffer::area`], so the two flat `cells` slices
+    /// are walked in lockstep and the changed cell's [`Position`] is recovered
+    /// from its linear index. This avoids the per-cell `Rect::contains` bounds
+    /// re-check + multiply that `Position`-at-a-time iteration would pay twice
+    /// per cell (once for each buffer) on a scan whose indices are in bounds by
+    /// construction. When the two buffers cover different areas every cell is
+    /// reported, since a resize invalidates the whole surface.
     #[must_use]
     pub fn diff<'a>(&'a self, previous: &Buffer) -> Vec<(Position, &'a Cell)> {
+        // `width == 0` implies `area() == 0`, so `cells` is empty and the
+        // iterators below yield nothing before any `% w` / `/ w` runs.
+        let w = self.area.width as usize;
+        let (ox, oy) = (self.area.x, self.area.y);
+        let pos_of = move |i: usize| Position::new(ox + (i % w) as u16, oy + (i / w) as u16);
         if self.area != previous.area {
             return self
-                .area
-                .positions()
-                .filter_map(|p| self.get(p).map(|c| (p, c)))
+                .cells
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (pos_of(i), c))
                 .collect();
         }
-        self.area
-            .positions()
-            .filter_map(|p| {
-                let current = self.get(p)?;
-                match previous.get(p) {
-                    Some(prev) if prev == current => None,
-                    _ => Some((p, current)),
-                }
-            })
+        self.cells
+            .iter()
+            .zip(previous.cells.iter())
+            .enumerate()
+            .filter(|(_, (current, prev))| current != prev)
+            .map(|(i, (current, _))| (pos_of(i), current))
             .collect()
     }
 }

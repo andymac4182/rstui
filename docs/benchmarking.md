@@ -84,23 +84,30 @@ machine-relative number can never be a low-churn gate per ADR 0003). Trust the
 *shape* (relative cost, order of magnitude), not the absolute µs: your
 hardware will differ. `min` is the stable signal.
 
-Captured on an **Apple M1 Pro** (macOS, arm64), `--release`, default 1000
+Captured on **Apple Silicon** (macOS, arm64), `--release`, default 1000
 iters / 100 warmup, against the fixed 160×48 frame:
 
 | Scenario | `min` |
 |---|---|
-| `buffer/diff/identical` | ~39 µs |
-| `buffer/diff/sparse` | ~41 µs |
-| `buffer/diff/full` | ~39 µs |
-| `buffer/diff/resized` | ~44 µs |
+| `buffer/diff/identical` | ~12 µs |
+| `buffer/diff/sparse` | ~12 µs |
+| `buffer/diff/full` | ~14 µs |
+| `buffer/diff/resized` | ~5.4 µs |
 | `buffer/fill` | ~2.6 µs |
 | `buffer/set_str` | ~3.4 µs |
 | `buffer/clear_region` | ~3.9 µs |
 | `layout/split/nested` | ~0.42 µs |
 
-The headline: a full-frame `diff` (~40 µs, scanning all 7 680 cells) dominates
-every per-frame cost here — it is the hot path to watch. To refresh this table
-after a deliberate change to a hot path, re-run on a quiet machine:
+The headline: `buffer/diff` was ~40 µs (the dominant per-frame cost) until
+`Buffer::diff` was rewritten to walk the two `cells` slices in lockstep and
+recover each `Position` from its linear index, instead of synthesizing a
+`Position` per cell and reparsing it through `index_of` (a `Rect::contains`
+bounds re-check + multiply) **twice** per cell. That cut every shape ~3–8×
+(`identical` 40→12 µs, `resized` 45→5.4 µs) with byte-identical output —
+see `docs/perf-review.md`. A full-frame `diff` still scans all 7 680 cells,
+so it remains the per-frame hot path to watch, now alongside `set_str`/
+`clear_region` which are within the same order of magnitude. To refresh this
+table after a deliberate change to a hot path, re-run on a quiet machine:
 
 ```sh
 cargo xtask bench
