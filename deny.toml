@@ -24,7 +24,14 @@ yanked = "deny"
 #   ignore = [
 #     "RUSTSEC-0000-0000", # <crate>: not reachable (no <feature>); revisit on bump — owner, 2026-05-17
 #   ]
-ignore = []
+ignore = [
+    # boxfnonce: unmaintained-only (NOT a vulnerability — its API is superseded
+    # by std `Box<dyn FnOnce>` since Rust 1.35). Transitive dep of `sacp` (the
+    # Agent Client Protocol impl that `rstui-acp-client` requires); `sacp` owns
+    # the pin and "no safe upgrade is available". Zero attack surface; drops out
+    # when sacp stops using it — revisit on the next sacp bump — rstui-acp-client, 2026-05-17
+    "RUSTSEC-2019-0040",
+]
 
 [licenses]
 version = 2

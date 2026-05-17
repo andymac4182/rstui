@@ -1,0 +1,514 @@
+//! The pure `view`: a projection of [`ChatApp`] state
+//! onto the frame. No mutation, no I/O — exactly the rstui discipline that
+//! keeps every screen `Harness`-testable.
+//!
+//! Composition only uses the foundational rstui primitives (`Layout`,
+//! `Block`, `Paragraph`, `List`, styled `Line`/`Span`, and direct `Buffer`
+//! writes for opaque overlays), so the whole UI is a deterministic function
+//! of state.
+
+use rstui_core::{Color, Constraint, Layout, Line, Position, Rect, Span, Style};
+use rstui_runtime::Frame;
+use rstui_widgets::{Block, List, ListItem, Paragraph, Wrap};
+
+use crate::app::{ChatApp, Entry, Role, Screen};
+use crate::plugin::FooterSegment;
+
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Renders the whole client for one frame.
+pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
+    let area = frame.area();
+    if area.width < 4 || area.height < 4 {
+        return;
+    }
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    render_header(app, frame, header);
+    match app.screen() {
+        Screen::Picker => render_picker(app, frame, body),
+        Screen::Connecting | Screen::Chat => render_chat(app, frame, body),
+    }
+    render_footer(app, frame, footer);
+
+    if app.help_visible() {
+        render_help(app, frame, area);
+    } else if app.log_visible() {
+        render_log(app, frame, area);
+    }
+    if let Some(perm) = app.pending_permission() {
+        render_permission(perm, frame, area);
+    }
+    if let Some(ask) = app.ask() {
+        render_ask(ask, frame, area);
+    }
+    render_toasts(app, frame, area);
+}
+
+fn render_header(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let spinner = if app.is_streaming() {
+        format!(" {} ", SPINNER[app.spinner_frame() % SPINNER.len()])
+    } else {
+        " ▪ ".to_owned()
+    };
+    let title = format!(
+        "{spinner}rstui-acp-client │ {}",
+        truncate(app.status_line(), area.width.saturating_sub(20) as usize)
+    );
+    let style = Style::new().fg(Color::Black).bg(Color::Cyan);
+    fill(frame, area, style);
+    frame.buffer_mut().set_str(
+        Position::new(area.x, area.y),
+        &clamp(&title, area.width),
+        style,
+    );
+}
+
+fn render_footer(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    fill(frame, area, Style::new().bg(Color::DarkGray));
+    let mut x = area.x;
+    for seg in app.footer_segments() {
+        x = draw_segment(frame, area, x, &seg);
+        if x >= area.x + area.width {
+            return;
+        }
+    }
+    // Right-aligned hint when there is room.
+    let hint = "F1 help · /agents · Esc cancel · Ctrl+C quit";
+    let hw = hint.chars().count() as u16;
+    if area.x + area.width > x + hw + 2 {
+        let hx = area.x + area.width - hw;
+        frame.buffer_mut().set_str(
+            Position::new(hx, area.y),
+            hint,
+            Style::new().fg(Color::Gray).bg(Color::DarkGray),
+        );
+    }
+}
+
+fn draw_segment(frame: &mut Frame<'_>, area: Rect, x: u16, seg: &FooterSegment) -> u16 {
+    let text = format!(" {} ", seg.text);
+    let style = Style::new()
+        .fg(seg.fg.as_deref().map_or(Color::White, color_by_name))
+        .bg(seg.bg.as_deref().map_or(Color::DarkGray, color_by_name));
+    let avail = (area.x + area.width).saturating_sub(x);
+    let shown = clamp(&text, avail);
+    frame
+        .buffer_mut()
+        .set_str(Position::new(x, area.y), &shown, style);
+    x + shown.chars().count() as u16
+}
+
+fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let reg = app.registry();
+    let block = Block::bordered().title(" Agents — ACP registry ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if reg.agents.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Loading the ACP registry…\n\nIf this stays empty, network/curl is unavailable; the built-in agents will appear shortly.")
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
+
+    let items: Vec<ListItem> = reg
+        .agents
+        .iter()
+        .map(|a| {
+            let avail = a
+                .command
+                .as_ref()
+                .map_or("(no command for this platform)", |_| "");
+            let head = Span::styled(format!("{}  ", a.name), Style::new().fg(Color::Cyan));
+            let desc = Span::styled(
+                format!("{} {}", truncate(&a.description, 70), avail),
+                Style::new().fg(Color::Gray),
+            );
+            ListItem::new(Line::from(vec![head, desc]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .highlight_symbol("▸ ")
+        .highlight_style(Style::new().fg(Color::Black).bg(Color::Cyan))
+        .selected(Some(app.picker_selected()))
+        .offset(picker_offset(app.picker_selected(), inner.height));
+    frame.render_widget(list, inner);
+}
+
+fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let [transcript_area, composer_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(area);
+
+    // ---- transcript ----
+    let block = Block::bordered().title(transcript_title(app));
+    let inner = block.inner(transcript_area);
+    frame.render_widget(block, transcript_area);
+
+    let lines = transcript_lines(app.transcript());
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total = para.line_count(inner.width.max(1)) as u16;
+    let max_scroll = total.saturating_sub(inner.height);
+    let scroll = if app_follows(app) {
+        max_scroll
+    } else {
+        app.scroll().min(max_scroll)
+    };
+    frame.render_widget(para.scroll((0, scroll)), inner);
+
+    // ---- composer ----
+    let cblock = Block::bordered().title(composer_title(app));
+    let cinner = cblock.inner(composer_area);
+    frame.render_widget(cblock, composer_area);
+
+    let comp_lines: Vec<Line> = app
+        .composer()
+        .lines()
+        .iter()
+        .map(|l| Line::raw(l.clone()))
+        .collect();
+    let placeholder = comp_lines.len() == 1 && comp_lines[0].width() == 0;
+    if placeholder {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "Type a message, or /help for commands",
+                Style::new().fg(Color::DarkGray),
+            )),
+            cinner,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(comp_lines).wrap(Wrap { trim: false }),
+            cinner,
+        );
+    }
+
+    // Park the caret in the composer when it owns focus.
+    if app.pending_permission().is_none() && app.ask().is_none() && !app.help_visible() {
+        let (row, col) = app.composer().cursor();
+        let cx = cinner.x + (col as u16).min(cinner.width.saturating_sub(1));
+        let cy = cinner.y + (row as u16).min(cinner.height.saturating_sub(1));
+        frame.set_cursor_position(Position::new(cx, cy));
+    }
+}
+
+fn transcript_title(app: &ChatApp) -> String {
+    if app.screen() == Screen::Connecting {
+        " Transcript — connecting… ".to_owned()
+    } else {
+        format!(" Transcript — {} messages ", app.transcript().len())
+    }
+}
+
+fn composer_title(app: &ChatApp) -> String {
+    if app.is_streaming() {
+        " Message — Esc cancels the streaming turn ".to_owned()
+    } else {
+        " Message — Enter send · Shift+Enter newline · /help ".to_owned()
+    }
+}
+
+fn transcript_lines(entries: &[Entry]) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for entry in entries {
+        let (label, color) = match entry.role {
+            Role::User => ("you", Color::Green),
+            Role::Agent => ("agent", Color::Cyan),
+            Role::Thought => ("thinking", Color::DarkGray),
+            Role::Tool => ("tool", Color::Yellow),
+            Role::Plan => ("plan", Color::Magenta),
+            Role::System => ("·", Color::Gray),
+        };
+        out.push(Line::from(vec![Span::styled(
+            format!("{label}:"),
+            Style::new().fg(color),
+        )]));
+        for raw in entry.text.split('\n') {
+            out.push(Line::from(vec![
+                Span::styled("  ", Style::new()),
+                Span::styled(raw.to_owned(), Style::new().fg(line_color(entry.role))),
+            ]));
+        }
+        out.push(Line::raw(""));
+    }
+    if out.is_empty() {
+        out.push(Line::styled(
+            "No messages yet — say hello to the agent.",
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+    out
+}
+
+fn line_color(role: Role) -> Color {
+    match role {
+        Role::Thought => Color::DarkGray,
+        Role::System => Color::Gray,
+        Role::Tool => Color::Yellow,
+        Role::Plan => Color::Magenta,
+        _ => Color::White,
+    }
+}
+
+fn render_permission(perm: &crate::app::PendingPermission, frame: &mut Frame<'_>, area: Rect) {
+    let h = (perm.options().len() as u16 + 6).min(area.height.saturating_sub(2));
+    let rect = centered(area, area.width.min(72), h.max(7));
+    let block = Block::bordered().title(" Permission requested ");
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let [head, list_area, hint] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            truncate(perm.title(), inner.width as usize),
+            Style::new().fg(Color::Yellow),
+        ))
+        .wrap(Wrap { trim: false }),
+        head,
+    );
+    let items: Vec<ListItem> = perm
+        .options()
+        .iter()
+        .map(|o| ListItem::new(Line::raw(o.label.clone())))
+        .collect();
+    frame.render_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(Style::new().fg(Color::Black).bg(Color::Cyan))
+            .selected(Some(perm.selected())),
+        list_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "↑↓ choose · Enter approve · Esc decline",
+            Style::new().fg(Color::Gray),
+        )),
+        hint,
+    );
+}
+
+fn render_ask(ask: &crate::app::AskState, frame: &mut Frame<'_>, area: Rect) {
+    let rect = centered(area, area.width.min(76), area.height.clamp(9, 16));
+    let block = Block::bordered().title(format!(" {} asks ", ask.plugin()));
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let [q, body, ff, hint] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let mut qlines = vec![Line::styled(
+        ask.question().to_owned(),
+        Style::new().fg(Color::Cyan),
+    )];
+    if !ask.context().is_empty() {
+        qlines.push(Line::styled(
+            ask.context().to_owned(),
+            Style::new().fg(Color::Gray),
+        ));
+    }
+    frame.render_widget(Paragraph::new(qlines).wrap(Wrap { trim: false }), q);
+
+    let items: Vec<ListItem> = ask
+        .options()
+        .iter()
+        .map(|o| ListItem::new(Line::raw(o.clone())))
+        .collect();
+    frame.render_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(if ask.freeform_focused() {
+                Style::new().fg(Color::Gray)
+            } else {
+                Style::new().fg(Color::Black).bg(Color::Cyan)
+            })
+            .selected(Some(ask.selected())),
+        body,
+    );
+
+    if ask.allow_freeform() {
+        let fb = Block::bordered().title(if ask.freeform_focused() {
+            " freeform (focused) "
+        } else {
+            " freeform (Tab to focus) "
+        });
+        let fi = fb.inner(ff);
+        frame.render_widget(fb, ff);
+        frame.render_widget(
+            Paragraph::new(Line::raw(ask.freeform().lines().join(" "))),
+            fi,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "↑↓ choose · Tab freeform · Enter submit · Esc cancel",
+            Style::new().fg(Color::Gray),
+        )),
+        hint,
+    );
+}
+
+fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let rect = centered(area, area.width.min(74), area.height.clamp(10, 20));
+    let block = Block::bordered().title(" Help — keys & commands ");
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let mut lines = vec![
+        kv("Enter", "send message (Shift+Enter = newline)"),
+        kv("↑ ↓ ← →", "move the composer caret"),
+        kv("PageUp/Down", "scroll the transcript"),
+        kv("Esc", "cancel a streaming turn / close overlay"),
+        kv("F1", "toggle this help"),
+        kv("Ctrl+C / F10", "quit"),
+        Line::raw(""),
+        Line::styled("Slash commands:", Style::new().fg(Color::Yellow)),
+        kv("/help /agents /log", "built-ins"),
+        kv("/cancel /quit", "built-ins"),
+    ];
+    for (name, (plugin, desc)) in app.commands() {
+        lines.push(kv(&format!("/{name}"), &format!("{desc}  ({plugin})")));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_log(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let rect = centered(area, area.width.min(90), area.height.clamp(8, 20));
+    let block = Block::bordered().title(" Log (Esc to close) ");
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+    let start = app.log().len().saturating_sub(inner.height as usize);
+    let lines: Vec<Line> = app.log()[start..]
+        .iter()
+        .map(|l| Line::styled(l.clone(), Style::new().fg(Color::Gray)))
+        .collect();
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_toasts(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let mut y = area.y + 1;
+    for toast in app.toasts() {
+        let text = format!(" {} ", truncate(&toast.text, 48));
+        let w = text.chars().count() as u16;
+        if w + 2 >= area.width {
+            continue;
+        }
+        let x = area.x + area.width - w - 1;
+        let rect = Rect {
+            x,
+            y,
+            width: w,
+            height: 1,
+        };
+        clear(frame, rect);
+        frame.buffer_mut().set_str(
+            Position::new(x, y),
+            &text,
+            Style::new().fg(Color::Black).bg(Color::Yellow),
+        );
+        y += 1;
+        if y >= area.y + area.height {
+            break;
+        }
+    }
+}
+
+// ---- small helpers ----
+
+fn app_follows(app: &ChatApp) -> bool {
+    // scroll() == 0 means the user has not paged up; stay pinned to the
+    // bottom (the reducer resets scroll to 0 on new output).
+    app.scroll() == 0
+}
+
+fn picker_offset(selected: usize, height: u16) -> usize {
+    let h = height.max(1) as usize;
+    if selected >= h { selected + 1 - h } else { 0 }
+}
+
+fn kv(key: &str, val: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{key:>14}  "), Style::new().fg(Color::Cyan)),
+        Span::styled(val.to_owned(), Style::new().fg(Color::White)),
+    ])
+}
+
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+fn fill(frame: &mut Frame<'_>, area: Rect, style: Style) {
+    let blank: String = " ".repeat(area.width as usize);
+    for row in 0..area.height {
+        frame
+            .buffer_mut()
+            .set_str(Position::new(area.x, area.y + row), &blank, style);
+    }
+}
+
+fn clear(frame: &mut Frame<'_>, area: Rect) {
+    fill(frame, area, Style::new().bg(Color::Black));
+}
+
+fn clamp(text: &str, width: u16) -> String {
+    let w = width as usize;
+    if text.chars().count() <= w {
+        text.to_owned()
+    } else {
+        text.chars().take(w).collect()
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max || max == 0 {
+        text.to_owned()
+    } else {
+        let mut s: String = text.chars().take(max.saturating_sub(1)).collect();
+        s.push('…');
+        s
+    }
+}
+
+fn color_by_name(name: &str) -> Color {
+    match name.to_ascii_lowercase().as_str() {
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "white" => Color::White,
+        "black" => Color::Black,
+        "gray" | "grey" => Color::Gray,
+        _ => Color::White,
+    }
+}
