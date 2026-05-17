@@ -74,6 +74,60 @@ impl<M> fmt::Debug for Effect<M> {
     }
 }
 
+/// Inline-1 storage for a [`Cmd`]'s effects (RT-07).
+///
+/// Almost every command is exactly one effect — `Cmd::perform`/`message`/
+/// `tick`/`every`/`quit` — and `Cmd::none()` is zero. Storing those in a
+/// `Vec` cost one heap allocation per command on the default (inline) path
+/// *and every harness test*. This std-only enum keeps the single- and
+/// zero-effect cases allocation-free; only `batch` of ≥2 effects spills to a
+/// `Vec`. `effects` is private and every `Cmd` method below is unchanged in
+/// behavior, so this is a pure internal-representation change.
+enum Effects<M> {
+    Zero,
+    One(Effect<M>),
+    Many(Vec<Effect<M>>),
+}
+
+impl<M> Effects<M> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Zero => 0,
+            Self::One(_) => 1,
+            Self::Many(v) => v.len(),
+        }
+    }
+
+    /// Normalizes a flat `Vec` of effects to the tightest representation, so
+    /// `len`/`is_empty` and the Debug shape stay identical to the old `Vec`.
+    fn from_vec(mut v: Vec<Effect<M>>) -> Self {
+        match v.len() {
+            0 => Self::Zero,
+            1 => Self::One(v.pop().expect("len == 1")),
+            _ => Self::Many(v),
+        }
+    }
+}
+
+/// Renders identically to the old `Vec<Effect>` field (`[A, B, …]`) so the
+/// `Cmd` Debug contract — asserted byte-for-byte by `debug_names_effects…`
+/// — is preserved.
+impl<M> fmt::Debug for Effects<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut list = f.debug_list();
+        match self {
+            Self::Zero => {}
+            Self::One(e) => {
+                list.entry(e);
+            }
+            Self::Many(v) => {
+                list.entries(v);
+            }
+        }
+        list.finish()
+    }
+}
+
 /// How the runtime *realizes* a deferred effect (a [`perform`](Cmd::perform) or
 /// a [`tick`](Cmd::tick)/[`every`](Cmd::every) timer).
 ///
@@ -145,7 +199,7 @@ impl<M> CommandExecutor<M> for InlineExecutor {
 /// runtime runs them, which is what makes update logic pure and unit-testable.
 #[must_use = "a Cmd does nothing unless returned to the runtime"]
 pub struct Cmd<M> {
-    effects: Vec<Effect<M>>,
+    effects: Effects<M>,
 }
 
 impl<M> Cmd<M> {
@@ -155,7 +209,7 @@ impl<M> Cmd<M> {
     /// changed state and needs no follow-up work.
     pub fn none() -> Self {
         Self {
-            effects: Vec::new(),
+            effects: Effects::Zero,
         }
     }
 
@@ -165,7 +219,7 @@ impl<M> Cmd<M> {
     /// the loop deterministically rather than draining first.
     pub fn quit() -> Self {
         Self {
-            effects: vec![Effect::Quit],
+            effects: Effects::One(Effect::Quit),
         }
     }
 
@@ -192,7 +246,7 @@ impl<M> Cmd<M> {
         F: FnOnce() -> M + Send + 'static,
     {
         Self {
-            effects: vec![Effect::Perform(Box::new(work))],
+            effects: Effects::One(Effect::Perform(Box::new(work))),
         }
     }
 
@@ -216,11 +270,11 @@ impl<M> Cmd<M> {
         F: FnOnce() -> M + Send + 'static,
     {
         Self {
-            effects: vec![Effect::Timer {
+            effects: Effects::One(Effect::Timer {
                 delay,
                 aligned: false,
                 work: Box::new(work),
-            }],
+            }),
         }
     }
 
@@ -238,11 +292,11 @@ impl<M> Cmd<M> {
         F: FnOnce() -> M + Send + 'static,
     {
         Self {
-            effects: vec![Effect::Timer {
+            effects: Effects::One(Effect::Timer {
                 delay: period,
                 aligned: true,
                 work: Box::new(work),
-            }],
+            }),
         }
     }
 
@@ -254,8 +308,16 @@ impl<M> Cmd<M> {
     where
         I: IntoIterator<Item = Cmd<M>>,
     {
+        let mut flat: Vec<Effect<M>> = Vec::new();
+        for cmd in commands {
+            match cmd.effects {
+                Effects::Zero => {}
+                Effects::One(e) => flat.push(e),
+                Effects::Many(mut v) => flat.append(&mut v),
+            }
+        }
         Self {
-            effects: commands.into_iter().flat_map(|cmd| cmd.effects).collect(),
+            effects: Effects::from_vec(flat),
         }
     }
 
@@ -268,7 +330,7 @@ impl<M> Cmd<M> {
     /// Whether this command performs no effects (a [`none`](Cmd::none)).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.effects.is_empty()
+        self.effects.len() == 0
     }
 
     /// Dispatches the command's effects in order through `exec`.
@@ -286,16 +348,21 @@ impl<M> Cmd<M> {
         mut on_message: impl FnMut(M),
         mut on_quit: impl FnMut(),
     ) {
-        for effect in self.effects {
+        // One effect's realization; returns `true` if it was `Quit` (stop
+        // draining — the existing "quit consumes the rest of the queue"
+        // contract). Shared by the One and Many arms so behavior is identical
+        // to the old single `for` loop over the `Vec`.
+        let mut run = |effect: Effect<M>| -> bool {
             match effect {
                 Effect::Quit => {
                     on_quit();
-                    break;
+                    true
                 }
                 Effect::Perform(work) => {
                     if let Some(message) = exec.perform(work) {
                         on_message(message);
                     }
+                    false
                 }
                 Effect::Timer {
                     delay,
@@ -304,6 +371,20 @@ impl<M> Cmd<M> {
                 } => {
                     if let Some(message) = exec.timer(delay, aligned, work) {
                         on_message(message);
+                    }
+                    false
+                }
+            }
+        };
+        match self.effects {
+            Effects::Zero => {}
+            Effects::One(effect) => {
+                run(effect);
+            }
+            Effects::Many(effects) => {
+                for effect in effects {
+                    if run(effect) {
+                        break;
                     }
                 }
             }
