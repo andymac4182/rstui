@@ -1,8 +1,9 @@
-//! The analytical chart catalog: the six exploratory chart types that are
+//! The analytical chart catalog: the seven exploratory chart types that are
 //! not business-dashboard tiles — a [`ScatterPlot`] cloud, a [`RadarChart`]
 //! spider, a [`BoxPlot`] distribution, a [`Candlestick`] OHLC series, a
-//! [`Treemap`], and a [`Sankey`] flow — in a selectable `2×3` grid.
-//! `←/→/↑/↓` move the highlight, `Enter` names the focused chart.
+//! [`Treemap`], a [`Sankey`] flow, and a [`ViolinChart`] density — in a
+//! selectable `2×4` grid. `←/→/↑/↓` move the highlight, `Enter` names the
+//! focused chart.
 
 use rstui_core::{Color, Constraint, KeyCode, Layout, Line, Position, Rect, Style};
 use rstui_runtime::Frame;
@@ -11,22 +12,27 @@ use rstui_widgets::scatter_plot::Series;
 use rstui_widgets::{
     Block, BorderType, BoxPlot, BoxPlotOrientation, BoxStats, Candle, Candlestick, RadarAxis,
     RadarChart, RadarSeries, Sankey, SankeyLink, SankeyNode, ScatterPlot, Treemap, TreemapTile,
+    Violin, ViolinChart,
 };
 
 use crate::screens::ScreenOutcome;
 use crate::theme::Theme;
 
-/// The six panels, in grid order (row-major, 3 per row).
-const PANELS: [&str; 6] = [
+/// Grid columns (the grid is two rows of [`COLS`]).
+const COLS: usize = 4;
+
+/// The seven panels, in grid order (row-major, [`COLS`] per row).
+const PANELS: [&str; 7] = [
     "Scatter",
     "Radar",
     "Box plot",
     "Candlestick",
     "Treemap",
     "Sankey",
+    "Violin",
 ];
 
-/// The catalog's caller-owned state: which of the six panels is highlighted.
+/// The catalog's caller-owned state: which of the seven panels is highlighted.
 #[derive(Debug)]
 pub(crate) struct State {
     sel: usize,
@@ -38,14 +44,14 @@ impl State {
         Self { sel: 0 }
     }
 
-    /// `←/→` step within a row, `↑/↓` jump a row (3-wide grid), `Enter`
-    /// names the focused chart.
+    /// `←/→` step within a row, `↑/↓` jump a row (the grid is [`COLS`] wide),
+    /// `Enter` names the focused chart.
     pub(crate) fn on_key(&mut self, code: KeyCode) -> ScreenOutcome {
         match code {
             KeyCode::Left => self.sel = self.sel.saturating_sub(1),
             KeyCode::Right => self.sel = (self.sel + 1).min(PANELS.len() - 1),
-            KeyCode::Up => self.sel = self.sel.saturating_sub(3),
-            KeyCode::Down => self.sel = (self.sel + 3).min(PANELS.len() - 1),
+            KeyCode::Up => self.sel = self.sel.saturating_sub(COLS),
+            KeyCode::Down => self.sel = (self.sel + COLS).min(PANELS.len() - 1),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 return ScreenOutcome::with_toast(
                     crate::screens::ToastLevel::Info,
@@ -58,13 +64,13 @@ impl State {
     }
 
     /// Click a panel to highlight it. Geometry mirrors [`view`] exactly: a
-    /// two-row grid, three equal columns per row.
+    /// two-row grid, [`COLS`] equal columns per row.
     pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
         let rows = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).split(content);
         for (r, row) in rows.iter().enumerate() {
-            let cols = Layout::horizontal([Constraint::Fill(1); 3]).split(*row);
+            let cols = Layout::horizontal([Constraint::Fill(1); COLS]).split(*row);
             for (c, cell) in cols.iter().enumerate() {
-                let idx = r * 3 + c;
+                let idx = r * COLS + c;
                 if idx < PANELS.len() && cell.contains(pos) {
                     self.sel = idx;
                     return ScreenOutcome::with_toast(
@@ -77,13 +83,13 @@ impl State {
         ScreenOutcome::ignored()
     }
 
-    /// Draw the six analytical charts. `tick` animates the scatter and
+    /// Draw the seven analytical charts. `tick` animates the scatter and
     /// candlestick series; the selected panel takes the focused border.
     pub(crate) fn view(&self, theme: &Theme, tick: u64, frame: &mut Frame<'_>, area: Rect) {
         let rows = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).split(area);
-        let mut cells: Vec<Rect> = Vec::with_capacity(6);
+        let mut cells: Vec<Rect> = Vec::with_capacity(2 * COLS);
         for row in rows.iter() {
-            for cell in Layout::horizontal([Constraint::Fill(1); 3]).split(*row) {
+            for cell in Layout::horizontal([Constraint::Fill(1); COLS]).split(*row) {
                 cells.push(cell);
             }
         }
@@ -207,6 +213,29 @@ impl State {
                 .link_style(theme.caption())
                 .label_style(theme.caption()),
             cells[5],
+        );
+
+        // 6 — ViolinChart: two latency densities (caller-computed profiles).
+        let bump = |mu: f64, spread: f64| -> Vec<f64> {
+            (0..24)
+                .map(|k| {
+                    let z = (f64::from(k) - mu) / spread;
+                    (-(z * z) / 2.0).exp()
+                })
+                .collect()
+        };
+        frame.render_widget(
+            ViolinChart::new([
+                Violin::new("api", bump(8.0, 3.0)).median(8.0),
+                Violin::new("db", bump(14.0, 5.0)).median(14.0),
+            ])
+            .bounds(Some([0.0, 23.0]))
+            .block(pane(6))
+            .style(theme.body())
+            .violin_style(Style::new().fg(theme.accent))
+            .median_style(Style::new().fg(Color::Yellow))
+            .label_style(theme.caption()),
+            cells[6],
         );
     }
 }

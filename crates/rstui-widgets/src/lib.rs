@@ -188,6 +188,10 @@
 //! - [`stacked_bar_chart`]: [`StackedBarChart`]/[`StackedBar`]/[`StackMode`] —
 //!   multi-series **stacked**/**grouped** bars, the [`BarChart`] composition
 //!   additive; a pure projection at eighth-block precision.
+//! - [`violin_chart`]: [`ViolinChart`]/[`Violin`]/[`ViolinOrientation`] — a
+//!   density (violin) plot, the distribution-*shape* sibling of [`BoxPlot`];
+//!   a pure projection of a caller-computed density profile at eighth-block
+//!   sub-cell thickness.
 //! - [`description_list`]: [`DescriptionList`]/[`DescriptionRow`] — an aligned
 //!   key→value pane; values wrap by reusing [`Paragraph`] (no second wrap).
 //! - [`badge`]: [`Badge`]/[`BadgeLevel`] — a tiny inline status pill with
@@ -374,6 +378,7 @@ pub mod tooltip;
 pub mod trace_waterfall;
 pub mod tree;
 pub mod treemap;
+pub mod violin_chart;
 pub mod waterfall;
 
 pub use accordion::{Accordion, AccordionSection};
@@ -464,4 +469,5 @@ pub use sankey::{Sankey, SankeyLink, SankeyNode};
 pub use scatter_plot::ScatterPlot;
 pub use stacked_bar_chart::{StackMode, StackedBar, StackedBarChart};
 pub use treemap::{Treemap, TreemapTile};
+pub use violin_chart::{Violin, ViolinChart, ViolinOrientation};
 pub use waterfall::{Waterfall, WaterfallDirection, WaterfallKind, WaterfallStep};
