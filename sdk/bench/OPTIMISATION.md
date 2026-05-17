@@ -91,10 +91,14 @@ The only ways to push p95 (and p99) under 10 µs:
    so it is a **policy decision**, gated behind an opt-in
    `--spin`/`RSTUI_PLUGIN_SPIN` for the rare latency-critical plugin —
    never the default (a TUI host with many plugins must not burn N cores).
-2. **Shared-memory ring + futex/eventfd** — true sub-µs to low-µs, flat
-   tail. This is a *different transport*, not stdio, and also needs
-   `unsafe`/mmap or a dependency. Justified only if a plugin genuinely
-   needs hard real-time IPC; out of scope for the JSON-RPC plugin model.
+2. **Shared-memory ring + spin** — measured p50 **125 ns**, p99 **625 ns**,
+   flat tail through p99.9 (~40× lower p50 than stdio). futex/eventfd
+   does *not* achieve this — a parked-then-woken peer still pays a
+   scheduler wakeup; only busy-spin removes it. Designed, measured, and
+   recorded in [ADR 0016](../../docs/adr/0016-shared-memory-plugin-transport.md):
+   opt-in, **Rust-plugin-only** (Node can't mmap without a native addon),
+   `unsafe` isolated to one audited crate, no new dependency. Phased
+   build, stdio stays the default.
 
 Recommendation: **default stdio with `--lp` already meets "< 10 µs"
 for p50/typical** — ship that. Treat sub-10 µs *p95* as opt-in spin

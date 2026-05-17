@@ -45,3 +45,4 @@ MADR-style shape:
 | [0013](0013-terminal-emulator-compatibility.md) | Terminal-emulator compatibility & control-code posture | Accepted |
 | [0014](0014-comprehensive-interactive-datatable.md) | Comprehensive interactive DataTable (reducer-run pipeline, pure projection, borrowed-`TextEdit` editing) | Accepted |
 | [0015](0015-keymap-architecture.md) | Customisable keymap engine as a shared crate (semantic actions, per-OS, multi-keymap, leader sequences, runtime remap; Textual + OpenCode synthesis) | Accepted |
+| [0016](0016-shared-memory-plugin-transport.md) | Shared-memory plugin transport (opt-in, Rust-only, spin — flat sub-µs RTT) | Proposed |
