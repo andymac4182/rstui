@@ -153,6 +153,9 @@ impl<'a> Paragraph<'a> {
             self.wrap,
             self.alignment,
             width as usize,
+            // The true total — `line_count` callers (e.g. Toast sizing its
+            // box) need every row, so never early-exit here.
+            usize::MAX,
         )
         .len()
     }
@@ -252,6 +255,7 @@ fn compose_rows(
     wrap: Option<Wrap>,
     alignment: Option<Alignment>,
     width: usize,
+    row_cap: usize,
 ) -> Vec<ParaRow> {
     let text_base = base.patch(text.style);
     let para_align = text.alignment.or(alignment);
@@ -267,6 +271,16 @@ fn compose_rows(
         match wrap {
             Some(w) => wrap_cells(&cells, width, w.trim, align, &mut rows),
             None => rows.push(ParaRow { cells, align }),
+        }
+        // PG-1: `render` only ever paints `scroll.y .. scroll.y + height`,
+        // so once that many rows exist no later source line can contribute a
+        // *visible* row — stop composing. A 10k-line log scrolled near the
+        // top stopped allocating the whole document's `Vec<(char,Style)>`
+        // every frame. `line_count` passes `usize::MAX` (it needs the true
+        // total), so its result is unchanged; the visible window `render`
+        // paints is byte-identical.
+        if rows.len() >= row_cap {
+            break;
         }
     }
     rows
@@ -304,10 +318,12 @@ impl Widget for Paragraph<'_> {
 
         let width = inner.width as usize;
 
-        // Compose every source line into output rows (one per source line, or
-        // several when wrapping) through the single shared wrap path that
-        // [`Paragraph::line_count`] also uses.
-        let rows = compose_rows(&text, style, wrap, alignment, width);
+        // Compose source lines into output rows through the single shared
+        // wrap path [`Paragraph::line_count`] also uses, but only as far as
+        // the visible window needs: `render` paints exactly
+        // `scroll.y .. scroll.y + inner.height` (PG-1).
+        let row_cap = (scroll.y as usize).saturating_add(inner.height as usize);
+        let rows = compose_rows(&text, style, wrap, alignment, width, row_cap);
 
         // Vertical scroll, then paint the visible window of rows.
         let top = inner.top();
