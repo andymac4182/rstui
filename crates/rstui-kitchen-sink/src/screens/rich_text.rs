@@ -119,6 +119,14 @@ impl State {
         }
     }
 
+    /// A drag-select stays inside the document body (the framed Markdown /
+    /// Paragraph / Mermaid / Spans panel) — never the tab strip or footer.
+    pub(crate) fn selection_region(&self, pos: Position, content: Rect) -> Option<Rect> {
+        let [_, body, _] = Self::rows(content);
+        body.contains(pos)
+            .then(|| crate::screens::block_inner(body))
+    }
+
     /// The three stacked bands shared by the renderer and the hit-test.
     fn rows(area: Rect) -> [Rect; 3] {
         Layout::vertical([

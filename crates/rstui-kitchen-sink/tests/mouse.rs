@@ -344,3 +344,116 @@ fn navigating_after_a_selection_clears_it_without_panicking() {
     assert!(h.is_running());
     assert!(h.snapshot().contains("Welcome"));
 }
+
+/// Open a screen by fuzzy command-palette query.
+fn goto(h: &mut Harness<KitchenSink>, query: &str) {
+    h.handle(ch(':'));
+    for c in query.chars() {
+        h.handle(ch(c));
+    }
+    h.handle(key(KeyCode::Enter));
+}
+
+#[test]
+fn data_diff_selection_stays_inside_the_diff_panel() {
+    // The Data screen puts the Diff panel directly left of the Accordion on
+    // the same rows. A drag that runs far right + down would, unclamped,
+    // copy the Accordion too. It must not.
+    let mut h = harness();
+    goto(&mut h, "Data Display");
+    let (x, y) = cell_of(&h, "render(area");
+    drag(&mut h, x, y, x + 90, y + 8); // way past the diff, into the accordion
+    let sel = h.app().last_selection();
+    assert!(!sel.is_empty(), "something was selected");
+    assert!(
+        sel.contains("render(area") || sel.contains("pad"),
+        "selection holds the diff text: {sel:?}"
+    );
+    for bad in ["Rendering", "Layout", "Events", "Concepts"] {
+        assert!(
+            !sel.contains(bad),
+            "selection must NOT cross into the Accordion ({bad:?}): {sel:?}"
+        );
+    }
+    assert!(h.snapshot().contains("Copied"));
+}
+
+#[test]
+fn welcome_tour_selection_excludes_the_quickstart_card() {
+    let mut h = harness();
+    h.handle(ch('1')); // Welcome: Markdown tour (left) | Card (right)
+    let (x, y) = cell_of(&h, "interactive"); // a tour-only word
+    drag(&mut h, x, y, x + 80, y + 4); // would cross into the Card
+    let sel = h.app().last_selection();
+    assert!(
+        sel.to_lowercase().contains("interactive"),
+        "tour text selected: {sel:?}"
+    );
+    for bad in ["Quickstart", "Forms & Input", "Welcome (here)"] {
+        assert!(
+            !sel.contains(bad),
+            "selection must NOT cross into the Card ({bad:?}): {sel:?}"
+        );
+    }
+}
+
+#[test]
+fn markdown_code_block_is_selectable() {
+    let mut h = harness();
+    h.handle(ch('7'));
+    h.handle(key(KeyCode::Right)); // Markdown sub-tab
+    let (x, y) = cell_of(&h, "fn render"); // inside the ``` code block
+    drag(&mut h, x, y, x + 40, y);
+    assert!(
+        h.app().last_selection().contains("fn render"),
+        "the code block is selectable: {:?}",
+        h.app().last_selection()
+    );
+}
+
+#[test]
+fn dragging_a_markdown_link_selects_its_label_and_does_not_follow_it() {
+    let mut h = harness();
+    h.handle(ch('7'));
+    h.handle(key(KeyCode::Right));
+    select_word(&mut h, "the rstui repo"); // a [label](href)
+    let sel = h.app().last_selection();
+    assert!(
+        sel.contains("the rstui repo"),
+        "the link label is selected by a drag: {sel:?}"
+    );
+    assert!(
+        !h.snapshot().contains("Open link"),
+        "a drag selects the link; it must not follow it"
+    );
+}
+
+#[test]
+fn clicking_a_markdown_link_still_follows_it() {
+    // The click path (press + release, no drag) must still open the link.
+    let mut h = harness();
+    h.handle(ch('7'));
+    h.handle(key(KeyCode::Right));
+    click_label(&mut h, "the rstui repo");
+    let s = h.snapshot();
+    assert!(
+        s.contains("Open link") && s.contains("github.com/andymac4182/rstui"),
+        "a plain click on the link follows the href:\n{s}"
+    );
+}
+
+#[test]
+fn a_selection_never_includes_a_panel_border() {
+    let mut h = harness();
+    h.handle(ch('7')); // Rich Text, framed Paragraph body
+    let (x, y) = cell_of(&h, "deterministically");
+    drag(&mut h, x, y, x + 200, y + 60); // far past the panel on both axes
+    let sel = h.app().last_selection();
+    assert!(!sel.is_empty());
+    for g in ['│', '─', '╭', '╮', '╰', '╯', '┌', '┐', '└', '┘'] {
+        assert!(
+            !sel.contains(g),
+            "a selection must never include a border glyph {g:?}: {sel:?}"
+        );
+    }
+}

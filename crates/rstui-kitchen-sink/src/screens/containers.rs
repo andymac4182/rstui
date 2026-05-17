@@ -217,3 +217,26 @@ fn framed(theme: &Theme, title: &str) -> Block<'static> {
         .border_style(theme.border())
         .style(theme.body())
 }
+
+/// A drag-select stays inside the Card body or the ScrollView document —
+/// never across the borders/grid. Mirrors [`State::view`]'s layout.
+pub(crate) fn selection_region(pos: Position, content: Rect) -> Option<Rect> {
+    let [_, mid, bottom] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Length(8),
+        Constraint::Fill(1),
+    ])
+    .areas(content);
+    let [card_a, _grid, _align] = Layout::horizontal([
+        Constraint::Percentage(34),
+        Constraint::Percentage(33),
+        Constraint::Fill(1),
+    ])
+    .areas(mid);
+    if card_a.contains(pos) {
+        return Some(crate::screens::block_inner(card_a));
+    }
+    let (left, _right) = SplitPane::new(Constraint::Percentage(58)).split(bottom);
+    left.contains(pos)
+        .then(|| crate::screens::block_inner(left))
+}

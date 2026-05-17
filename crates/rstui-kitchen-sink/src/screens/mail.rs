@@ -210,6 +210,21 @@ impl State {
         .areas(area)
     }
 
+    /// A drag-select stays inside one pane — folders, the message list, or
+    /// the reading pane — never across all three. Mirrors [`view`].
+    pub(crate) fn selection_region(&self, pos: Position, content: Rect) -> Option<Rect> {
+        let [_, body, _] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(content);
+        Self::panes(body)
+            .into_iter()
+            .find(|r| r.contains(pos))
+            .map(crate::screens::block_inner)
+    }
+
     /// Draw the mail client.
     pub(crate) fn view(&self, theme: &Theme, _tick: u64, frame: &mut Frame<'_>, area: Rect) {
         let [top, body, foot] = Layout::vertical([

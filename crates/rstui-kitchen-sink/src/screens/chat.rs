@@ -375,3 +375,16 @@ fn inner_box(frame: &mut Frame<'_>, theme: &Theme, area: Rect, title: &str) -> R
     frame.render_widget(block, area);
     inner
 }
+
+/// A drag-select stays inside the message thread (a block-less
+/// [`Paragraph`], so no inset) — never the channel rail or the composer.
+pub(crate) fn selection_region(pos: Position, content: Rect) -> Option<Rect> {
+    let [_rail, convo] = State::split(content);
+    let [_, thread, _] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(3),
+    ])
+    .areas(convo);
+    thread.contains(pos).then_some(thread)
+}

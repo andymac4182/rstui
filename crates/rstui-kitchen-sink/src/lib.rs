@@ -174,6 +174,11 @@ pub struct KitchenSink {
     /// by the copy path on release). The framework-pure analogue of a
     /// clipboard read.
     selected: RefCell<String>,
+    /// The container rect the in-progress selection is confined to (the
+    /// text panel the press landed in). A drag is clamped to this and the
+    /// extraction/highlight is restricted to it, so a selection never
+    /// crosses into a neighbouring panel or the chrome.
+    sel_region: Cell<Option<Rect>>,
 }
 
 impl KitchenSink {
@@ -199,6 +204,7 @@ impl KitchenSink {
             press: None,
             drag_moved: false,
             selected: RefCell::new(String::new()),
+            sel_region: Cell::new(None),
         }
     }
 
@@ -248,6 +254,13 @@ impl KitchenSink {
     /// The active screen's drawable rect the last frame actually rendered.
     fn content_rect(&self) -> Rect {
         self.geom.get().content
+    }
+
+    /// Drops the selection *and* the container it was confined to, so the
+    /// two never drift (every place a selection ends goes through here).
+    fn clear_selection(&mut self) {
+        self.selection.clear();
+        self.sel_region.set(None);
     }
 
     /// Routes a completed click (a mouse-up with no intervening drag):
@@ -431,7 +444,7 @@ impl App for KitchenSink {
                 }
                 // Any navigation/overlay key drops a stale mouse selection
                 // (the content is about to change under it).
-                self.selection.clear();
+                self.clear_selection();
                 // Global chords first.
                 match code {
                     KeyCode::Char('q') | KeyCode::Esc => {
@@ -496,26 +509,39 @@ impl App for KitchenSink {
             }
             Msg::MouseDown(pos) => {
                 // A press replaces any prior selection and anchors a new one
-                // (only over the content — chrome is not selectable). The
-                // click itself is deferred to release so a drag can preempt it.
-                self.selection.clear();
+                // *inside the text container under the pointer* (the screen
+                // reports it, mirroring its own layout). The click itself is
+                // deferred to release so a drag can preempt it.
+                self.clear_selection();
                 self.drag_moved = false;
                 self.press = Some(pos);
-                if self.overlay == Overlay::None && self.content_rect().contains(pos) {
-                    self.selection.start(pos);
+                if self.overlay == Overlay::None {
+                    let content = self.content_rect();
+                    if content.contains(pos) {
+                        if let Some(region) =
+                            self.screens.selection_region(self.screen, pos, content)
+                        {
+                            if !region.is_empty() && region.contains(pos) {
+                                self.sel_region.set(Some(region));
+                                self.selection.start(pos);
+                            }
+                        }
+                    }
                 }
             }
             Msg::MouseDrag(pos) => {
                 // A terminal only emits Drag on real movement; clamp to the
-                // content so the row-major stream stays inside the screen.
+                // *container* the press began in so the row-major stream can
+                // never spill into a neighbouring panel or the chrome.
                 if !self.selection.is_empty() {
-                    let c = self.content_rect();
-                    let clamped = Position::new(
-                        pos.x.clamp(c.x, c.right().saturating_sub(1)),
-                        pos.y.clamp(c.y, c.bottom().saturating_sub(1)),
-                    );
-                    self.selection.extend(clamped);
-                    self.drag_moved = true;
+                    if let Some(r) = self.sel_region.get() {
+                        let clamped = Position::new(
+                            pos.x.clamp(r.x, r.right().saturating_sub(1)),
+                            pos.y.clamp(r.y, r.bottom().saturating_sub(1)),
+                        );
+                        self.selection.extend(clamped);
+                        self.drag_moved = true;
+                    }
                 }
             }
             Msg::MouseUp(pos) => {
@@ -525,7 +551,7 @@ impl App for KitchenSink {
                     // already extracted the covered text into `selected`.
                     let txt = self.selected.borrow().clone();
                     if txt.trim().is_empty() {
-                        self.selection.clear();
+                        self.clear_selection();
                     } else {
                         let n = txt.chars().count();
                         let preview: String = txt
@@ -538,7 +564,7 @@ impl App for KitchenSink {
                 } else if had_press {
                     // No drag → it was a click; selection collapses and the
                     // press is routed exactly as before.
-                    self.selection.clear();
+                    self.clear_selection();
                     self.route_click(pos);
                 }
                 self.drag_moved = false;
@@ -546,7 +572,7 @@ impl App for KitchenSink {
             Msg::Scroll { up, at } => {
                 // The content shifts under a selection when it scrolls, so
                 // drop it (the ADR 0012 §P1 "content changed" clear).
-                self.selection.clear();
+                self.clear_selection();
                 if self.overlay == Overlay::None && self.content_rect().contains(at) {
                     self.screens.on_scroll(self.screen, up);
                 } else if self.sidebar_rect().contains(at) {
@@ -579,19 +605,19 @@ impl App for KitchenSink {
 
 impl KitchenSink {
     /// Pure projection of the caller-owned [`Selection`] (ADR 0012 §P1):
-    /// extract the covered text (confined to the content so a multi-row
-    /// stream never grabs chrome) and overlay a high-contrast highlight on
-    /// the selected cells. Reads the selection, never mutates it.
+    /// extract the covered text and overlay a high-contrast highlight — both
+    /// **confined to the container** the drag began in (`sel_region`), so a
+    /// multi-row stream never grabs a neighbouring panel or the chrome.
+    /// Reads the selection, never mutates it.
     fn project_selection(&self, frame: &mut Frame<'_>) {
-        if self.selection.is_empty() {
+        let Some(cr) = self.sel_region.get().filter(|_| !self.selection.is_empty()) else {
             self.selected.borrow_mut().clear();
             return;
-        }
-        let cr = self.content_rect();
+        };
         let buf = frame.buffer_mut();
-        // A sub-buffer at the *same absolute coords* as the content, so
-        // `selected_text`'s row-major stream is clipped to the screen, not
-        // the whole frame (no sidebar/footer text bleeds into a copy).
+        // A sub-buffer at the *same absolute coords* as the container, so
+        // `selected_text`'s row-major stream is clipped to that panel, not
+        // the whole frame (no border/neighbour/chrome bleeds into a copy).
         let mut sub = Buffer::empty(cr);
         for p in cr.positions() {
             if let Some(cell) = buf.get(p) {
@@ -613,6 +639,14 @@ impl KitchenSink {
 // Accessors the chrome / screens read (kept here so the model fields stay
 // private to this module).
 impl KitchenSink {
+    /// The exact text the current drag-selection covers — what a copy would
+    /// yield. Empty when nothing is selected. Exposed for tests and
+    /// embedders so the confinement guarantee can be asserted precisely.
+    #[must_use]
+    pub fn last_selection(&self) -> String {
+        self.selected.borrow().clone()
+    }
+
     pub(crate) fn theme(&self) -> &Theme {
         &self.theme
     }

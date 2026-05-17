@@ -3,7 +3,9 @@
 //! [`StatusBar`]. Type to filter, `↑/↓`/`PgUp`/`PgDn` scroll (pausing the
 //! tail), `End` re-follows, `Home` jumps to the top.
 
-use rstui_core::{Constraint, KeyCode, Layout, Line, Rect, Style, TextEdit, stylize::Stylize};
+use rstui_core::{
+    Constraint, KeyCode, Layout, Line, Position, Rect, Style, TextEdit, stylize::Stylize,
+};
 use rstui_runtime::Frame;
 use rstui_widgets::{Block, BorderType, Input, Scrollbar, ScrollbarOrientation, StatusBar};
 
@@ -225,4 +227,17 @@ impl State {
             foot,
         );
     }
+}
+
+/// A drag-select stays inside the log body (the framed stream), never the
+/// filter bar or the status footer. Mirrors [`State::view`]'s split.
+pub(crate) fn selection_region(pos: Position, content: Rect) -> Option<Rect> {
+    let [_, body, _] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(content);
+    body.contains(pos)
+        .then(|| crate::screens::block_inner(body))
 }
