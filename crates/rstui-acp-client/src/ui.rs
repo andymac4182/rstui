@@ -11,7 +11,7 @@ use rstui_core::{Color, Constraint, Layout, Line, Position, Rect, Span, Style};
 use rstui_runtime::Frame;
 use rstui_widgets::{Block, KeymapView, List, ListItem, Markdown, Paragraph, Wrap};
 
-use crate::app::{ChatApp, Role, Screen};
+use crate::app::{ChatApp, MD_WIDTH, Role, Screen};
 use crate::plugin::FooterSegment;
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -532,14 +532,25 @@ fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
             Style::new().fg(color),
         )]));
 
-        // Parse markdown for agent responses to support links
+        // Parse markdown for agent responses to support links. UI-1/MD-1:
+        // reuse the parse cached in `update` for finalized (non-last)
+        // entries; the still-streaming last entry has no cache and is
+        // parsed fresh here exactly as before — and a fresh parse is also
+        // the fallback for any uncached entry, so output is byte-identical
+        // while the per-frame whole-transcript re-parse is eliminated.
         if entry.role == Role::Agent {
-            let markdown = Markdown::new(&entry.text);
-            let md_lines = markdown.lines(80); // Use reasonable default width
+            let fresh;
+            let md_lines: &[Line<'static>] = match &entry.md_cache {
+                Some(cached) => cached,
+                None => {
+                    fresh = Markdown::new(&entry.text).lines(MD_WIDTH);
+                    &fresh
+                }
+            };
             for line in md_lines {
                 // Indent each markdown line
                 let mut spans = vec![Span::styled("  ", Style::new())];
-                spans.extend(line.spans);
+                spans.extend(line.spans.iter().cloned());
                 out.push(Line::from(spans));
             }
         } else {

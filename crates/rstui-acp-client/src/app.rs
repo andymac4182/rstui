@@ -5,9 +5,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Size, TextArea};
+use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Line, Size, TextArea};
 use rstui_keymap::{Action, Chord, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd, Frame};
+use rstui_widgets::Markdown;
 
 use crate::Config;
 use crate::acp::{
@@ -93,6 +94,14 @@ pub enum Role {
     System,
 }
 
+/// The width the transcript parses/wraps agent markdown at (UI-1/MD-1).
+///
+/// Shared by the renderer (`ui::transcript_lines`) and the caller-owned
+/// parse cache (`ChatApp::refresh_md_cache`) so the cached lines are
+/// *exactly* what a fresh render-time parse would produce — drift here
+/// would make the cache observably wrong.
+pub(crate) const MD_WIDTH: u16 = 80;
+
 /// One block in the scrolling transcript.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -102,6 +111,14 @@ pub struct Entry {
     pub text: String,
     /// `true` while an agent turn is still appending to this entry.
     pub open: bool,
+    /// UI-1/MD-1: caller-owned cache of the parsed+laid-out markdown for a
+    /// `Role::Agent` entry, populated in `update` once the entry is no
+    /// longer the last one (and so its `text` is immutable — only the
+    /// last entry is ever mutated). `None` means "parse fresh at render"
+    /// (the still-streaming last entry, or not yet populated); the
+    /// renderer always falls back to a fresh parse, so this is a pure
+    /// speed cache and never changes output. Not part of identity/eq.
+    pub md_cache: Option<Vec<Line<'static>>>,
 }
 
 /// A permission request awaiting the user's choice.
@@ -695,6 +712,7 @@ impl ChatApp {
             role: Role::System,
             text: text.into(),
             open: false,
+            md_cache: None,
         });
         self.follow = true;
         self.cap_transcript();
@@ -724,6 +742,7 @@ impl ChatApp {
             role,
             text: chunk.to_owned(),
             open: true,
+            md_cache: None,
         });
         self.follow = true;
         self.cap_transcript();
@@ -732,6 +751,30 @@ impl ChatApp {
     fn close_open_entry(&mut self) {
         if let Some(last) = self.transcript.last_mut() {
             last.open = false;
+        }
+    }
+
+    /// UI-1/MD-1: populate the caller-owned markdown parse cache.
+    ///
+    /// Called once at the end of every `update`. **Only the last transcript
+    /// entry can ever have its `text` change**: `append_agent` mutates only
+    /// `transcript.last_mut()`, `close_open_entry` only flips `last.open`,
+    /// and `cap_transcript` only drains whole entries off the front. So any
+    /// `Role::Agent` entry that is no longer the last one has immutable
+    /// text and its parse can be cached exactly once and reused forever.
+    /// The still-streaming last entry is left uncached and re-parsed fresh
+    /// by the renderer every frame, so the rendered output is byte-identical
+    /// to the pre-cache behaviour — this purely removes the O(history)
+    /// markdown re-parse the renderer used to pay for the whole transcript
+    /// every frame (the audit's #1 cost, ~1.49 ms × N agent entries/frame).
+    /// `Markdown::new(..).lines(MD_WIDTH)` is exactly what the renderer
+    /// computes; the `paragraph`/`md_cache` exactness test gate-enforces it.
+    fn refresh_md_cache(&mut self) {
+        let n = self.transcript.len();
+        for (i, e) in self.transcript.iter_mut().enumerate() {
+            if e.role == Role::Agent && i + 1 < n && e.md_cache.is_none() {
+                e.md_cache = Some(Markdown::new(&e.text).lines(MD_WIDTH));
+            }
         }
     }
 
@@ -760,6 +803,7 @@ impl ChatApp {
                     role: Role::System,
                     text: SENTINEL.to_owned(),
                     open: false,
+                    md_cache: None,
                 },
             );
         }
@@ -814,6 +858,7 @@ impl ChatApp {
             role: Role::User,
             text: text.clone(),
             open: false,
+            md_cache: None,
         });
         self.cap_transcript();
         self.streaming = true;
@@ -916,6 +961,7 @@ impl ChatApp {
                         role: Role::User,
                         text: line.clone(),
                         open: false,
+                        md_cache: None,
                     });
                     self.streaming = true;
                     if let Some(driver) = &self.driver {
@@ -1627,7 +1673,7 @@ impl App for ChatApp {
     }
 
     fn update(&mut self, message: Msg) -> Cmd<Msg> {
-        match message {
+        let cmd = match message {
             Msg::Boot => {
                 let mut cmds = Vec::new();
                 let plugin_cmds = crate::resolve_plugins(&self.config);
@@ -1723,7 +1769,12 @@ impl App for ChatApp {
                 Cmd::none()
             }
             Msg::Quit => self.begin_quit(),
-        }
+        };
+        // UI-1/MD-1: every state transition funnels through `update`, so
+        // refreshing the caller-owned markdown cache here is the single
+        // total interception point — no per-mutation-site bookkeeping.
+        self.refresh_md_cache();
+        cmd
     }
 
     fn view(&self, frame: &mut Frame<'_>) {
@@ -1764,6 +1815,7 @@ impl ChatApp {
                         role: Role::Tool,
                         text: id,
                         open: false,
+                        md_cache: None,
                     });
                     self.follow = true;
                 }
@@ -1803,6 +1855,7 @@ impl ChatApp {
                         role: Role::Tool,
                         text: id,
                         open: false,
+                        md_cache: None,
                     });
                     self.follow = true;
                 }
@@ -1817,6 +1870,7 @@ impl ChatApp {
                         role: Role::Plan,
                         text: format!("plan updated — {done}/{total} done"),
                         open: false,
+                        md_cache: None,
                     });
                     self.follow = true;
                 }
@@ -1929,5 +1983,62 @@ impl AskState {
     #[must_use]
     pub fn freeform(&self) -> &TextArea {
         &self.freeform
+    }
+}
+
+#[cfg(test)]
+mod md_cache_tests {
+    use super::*;
+
+    /// UI-1/MD-1 exactness gate: the caller-owned `md_cache` must be
+    /// *exactly* what the renderer's fresh parse produces, for every
+    /// non-last `Role::Agent` entry — that equality is the entire
+    /// correctness contract (the renderer falls back to a fresh parse, so
+    /// a populated cache that differed would be the only way to change
+    /// output). Drives two agent turns separated by a system line so turn
+    /// one is a finalized, non-last agent entry, with a trailing open
+    /// agent entry and a non-agent entry to cover every branch.
+    #[test]
+    fn agent_md_cache_equals_a_fresh_parse_for_every_non_last_entry() {
+        let mut app = ChatApp::new(Config::default());
+        app.append_agent(
+            Role::Agent,
+            "# Heading\n\nA **bold** word and a [link](http://example.com).\n",
+        );
+        app.append_agent(Role::Agent, "more streamed text in the same turn\n");
+        app.push_system("a system notice between turns");
+        app.append_agent(Role::Agent, "## Second turn\n\n- alpha\n- beta\n");
+        app.refresh_md_cache();
+
+        let n = app.transcript.len();
+        assert!(n >= 3, "expected several entries, got {n}");
+        let mut saw_cached_agent = false;
+        for (i, e) in app.transcript.iter().enumerate() {
+            let is_last = i + 1 == n;
+            if e.role == Role::Agent && !is_last {
+                let fresh = Markdown::new(&e.text).lines(MD_WIDTH);
+                assert_eq!(
+                    e.md_cache.as_ref(),
+                    Some(&fresh),
+                    "non-last agent entry {i} cache must equal a fresh parse"
+                );
+                saw_cached_agent = true;
+            } else if e.role == Role::Agent {
+                // The streaming last entry is parsed fresh by the renderer;
+                // if a cache exists it must still be exact.
+                if let Some(c) = &e.md_cache {
+                    assert_eq!(c, &Markdown::new(&e.text).lines(MD_WIDTH));
+                }
+            } else {
+                assert!(
+                    e.md_cache.is_none(),
+                    "non-agent entry {i} must never be markdown-cached"
+                );
+            }
+        }
+        assert!(
+            saw_cached_agent,
+            "test must exercise at least one cached non-last agent entry"
+        );
     }
 }
