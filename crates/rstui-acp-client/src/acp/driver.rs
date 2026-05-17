@@ -203,36 +203,46 @@ async fn run(
 /// going through JSON so it never depends on the exact `sacp` struct shape
 /// (the schema evolves; the JSON keys are the stable ACP contract).
 fn describe_permission(request: &RequestPermissionRequest) -> (String, Vec<PermissionOption>) {
-    let value = serde_json::to_value(request).unwrap_or(serde_json::Value::Null);
-    let title = value
-        .get("toolCall")
-        .and_then(|tc| tc.get("title").or_else(|| tc.get("rawInput")))
-        .and_then(value_to_text)
-        .or_else(|| value.get("title").and_then(value_to_text))
+    // DRV-2: read the typed `sacp` request directly instead of round-
+    // tripping the whole thing through `serde_json::to_value` every
+    // permission prompt. Byte-identical to the JSON walk it replaces,
+    // because the JSON keys the old code relied on *are* these typed
+    // fields:
+    //  * `ToolCallUpdate.fields` is `#[serde(flatten)]`, so JSON
+    //    `toolCall.title` IS `tool_call.fields.title` and
+    //    `toolCall.rawInput` IS `tool_call.fields.raw_input`. The old
+    //    code ran the picked value through `value_to_text`; for a present
+    //    title that value is a JSON string and `value_to_text` of a
+    //    string is the string itself, so a present title maps through
+    //    unchanged, and the rawInput fallback still goes through
+    //    `value_to_text` on the *same* `serde_json::Value`.
+    //  * `RequestPermissionRequest` has no top-level `title`, so the old
+    //    `.or(value["title"])` arm was always `None` for real data — the
+    //    default still covers the title-absent case.
+    //  * `PermissionOptionId(pub Arc<str>)` is a transparent newtype:
+    //    `serde_json` flattens it to its inner string, exactly what
+    //    `opt["optionId"].as_str()` yielded; `optionId` and `name` are
+    //    always present (non-`Option`, camelCase), so the old
+    //    `.or(opt["option_id"])` / `.or(opt["label"])` / `filter_map`
+    //    arms were dead for real `sacp` data.
+    // Schema-resilience (the old comment's concern) is preserved: the
+    // only still-untyped value — `rawInput`, arbitrary JSON — is still
+    // resolved by `value_to_text`, never by a fixed struct shape.
+    let fields = &request.tool_call.fields;
+    let title = fields
+        .title
+        .clone()
+        .or_else(|| fields.raw_input.as_ref().and_then(value_to_text))
         .unwrap_or_else(|| "The agent is requesting permission".to_owned());
 
-    let options = value
-        .get("options")
-        .and_then(|o| o.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|opt| {
-                    let option_id = opt
-                        .get("optionId")
-                        .or_else(|| opt.get("option_id"))
-                        .and_then(|v| v.as_str())?
-                        .to_owned();
-                    let label = opt
-                        .get("name")
-                        .or_else(|| opt.get("label"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&option_id)
-                        .to_owned();
-                    Some(PermissionOption { option_id, label })
-                })
-                .collect()
+    let options = request
+        .options
+        .iter()
+        .map(|o| PermissionOption {
+            option_id: o.option_id.0.as_ref().to_owned(),
+            label: o.name.clone(),
         })
-        .unwrap_or_default();
+        .collect();
 
     (title, options)
 }
@@ -496,4 +506,113 @@ fn render_diff(old: &str, new: &str) -> String {
     let mut lines: Vec<String> = old.lines().map(|l| format!("-{l}")).collect();
     lines.extend(new.lines().map(|l| format!("+{l}")));
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod drv2_tests {
+    use super::*;
+    use sacp::schema::{
+        PermissionOption as SacpOption, PermissionOptionId, PermissionOptionKind, SessionId,
+        ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
+    };
+
+    /// `events::PermissionOption` is not `PartialEq`; compare the two
+    /// results by their observable fields.
+    fn proj(r: &(String, Vec<PermissionOption>)) -> (String, Vec<(String, String)>) {
+        (
+            r.0.clone(),
+            r.1.iter()
+                .map(|o| (o.option_id.clone(), o.label.clone()))
+                .collect(),
+        )
+    }
+
+    /// The exact pre-DRV-2 `serde_json` walk, kept verbatim as the oracle:
+    /// the typed `describe_permission` must equal it byte-for-byte.
+    fn describe_permission_via_json(
+        request: &RequestPermissionRequest,
+    ) -> (String, Vec<PermissionOption>) {
+        let value = serde_json::to_value(request).unwrap_or(serde_json::Value::Null);
+        let title = value
+            .get("toolCall")
+            .and_then(|tc| tc.get("title").or_else(|| tc.get("rawInput")))
+            .and_then(value_to_text)
+            .or_else(|| value.get("title").and_then(value_to_text))
+            .unwrap_or_else(|| "The agent is requesting permission".to_owned());
+        let options = value
+            .get("options")
+            .and_then(|o| o.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|opt| {
+                        let option_id = opt
+                            .get("optionId")
+                            .or_else(|| opt.get("option_id"))
+                            .and_then(|v| v.as_str())?
+                            .to_owned();
+                        let label = opt
+                            .get("name")
+                            .or_else(|| opt.get("label"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&option_id)
+                            .to_owned();
+                        Some(PermissionOption { option_id, label })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (title, options)
+    }
+
+    fn opt(id: &str, name: &str) -> SacpOption {
+        SacpOption::new(
+            PermissionOptionId::new(id),
+            name,
+            PermissionOptionKind::AllowOnce,
+        )
+    }
+
+    fn req(fields: ToolCallUpdateFields, opts: Vec<SacpOption>) -> RequestPermissionRequest {
+        RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            ToolCallUpdate::new(ToolCallId::new("tc-1"), fields),
+            opts,
+        )
+    }
+
+    /// DRV-2 gate (the PG-2/CM-3 exactness discipline): the typed
+    /// extraction must be byte-identical to the JSON walk it replaced,
+    /// across title-present, rawInput-fallback, neither (→ default),
+    /// empty-title (NOT default), rawInput-not-text (→ default), and
+    /// zero/many options.
+    #[test]
+    fn typed_describe_permission_is_byte_identical_to_the_json_walk() {
+        let cases = vec![
+            req(
+                ToolCallUpdateFields::new().title(Some("Run the test suite".to_owned())),
+                vec![opt("allow", "Allow"), opt("deny", "Deny")],
+            ),
+            req(
+                ToolCallUpdateFields::new()
+                    .raw_input(Some(serde_json::json!({ "command": "ls -la" }))),
+                vec![opt("o1", "Only one")],
+            ),
+            req(ToolCallUpdateFields::new(), vec![]),
+            req(
+                ToolCallUpdateFields::new().title(Some(String::new())),
+                vec![opt("x", "X")],
+            ),
+            req(
+                ToolCallUpdateFields::new().raw_input(Some(serde_json::json!(42))),
+                vec![],
+            ),
+        ];
+        for (i, r) in cases.iter().enumerate() {
+            assert_eq!(
+                proj(&describe_permission(r)),
+                proj(&describe_permission_via_json(r)),
+                "case {i}: typed describe_permission diverged from the JSON walk"
+            );
+        }
+    }
 }
