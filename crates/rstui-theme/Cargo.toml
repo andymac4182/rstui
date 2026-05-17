@@ -29,3 +29,7 @@ serde_json = { version = "1", default-features = false, features = ["std"] }
 [[example]]
 name = "theme_gallery"
 path = "examples/theme_gallery.rs"
+
+[[example]]
+name = "theme_picker_demo"
+path = "examples/theme_picker_demo.rs"

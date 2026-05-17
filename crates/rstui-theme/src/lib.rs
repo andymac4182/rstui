@@ -69,6 +69,7 @@
 pub mod cascade;
 pub mod hsla;
 pub mod palette;
+pub mod picker;
 pub mod registry;
 pub mod schema;
 pub mod shadcn;
@@ -76,6 +77,7 @@ pub mod shadcn;
 pub use cascade::ThemeColor;
 pub use hsla::{Hsla, Rgba};
 pub use palette::ThemePalette;
+pub use picker::{ThemePicker, ThemePickerState};
 pub use registry::{Theme, ThemeError};
 pub use schema::{ThemeColorConfig, ThemeConfig, ThemeMode, ThemeSet};
 pub use shadcn::try_parse_color;

@@ -63,6 +63,46 @@ Every raw colour is also a public field on [`ThemePalette`]
 (`p.primary`, `p.scrollbar_thumb`, `p.red_light`, …) for anything the
 constructors don't cover.
 
+## Picking a theme at runtime
+
+[`ThemePicker`] is a reusable widget for "browse every theme, see it
+applied live, then keep it" — the same drop-in pattern the kitchen-sink,
+ACP client, and git-review all use. It is a pure projection of a
+caller-owned [`ThemePickerState`] (catalogue + highlight + filter), so
+the wiring is:
+
+```rust
+use rstui_theme::{Theme, ThemePicker, ThemePickerState};
+
+// On your model:
+struct App { picker: ThemePickerState, picking: bool, theme: MyTheme, /* … */ }
+
+// Key handling while the picker is open:
+//   ↑ / ↓        picker.prev() / picker.next()
+//   printable    picker.push_filter(c)     Backspace  picker.pop_filter()
+//   Esc          cancel  (restore the pre-picker palette)
+//   Enter        keep    (persist + close)
+
+// Every frame, *before* drawing, theme the whole app from the highlight —
+// that IS the live preview, no special preview mode:
+if let Some(t) = app.picker.selected_theme() {
+    app.theme = MyTheme::from_palette(&t.palette);
+}
+// …then draw the picker on top:
+frame.render_widget(ThemePicker::new(&app.picker), picker_area);
+
+// On Enter — save so it sticks across launches:
+Theme::write_choice(config_path, &app.picker.selected_theme().unwrap().name).ok();
+// …and on startup:
+let theme = Theme::read_choice(config_path).unwrap_or_else(Theme::default_dark);
+```
+
+The widget draws the scrollable list, the highlight, a live swatch strip
+of the highlighted theme's own colours, and a key hint; it performs no
+I/O and reads no clock, so it stays deterministic under snapshot tests.
+[`Theme::write_choice`] / [`Theme::read_choice`] are the matching
+one-call persistence pair (a saved name, or a path to a theme file).
+
 ## User-supplied themes
 
 Users are not limited to the built-ins. A theme is just a gpui-component
@@ -123,6 +163,11 @@ fallback + the alpha clamps land on their exact expected values.
 [`Theme::from_set_json`]: https://docs.rs/rstui-theme
 [`Theme::from_set_file`]: https://docs.rs/rstui-theme
 [`Theme::load_dir`]: https://docs.rs/rstui-theme
+[`Theme::write_choice`]: https://docs.rs/rstui-theme
+[`Theme::read_choice`]: https://docs.rs/rstui-theme
+[`Theme::default_dark`]: https://docs.rs/rstui-theme
+[`ThemePicker`]: https://docs.rs/rstui-theme
+[`ThemePickerState`]: https://docs.rs/rstui-theme
 [`ThemeError`]: https://docs.rs/rstui-theme
 [`Color`]: https://docs.rs/rstui-core
 [`Style`]: https://docs.rs/rstui-core
