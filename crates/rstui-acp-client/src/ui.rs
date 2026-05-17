@@ -198,6 +198,69 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         let cy = cinner.y + (row as u16).min(cinner.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(cx, cy));
     }
+
+    // The slash-command autocomplete floats just above the composer.
+    render_completion(app, frame, composer_area);
+}
+
+fn render_completion(app: &ChatApp, frame: &mut Frame<'_>, composer_area: Rect) {
+    let Some(comp) = app.completion() else { return };
+    if comp.items.is_empty() {
+        return;
+    }
+    let above = composer_area.y.saturating_sub(1);
+    if above < 3 {
+        return;
+    }
+    let rows = (comp.items.len() as u16).min(above.saturating_sub(2));
+    let h = rows + 2;
+    let rect = Rect {
+        x: composer_area.x,
+        y: composer_area.y - h,
+        width: composer_area.width,
+        height: h,
+    };
+    let name_w = comp
+        .items
+        .iter()
+        .map(|c| c.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let block = Block::bordered().title(" commands — ↑↓ Tab/Enter Esc ");
+    let body = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let items: Vec<ListItem> = comp
+        .items
+        .iter()
+        .map(|c| {
+            let tag = match &c.source {
+                crate::app::CommandSource::Builtin => "",
+                crate::app::CommandSource::Plugin(_) => " ⚙",
+                crate::app::CommandSource::Agent => " ◆",
+            };
+            let head = format!("/{:<width$}{}  ", c.name, tag, width = name_w);
+            ListItem::new(Line::from(vec![
+                Span::styled(head, Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    truncate(
+                        &c.description,
+                        body.width.saturating_sub(name_w as u16 + 6) as usize,
+                    ),
+                    Style::new().fg(Color::Gray),
+                ),
+            ]))
+        })
+        .collect();
+    frame.render_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(Style::new().fg(Color::Black).bg(Color::Cyan))
+            .selected(Some(comp.selected)),
+        body,
+    );
 }
 
 fn transcript_title(app: &ChatApp) -> String {
@@ -212,7 +275,7 @@ fn composer_title(app: &ChatApp) -> String {
     if app.is_streaming() {
         " Message — Esc cancels the streaming turn ".to_owned()
     } else {
-        " Message — Enter send · Shift+Enter newline · /help ".to_owned()
+        " Message — Enter send · Shift+Enter newline · type / for commands ".to_owned()
     }
 }
 
@@ -377,18 +440,28 @@ fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
 
     let mut lines = vec![
         kv("Enter", "send message (Shift+Enter = newline)"),
+        kv("/ then ↑↓", "slash autocomplete · Tab complete · Enter run"),
         kv("↑ ↓ ← →", "move the composer caret"),
         kv("PageUp/Down", "scroll the transcript"),
         kv("Esc", "cancel a streaming turn / close overlay"),
         kv("F1", "toggle this help"),
         kv("Ctrl+C / F10", "quit"),
         Line::raw(""),
-        Line::styled("Slash commands:", Style::new().fg(Color::Yellow)),
-        kv("/help /agents /log", "built-ins"),
-        kv("/cancel /quit", "built-ins"),
+        Line::styled(
+            "Slash commands  (⚙ plugin · ◆ agent):",
+            Style::new().fg(Color::Yellow),
+        ),
     ];
-    for (name, (plugin, desc)) in app.commands() {
-        lines.push(kv(&format!("/{name}"), &format!("{desc}  ({plugin})")));
+    for spec in app.command_specs() {
+        let tag = match spec.source {
+            crate::app::CommandSource::Builtin => String::new(),
+            crate::app::CommandSource::Plugin(p) => format!("  (⚙ {p})"),
+            crate::app::CommandSource::Agent => "  (◆ agent)".to_owned(),
+        };
+        lines.push(kv(
+            &format!("/{}", spec.name),
+            &format!("{}{tag}", spec.description),
+        ));
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

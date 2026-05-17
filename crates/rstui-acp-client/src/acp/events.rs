@@ -18,6 +18,9 @@ pub enum AcpEvent {
     ToolCall(String),
     /// A plan/`todo` update line from the agent.
     Plan(String),
+    /// The agent's advertised slash commands (`available_commands_update`):
+    /// `(name, description)` pairs, surfaced in the autocomplete + help.
+    AvailableCommands(Vec<(String, String)>),
     /// The current turn finished; carries the ACP stop reason, debug-rendered.
     TurnEnded(String),
     /// The agent wants authorization. Single-flight: the driver waits for the

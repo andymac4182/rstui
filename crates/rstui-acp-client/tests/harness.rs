@@ -328,3 +328,126 @@ fn event_routed_keys_reach_the_reducer_through_on_event() {
     );
     assert!(harness.is_running());
 }
+
+// ---- Iteration 1: slash commands + autocomplete ----
+
+use rstui_acp_client::acp::AcpEvent;
+use rstui_acp_client::app::CommandSource;
+
+/// Drives the app into the connected chat screen with no tokio/agent:
+/// `Status("session ready")` flips the screen to `Chat` in the reducer.
+fn chatting(width: u16, height: u16) -> Harness<ChatApp> {
+    let mut h = booted(width, height);
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned())));
+    assert_eq!(h.app().screen(), Screen::Chat, "session ready ⇒ Chat");
+    h
+}
+
+fn typ(h: &mut Harness<ChatApp>, s: &str) {
+    for c in s.chars() {
+        h.message(Msg::Key(KeyEvent::from_code(KeyCode::Char(c))));
+    }
+}
+
+#[test]
+fn typing_slash_opens_the_autocomplete_with_builtins() {
+    let mut h = chatting(100, 30);
+    assert!(h.app().completion().is_none(), "no popup before '/'");
+    typ(&mut h, "/");
+    let comp = h.app().completion().expect("'/' opens the popup");
+    assert!(!comp.items.is_empty());
+    assert!(
+        comp.items.iter().any(|c| c.name == "help"),
+        "built-in /help is offered"
+    );
+    // Popup is drawn.
+    assert!(h.snapshot().contains("/help"));
+}
+
+#[test]
+fn autocomplete_filters_as_you_type_and_navigates_and_wraps() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "/he");
+    let comp = h.app().completion().expect("popup visible");
+    assert!(
+        comp.items
+            .iter()
+            .all(|c| c.name.contains("he") || c.description.to_ascii_lowercase().contains("he")),
+        "every candidate matches the query"
+    );
+    assert!(comp.items.iter().any(|c| c.name == "help"));
+    let first = h.app().completion().unwrap().selected;
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Down)));
+    let second = h.app().completion().unwrap().selected;
+    assert!(second != first || h.app().completion().unwrap().items.len() == 1);
+    // Up from index 0 wraps to the last item.
+    let mut h2 = chatting(100, 30);
+    typ(&mut h2, "/");
+    let n = h2.app().completion().unwrap().items.len();
+    h2.message(Msg::Key(KeyEvent::from_code(KeyCode::Up)));
+    assert_eq!(h2.app().completion().unwrap().selected, n - 1, "Up wraps");
+}
+
+#[test]
+fn tab_completes_to_command_with_trailing_space_and_closes_popup() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "/hel");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Tab)));
+    assert!(
+        h.app().completion().is_none(),
+        "Tab accepts and the popup closes (a space now follows the command)"
+    );
+    assert_eq!(h.app().composer().lines(), &["/help ".to_owned()]);
+}
+
+#[test]
+fn enter_on_a_selection_runs_the_command() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "/help");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(h.app().help_visible(), "Enter ran /help");
+    assert!(h.app().completion().is_none());
+    assert!(h.app().composer().is_empty(), "composer cleared after run");
+}
+
+#[test]
+fn escape_hides_the_autocomplete_without_running() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "/quit");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Esc)));
+    assert!(h.app().completion().is_none(), "Esc hides the popup");
+    assert!(h.is_running(), "Esc must NOT have run /quit");
+}
+
+#[test]
+fn builtin_clear_command_empties_the_transcript() {
+    let mut h = chatting(100, 30);
+    h.message(Msg::Acp(AcpEvent::AgentText("hello there".to_owned())));
+    assert!(!h.app().transcript().is_empty());
+    typ(&mut h, "/clear");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    // Only the "transcript cleared" system line remains.
+    assert!(
+        h.app().transcript().len() <= 1,
+        "/clear empties the transcript"
+    );
+}
+
+#[test]
+fn agent_advertised_commands_merge_into_the_command_set() {
+    let mut h = chatting(100, 30);
+    h.message(Msg::Acp(AcpEvent::AvailableCommands(vec![(
+        "deploy".to_owned(),
+        "Ship to prod".to_owned(),
+    )])));
+    let specs = h.app().command_specs();
+    let deploy = specs
+        .iter()
+        .find(|c| c.name == "deploy")
+        .expect("agent command merged into command_specs");
+    assert_eq!(deploy.source, CommandSource::Agent);
+    // And it shows up in the autocomplete when its prefix is typed.
+    typ(&mut h, "/dep");
+    let comp = h.app().completion().expect("popup");
+    assert!(comp.items.iter().any(|c| c.name == "deploy"));
+}

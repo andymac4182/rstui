@@ -41,12 +41,25 @@ pub fn spawn_driver(command: String, cwd: PathBuf) -> DriverHandle {
         events: Arc::new(Mutex::new(ev_rx)),
     };
 
-    tokio::spawn(async move {
-        if let Err(err) = run(command, cwd, cmd_rx, ev_tx.clone()).await {
-            let _ = ev_tx.send(AcpEvent::Error(err));
+    // Spawn only when a tokio runtime is present. The production path always
+    // has one (`run_async`); a headless `Harness` test does not — there the
+    // driver is inert (an immediate disconnect) instead of panicking, so the
+    // rest of the reducer (composer, autocomplete, screens) stays testable.
+    match tokio::runtime::Handle::try_current() {
+        Ok(rt) => {
+            rt.spawn(async move {
+                if let Err(err) = run(command, cwd, cmd_rx, ev_tx.clone()).await {
+                    let _ = ev_tx.send(AcpEvent::Error(err));
+                }
+                let _ = ev_tx.send(AcpEvent::Disconnected("agent connection closed".to_owned()));
+            });
         }
-        let _ = ev_tx.send(AcpEvent::Disconnected("agent connection closed".to_owned()));
-    });
+        Err(_) => {
+            let _ = ev_tx.send(AcpEvent::Disconnected(
+                "no async runtime (headless)".to_owned(),
+            ));
+        }
+    }
 
     handle
 }
@@ -256,6 +269,26 @@ fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
                 .map(|s| format!(" [{s}]"))
                 .unwrap_or_default();
             vec![AcpEvent::ToolCall(format!("{title}{status}"))]
+        }
+        "available_commands_update" => {
+            let cmds = obj
+                .get("availableCommands")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| {
+                            let name = c.get("name").and_then(|v| v.as_str())?.to_owned();
+                            let desc = c
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            Some((name, desc))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            vec![AcpEvent::AvailableCommands(cmds)]
         }
         "plan" => {
             let entries = obj
