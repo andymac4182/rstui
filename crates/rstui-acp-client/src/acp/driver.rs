@@ -257,18 +257,48 @@ fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
         "agent_message_chunk" => content_text.map(AcpEvent::AgentText).into_iter().collect(),
         "agent_thought_chunk" => content_text.map(AcpEvent::Thought).into_iter().collect(),
         "user_message_chunk" => Vec::new(),
-        "tool_call" | "tool_call_update" => {
-            let title = obj
-                .get("title")
-                .and_then(value_to_text)
-                .or(content_text)
-                .unwrap_or_else(|| kind.to_owned());
-            let status = obj
-                .get("status")
+        "tool_call" => {
+            let id = obj
+                .get("toolCallId")
                 .and_then(|v| v.as_str())
-                .map(|s| format!(" [{s}]"))
-                .unwrap_or_default();
-            vec![AcpEvent::ToolCall(format!("{title}{status}"))]
+                .unwrap_or("")
+                .to_owned();
+            vec![AcpEvent::ToolCall(super::events::ToolCallInfo {
+                id,
+                title: obj
+                    .get("title")
+                    .and_then(value_to_text)
+                    .unwrap_or_else(|| "tool".to_owned()),
+                kind: super::events::ToolKind::parse(
+                    obj.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                ),
+                status: super::events::ToolStatus::parse(
+                    obj.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+                ),
+                input: compact_input(obj.get("rawInput")),
+                body: tool_bodies(obj.get("content")),
+            })]
+        }
+        "tool_call_update" => {
+            let id = obj
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            vec![AcpEvent::ToolCallUpdate(super::events::ToolCallPatch {
+                id,
+                title: obj.get("title").and_then(value_to_text),
+                kind: obj
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .map(super::events::ToolKind::parse),
+                status: obj
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(super::events::ToolStatus::parse),
+                input: obj.get("rawInput").map(|v| compact_input(Some(v))),
+                body: obj.get("content").map(|c| tool_bodies(Some(c))),
+            })]
         }
         "available_commands_update" => {
             let cmds = obj
@@ -360,4 +390,89 @@ fn value_to_text(value: &serde_json::Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Compacts a tool's `rawInput` object into `key=value, …` (scalars only,
+/// truncated) — the opencode `[k=v]` affordance.
+fn compact_input(value: Option<&serde_json::Value>) -> String {
+    let Some(serde_json::Value::Object(map)) = value else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    for (k, v) in map {
+        let rendered = match v {
+            serde_json::Value::String(s) => {
+                let s = s.replace('\n', " ");
+                if s.chars().count() > 40 {
+                    format!("{}…", s.chars().take(40).collect::<String>())
+                } else {
+                    s
+                }
+            }
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            _ => continue,
+        };
+        parts.push(format!("{k}={rendered}"));
+        if parts.len() >= 6 {
+            break;
+        }
+    }
+    parts.join(", ")
+}
+
+/// Parses an ACP tool-call `content` array into renderable bodies, turning
+/// `diff` blocks into a unified-ish text the UI colours per line.
+fn tool_bodies(value: Option<&serde_json::Value>) -> Vec<super::events::ToolBody> {
+    use super::events::ToolBody;
+    let Some(serde_json::Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        match item.get("type").and_then(|v| v.as_str()) {
+            Some("diff") => {
+                let path = item
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let old = item.get("oldText").and_then(|v| v.as_str()).unwrap_or("");
+                let new = item.get("newText").and_then(|v| v.as_str()).unwrap_or("");
+                out.push(ToolBody::Diff {
+                    path,
+                    text: render_diff(old, new),
+                });
+            }
+            Some("terminal") => out.push(ToolBody::Text("[terminal]".to_owned())),
+            _ => {
+                if let Some(t) = value_to_text(item) {
+                    out.push(ToolBody::Text(t));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A minimal, deterministic line-wise unified diff (no LCS — full old block
+/// as deletions then the new block as additions; the UI colours `+`/`-`).
+fn render_diff(old: &str, new: &str) -> String {
+    if old.is_empty() {
+        return new
+            .lines()
+            .map(|l| format!("+{l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    if new.is_empty() {
+        return old
+            .lines()
+            .map(|l| format!("-{l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    let mut lines: Vec<String> = old.lines().map(|l| format!("-{l}")).collect();
+    lines.extend(new.lines().map(|l| format!("+{l}")));
+    lines.join("\n")
 }

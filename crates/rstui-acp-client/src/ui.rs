@@ -11,7 +11,7 @@ use rstui_core::{Color, Constraint, Layout, Line, Position, Rect, Span, Style};
 use rstui_runtime::Frame;
 use rstui_widgets::{Block, List, ListItem, Paragraph, Wrap};
 
-use crate::app::{ChatApp, Entry, Role, Screen};
+use crate::app::{ChatApp, Role, Screen};
 use crate::plugin::FooterSegment;
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -166,7 +166,7 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     let inner = block.inner(transcript_area);
     frame.render_widget(block, transcript_area);
 
-    let lines = transcript_lines(app.transcript());
+    let lines = transcript_lines(app);
     let para = Paragraph::new(lines).wrap(Wrap { trim: false });
     let total = para.line_count(inner.width.max(1)) as u16;
     let max_scroll = total.saturating_sub(inner.height);
@@ -322,9 +322,19 @@ fn composer_title(app: &ChatApp) -> String {
     }
 }
 
-fn transcript_lines(entries: &[Entry]) -> Vec<Line<'static>> {
+fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
+    let ascii = std::env::var("RSTUI_ACP_TOOL_ICONS")
+        .map(|v| v == "ascii")
+        .unwrap_or(false);
     let mut out: Vec<Line<'static>> = Vec::new();
-    for entry in entries {
+    for entry in app.transcript() {
+        if entry.role == Role::Tool {
+            if let Some(tool) = app.tool_call(&entry.text) {
+                tool_card_lines(tool, app.details(), app.spinner_frame(), ascii, &mut out);
+                out.push(Line::raw(""));
+                continue;
+            }
+        }
         let (label, color) = match entry.role {
             Role::User => ("you", Color::Green),
             Role::Agent => ("agent", Color::Cyan),
@@ -352,6 +362,141 @@ fn transcript_lines(entries: &[Entry]) -> Vec<Line<'static>> {
         ));
     }
     out
+}
+
+/// The per-kind glyph (opencode-inspired); ASCII set via
+/// `RSTUI_ACP_TOOL_ICONS=ascii` — a deliberate customization seam.
+fn tool_icon(kind: crate::acp::ToolKind, ascii: bool) -> &'static str {
+    use crate::acp::ToolKind as K;
+    if ascii {
+        return match kind {
+            K::Read => "R",
+            K::Edit => "W",
+            K::Delete => "D",
+            K::Move => "M",
+            K::Search => "S",
+            K::Execute => "$",
+            K::Think => "*",
+            K::Fetch => "%",
+            K::SwitchMode => "~",
+            K::Other => "+",
+        };
+    }
+    match kind {
+        K::Read => "→",
+        K::Edit => "✎",
+        K::Delete => "␡",
+        K::Move => "↦",
+        K::Search => "✱",
+        K::Execute => "$",
+        K::Think => "…",
+        K::Fetch => "%",
+        K::SwitchMode => "⇄",
+        K::Other => "⚙",
+    }
+}
+
+/// `(glyph, label, colour)` for a tool status.
+fn tool_status_style(
+    status: crate::acp::ToolStatus,
+    spinner: usize,
+) -> (String, &'static str, Color) {
+    use crate::acp::ToolStatus as S;
+    match status {
+        S::Pending => ("~".to_owned(), "pending", Color::Gray),
+        S::InProgress => (
+            SPINNER[spinner % SPINNER.len()].to_string(),
+            "running",
+            Color::Yellow,
+        ),
+        S::Completed => ("✓".to_owned(), "done", Color::Green),
+        S::Failed => ("✗".to_owned(), "failed", Color::Red),
+    }
+}
+
+/// Renders one tool call as a rich card (header + input + collapsible body).
+fn tool_card_lines(
+    tool: &crate::acp::ToolCallInfo,
+    details: bool,
+    spinner: usize,
+    ascii: bool,
+    out: &mut Vec<Line<'static>>,
+) {
+    let icon = tool_icon(tool.kind, ascii);
+    let (glyph, status_label, color) = tool_status_style(tool.status, spinner);
+    out.push(Line::from(vec![
+        Span::styled(format!("{icon} "), Style::new().fg(color)),
+        Span::styled(tool.title.clone(), Style::new().fg(color)),
+        Span::styled(
+            format!("  [{glyph} {status_label}]"),
+            Style::new().fg(color),
+        ),
+    ]));
+    if !tool.input.is_empty() {
+        out.push(Line::from(vec![Span::styled(
+            format!("   {} · {}", tool.kind.label(), tool.input),
+            Style::new().fg(Color::DarkGray),
+        )]));
+    }
+
+    // opencode rule: a completed, successful tool collapses its body when
+    // details are off (errors and running tools always expand).
+    let collapsed = !details && tool.status == crate::acp::ToolStatus::Completed;
+    if collapsed {
+        if !tool.body.is_empty() {
+            out.push(Line::styled(
+                "   … (output hidden — /details)".to_owned(),
+                Style::new().fg(Color::DarkGray),
+            ));
+        }
+        return;
+    }
+
+    for body in &tool.body {
+        match body {
+            crate::acp::ToolBody::Text(text) => {
+                push_capped(out, text.lines(), 14, |l| {
+                    Line::from(vec![Span::styled(
+                        format!("   {l}"),
+                        Style::new().fg(Color::Gray),
+                    )])
+                });
+            }
+            crate::acp::ToolBody::Diff { path, text } => {
+                out.push(Line::styled(
+                    format!("   ± {path}"),
+                    Style::new().fg(Color::Magenta),
+                ));
+                push_capped(out, text.lines(), 20, |l| {
+                    let c = match l.as_bytes().first() {
+                        Some(b'+') => Color::Green,
+                        Some(b'-') => Color::Red,
+                        _ => Color::Gray,
+                    };
+                    Line::from(vec![Span::styled(format!("   {l}"), Style::new().fg(c))])
+                });
+            }
+        }
+    }
+}
+
+/// Pushes mapped lines, truncating to `cap` with a `… (N more)` marker.
+fn push_capped<'a, I, F>(out: &mut Vec<Line<'static>>, iter: I, cap: usize, mut f: F)
+where
+    I: Iterator<Item = &'a str>,
+    F: FnMut(String) -> Line<'static>,
+{
+    let lines: Vec<&str> = iter.collect();
+    let n = lines.len();
+    for l in lines.iter().take(cap) {
+        out.push(f((*l).to_owned()));
+    }
+    if n > cap {
+        out.push(Line::styled(
+            format!("   … ({} more lines)", n - cap),
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
 }
 
 fn line_color(role: Role) -> Color {

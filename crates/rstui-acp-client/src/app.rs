@@ -11,7 +11,7 @@ use rstui_runtime::{App, Cmd, Frame};
 use crate::Config;
 use crate::acp::{
     AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, TodoEntry, TodoStatus,
-    spawn_driver,
+    ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
 };
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
 use crate::registry::Registry;
@@ -138,6 +138,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "New session (back to the agent picker)"),
     ("clear", "Clear the transcript"),
     ("todos", "Toggle the todo sidebar"),
+    ("details", "Show/hide completed tool-call output"),
     ("log", "Toggle the diagnostic log"),
     ("cancel", "Interrupt the streaming turn"),
     ("quit", "Exit the client"),
@@ -198,6 +199,8 @@ pub struct ChatApp {
     completion: Option<Completion>,
     todos: Vec<TodoEntry>,
     sidebar: SidebarMode,
+    tool_calls: Vec<ToolCallInfo>,
+    details: bool,
     toasts: Vec<Toast>,
     log: Vec<String>,
     show_log: bool,
@@ -237,6 +240,8 @@ impl ChatApp {
             completion: None,
             todos: Vec::new(),
             sidebar: SidebarMode::Auto,
+            tool_calls: Vec::new(),
+            details: true,
             toasts: Vec::new(),
             log: Vec::new(),
             show_log: false,
@@ -327,6 +332,21 @@ impl ChatApp {
     #[must_use]
     pub fn todos(&self) -> &[TodoEntry] {
         &self.todos
+    }
+    /// All tool calls seen this session, in arrival order.
+    #[must_use]
+    pub fn tool_calls(&self) -> &[ToolCallInfo] {
+        &self.tool_calls
+    }
+    /// Looks up a tool call by its ACP id (the transcript anchor key).
+    #[must_use]
+    pub fn tool_call(&self, id: &str) -> Option<&ToolCallInfo> {
+        self.tool_calls.iter().find(|c| c.id == id)
+    }
+    /// Whether completed tool calls show their output body (`/details`).
+    #[must_use]
+    pub fn details(&self) -> bool {
+        self.details
     }
     /// Whether the todo sidebar should be drawn (resolves [`SidebarMode`]).
     #[must_use]
@@ -502,6 +522,15 @@ impl ChatApp {
                 } else {
                     SidebarMode::Hidden
                 };
+                Cmd::none()
+            }
+            "details" => {
+                self.details = !self.details;
+                self.push_system(if self.details {
+                    "tool details: shown"
+                } else {
+                    "tool details: hidden (completed tools collapse)"
+                });
                 Cmd::none()
             }
             "log" => {
@@ -1134,14 +1163,59 @@ impl ChatApp {
             }
             AcpEvent::AgentText(t) => self.append_agent(Role::Agent, &t),
             AcpEvent::Thought(t) => self.append_agent(Role::Thought, &t),
-            AcpEvent::ToolCall(t) => {
-                self.close_open_entry();
-                self.transcript.push(Entry {
-                    role: Role::Tool,
-                    text: t,
-                    open: false,
-                });
-                self.follow = true;
+            AcpEvent::ToolCall(info) => {
+                if let Some(slot) = self.tool_calls.iter_mut().find(|c| c.id == info.id) {
+                    *slot = info;
+                } else {
+                    let id = info.id.clone();
+                    self.tool_calls.push(info);
+                    self.close_open_entry();
+                    // A transcript anchor keeps the tool card in stream order;
+                    // the view resolves `text` (the id) to the live registry.
+                    self.transcript.push(Entry {
+                        role: Role::Tool,
+                        text: id,
+                        open: false,
+                    });
+                    self.follow = true;
+                }
+            }
+            AcpEvent::ToolCallUpdate(patch) => {
+                if let Some(c) = self.tool_calls.iter_mut().find(|c| c.id == patch.id) {
+                    if let Some(v) = patch.title {
+                        c.title = v;
+                    }
+                    if let Some(v) = patch.kind {
+                        c.kind = v;
+                    }
+                    if let Some(v) = patch.status {
+                        c.status = v;
+                    }
+                    if let Some(v) = patch.input {
+                        c.input = v;
+                    }
+                    if let Some(v) = patch.body {
+                        c.body = v;
+                    }
+                } else {
+                    // Update for an unseen call: synthesize a minimal entry.
+                    let id = patch.id.clone();
+                    self.tool_calls.push(ToolCallInfo {
+                        id: patch.id,
+                        title: patch.title.unwrap_or_else(|| "tool".to_owned()),
+                        kind: patch.kind.unwrap_or(ToolKind::Other),
+                        status: patch.status.unwrap_or(ToolStatus::InProgress),
+                        input: patch.input.unwrap_or_default(),
+                        body: patch.body.unwrap_or_default(),
+                    });
+                    self.close_open_entry();
+                    self.transcript.push(Entry {
+                        role: Role::Tool,
+                        text: id,
+                        open: false,
+                    });
+                    self.follow = true;
+                }
             }
             AcpEvent::Plan(entries) => {
                 // ACP replaces the whole plan on each update.
