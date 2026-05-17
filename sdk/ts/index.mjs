@@ -1,10 +1,12 @@
 // @rstui-acp/plugin-sdk — runtime (ESM JS; types in index.d.ts).
 //
-// Runs inside the V8 host. The host injects a bridge as
-// `globalThis.__rstuiHost = { next(): Promise<string|null>, emit(s) }`:
-// `next()` yields the next HostEvent JSON (null = end), `emit()` sends a
-// PluginAction JSON. Under secure-exec these are sandbox `bindings`; in the
-// host's dev fallback they are plain functions — the SDK is identical.
+// A TS plugin is a process speaking JSON-RPC 2.0 — the same wire as native
+// Rust plugins. Transports (chosen by bridge()):
+//   * injected `globalThis.__rstuiHost`  — running under the V8 host.
+//   * `--ws <port>` / RSTUI_PLUGIN_WS=<port> — a dependency-free RFC 6455
+//     WebSocket server (node:net + node:crypto; works in Node and Bun).
+//   * otherwise — newline-delimited JSON-RPC over stdio.
+// See sdk/RUNTIME_DECISION.md for why this (not secure-exec) is the path.
 
 // Plugin → host method per action `type` (matches the Rust SDK proto).
 const ACTION_METHOD = {
@@ -19,11 +21,9 @@ const ACTION_METHOD = {
   modal: "ui/modal",
 };
 
-// A built-in stdio JSON-RPC bridge, so a plugin run as a plain process
-// (`node plugin.mjs`, `bun plugin.ts`) IS a plugin — no V8 host needed,
-// uniform with native Rust plugins (see sdk/RUNTIME_DECISION.md).
-function makeStdioBridge() {
-  const p = globalThis.process;
+// The shared JSON-RPC plugin protocol: transport-agnostic. A transport
+// supplies `writeLine(str)` + `close()` and feeds inbound lines to feed().
+function makeBridgeCore({ writeLine, closeTransport }) {
   const queue = [];
   let waiting = null;
   let done = false;
@@ -44,38 +44,32 @@ function makeStdioBridge() {
       w(null);
     }
   };
-  const onLine = (line) => {
-    const s = line.trim();
-    if (!s) return;
-    let msg;
-    try {
-      msg = JSON.parse(s);
-    } catch {
-      return;
-    }
-    if (msg.method === undefined) return; // a response
-    if (msg.method === "initialize" && msg.id !== undefined) {
-      p.stdout.write(
-        `${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { ok: true, apiVersion: "1" } })}\n`,
-      );
-    }
-    if (msg.params && typeof msg.params === "object") {
-      push(JSON.stringify(msg.params));
-      if (msg.params.type === "shutdown") finish();
-    }
-  };
-  // Use node:readline (same as the V8 host) — it reliably drains stdin
-  // including bytes a launcher buffered before this listener attached
-  // (real launchers, incl. the rstui client, send `initialize`
-  // immediately on spawn). `process.getBuiltinModule` keeps this
-  // synchronous and adds no static `node:` import (so the SDK still
-  // loads cleanly inside a non-Node sandbox, where this path is unused).
-  const rl = p
-    .getBuiltinModule("node:readline")
-    .createInterface({ input: p.stdin });
-  rl.on("line", onLine);
-  rl.on("close", finish);
   return {
+    finish,
+    feed(line) {
+      const s = String(line).trim();
+      if (!s) return;
+      let msg;
+      try {
+        msg = JSON.parse(s);
+      } catch {
+        return;
+      }
+      if (msg.method === undefined) return; // a response, not for us
+      if (msg.method === "initialize" && msg.id !== undefined) {
+        writeLine(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result: { ok: true, apiVersion: "1" },
+          }),
+        );
+      }
+      if (msg.params && typeof msg.params === "object") {
+        push(JSON.stringify(msg.params));
+        if (msg.params.type === "shutdown") finish();
+      }
+    },
     emit(actionJson) {
       let a;
       try {
@@ -85,7 +79,7 @@ function makeStdioBridge() {
       }
       const method = ACTION_METHOD[a.type];
       if (!method) return;
-      p.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params: a })}\n`);
+      writeLine(JSON.stringify({ jsonrpc: "2.0", method, params: a }));
     },
     next() {
       if (queue.length > 0) return Promise.resolve(queue.shift());
@@ -94,22 +88,152 @@ function makeStdioBridge() {
         waiting = res;
       });
     },
-    // We *are* the whole process here, so once the loop ends (shutdown or
-    // EOF) close stdin/readline and exit — otherwise the open stdin handle
-    // keeps Node alive forever. (The injected V8-host bridge has no close;
-    // the host owns that process's lifecycle.)
     close() {
       try {
-        rl.close();
+        closeTransport();
       } catch {
         /* already closed */
       }
-      p.exit(0);
+      globalThis.process?.exit?.(0);
     },
   };
 }
 
-function bridge() {
+// Newline-delimited JSON-RPC over stdio (the default).
+function makeStdioBridge() {
+  const p = globalThis.process;
+  const core = makeBridgeCore({
+    writeLine: (s) => p.stdout.write(`${s}\n`),
+    closeTransport: () => rl.close(),
+  });
+  // node:readline reliably drains stdin incl. bytes a launcher buffered
+  // before this listener attached (real launchers send `initialize`
+  // immediately). getBuiltinModule keeps this synchronous + import-free.
+  const rl = p
+    .getBuiltinModule("node:readline")
+    .createInterface({ input: p.stdin });
+  rl.on("line", (l) => core.feed(l));
+  rl.on("close", core.finish);
+  return core;
+}
+
+// Dependency-free RFC 6455 WebSocket *server* (mirrors the Rust
+// WsTransport): bind, accept one client, frame JSON-RPC text messages.
+async function makeWsBridge(port) {
+  const net = await import("node:net");
+  const crypto = await import("node:crypto");
+  const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+  let sock = null;
+  let server = null;
+
+  const core = makeBridgeCore({
+    writeLine: (s) => {
+      if (sock) sock.write(encodeFrame(0x1, Buffer.from(s, "utf8")));
+    },
+    closeTransport: () => {
+      try {
+        sock?.end();
+      } catch {}
+      server?.close();
+    },
+  });
+
+  function encodeFrame(opcode, payload) {
+    const n = payload.length;
+    let header;
+    if (n < 126) header = Buffer.from([0x80 | opcode, n]);
+    else if (n <= 0xffff) {
+      header = Buffer.from([0x80 | opcode, 126, n >> 8, n & 0xff]);
+    } else {
+      header = Buffer.alloc(10);
+      header[0] = 0x80 | opcode;
+      header[1] = 127;
+      header.writeBigUInt64BE(BigInt(n), 2);
+    }
+    return Buffer.concat([header, payload]);
+  }
+
+  await new Promise((resolve) => {
+    server = net.createServer((s) => {
+      if (sock) {
+        s.destroy();
+        return;
+      }
+      sock = s;
+      let buf = Buffer.alloc(0);
+      let upgraded = false;
+      const frags = [];
+      s.on("data", (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        if (!upgraded) {
+          const i = buf.indexOf("\r\n\r\n");
+          if (i < 0) return;
+          const head = buf.slice(0, i).toString("utf8");
+          buf = buf.slice(i + 4);
+          const key = /sec-websocket-key:\s*(.+)/i.exec(head)?.[1]?.trim();
+          const accept = crypto
+            .createHash("sha1")
+            .update(key + GUID)
+            .digest("base64");
+          s.write(
+            "HTTP/1.1 101 Switching Protocols\r\n" +
+              "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+              `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+          );
+          upgraded = true;
+        }
+        // Parse as many complete frames as are buffered.
+        for (;;) {
+          if (buf.length < 2) break;
+          const fin = (buf[0] & 0x80) !== 0;
+          const opcode = buf[0] & 0x0f;
+          const masked = (buf[1] & 0x80) !== 0;
+          let len = buf[1] & 0x7f;
+          let off = 2;
+          if (len === 126) {
+            if (buf.length < 4) break;
+            len = buf.readUInt16BE(2);
+            off = 4;
+          } else if (len === 127) {
+            if (buf.length < 10) break;
+            len = Number(buf.readBigUInt64BE(2));
+            off = 10;
+          }
+          const need = off + (masked ? 4 : 0) + len;
+          if (buf.length < need) break;
+          let mask = null;
+          if (masked) {
+            mask = buf.slice(off, off + 4);
+            off += 4;
+          }
+          const payload = Buffer.from(buf.slice(off, off + len));
+          if (mask) for (let k = 0; k < payload.length; k++) payload[k] ^= mask[k % 4];
+          buf = buf.slice(need);
+          if (opcode === 0x8) {
+            core.finish();
+            return;
+          }
+          if (opcode === 0x9) {
+            s.write(encodeFrame(0xa, payload));
+            continue;
+          }
+          if (opcode === 0xa) continue;
+          frags.push(payload);
+          if (fin) {
+            core.feed(Buffer.concat(frags).toString("utf8"));
+            frags.length = 0;
+          }
+        }
+      });
+      s.on("close", core.finish);
+      s.on("error", core.finish);
+    });
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+  return core;
+}
+
+async function bridge() {
   const injected = globalThis.__rstuiHost;
   if (
     injected &&
@@ -118,17 +242,23 @@ function bridge() {
   ) {
     return injected; // running under the V8 host
   }
+  const argv = globalThis.process?.argv ?? [];
+  const wsIdx = argv.indexOf("--ws");
+  const wsPort =
+    (wsIdx >= 0 && Number(argv[wsIdx + 1])) ||
+    Number(globalThis.process?.env?.RSTUI_PLUGIN_WS) ||
+    0;
+  if (wsPort) return makeWsBridge(wsPort);
   if (globalThis.process?.stdin && globalThis.process?.stdout) {
-    return makeStdioBridge(); // running as a plain process
+    return makeStdioBridge(); // plain process over stdio
   }
   throw new Error(
-    "rstui plugin SDK: no host bridge and no stdio — run this plugin as a " +
-      "process (node/bun) or via the rstui V8 host.",
+    "rstui plugin SDK: no host bridge / stdio / --ws — run as a process or via the V8 host.",
   );
 }
 
 export async function definePlugin(handlers) {
-  const b = bridge();
+  const b = await bridge();
   let nextId = 1;
   /** id -> resolve fn for in-flight modal()/askUser() */
   const pending = new Map();
@@ -187,7 +317,6 @@ export async function definePlugin(handlers) {
       continue;
     }
 
-    // Route modal/ask answers back to their awaiting promise.
     if (ev.type === "modal_response" && pending.has(`modal:${ev.id}`)) {
       pending.get(`modal:${ev.id}`)(ev);
       pending.delete(`modal:${ev.id}`);
@@ -199,7 +328,6 @@ export async function definePlugin(handlers) {
       continue;
     }
 
-    // Shutdown is awaited (it can't depend on the pump) then ends the loop.
     if (ev.type === "shutdown") {
       try {
         await handlers.onShutdown?.(host);
@@ -209,9 +337,8 @@ export async function definePlugin(handlers) {
       break;
     }
 
-    // Dispatch WITHOUT blocking the pump: a handler may `await host.modal()`
-    // / `host.askUser()`, whose answer arrives as a later event the pump
-    // must still deliver. Errors are logged, never thrown into the loop.
+    // Dispatch WITHOUT blocking the pump: a handler may `await
+    // host.modal()`/`askUser()`, whose answer is a later event.
     const run = async () => {
       switch (ev.type) {
         case "init":
@@ -237,7 +364,6 @@ export async function definePlugin(handlers) {
       host.log(`plugin handler error: ${err?.message ?? err}`),
     );
   }
-  // Loop ended (shutdown or EOF): let a standalone process exit.
   b.close?.();
 }
 
