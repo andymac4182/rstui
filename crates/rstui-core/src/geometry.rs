@@ -273,6 +273,21 @@ impl Rect {
         (self.top()..self.bottom())
             .flat_map(move |y| (self.left()..self.right()).map(move |x| Position::new(x, y)))
     }
+
+    /// Returns an iterator over the rectangle's rows, each as its row index
+    /// `y` paired with the half-open column span `left()..right()`.
+    ///
+    /// This is the row-major decomposition the [`Buffer`](crate::Buffer) bulk
+    /// writers iterate: one item per row instead of one per cell, so a caller
+    /// resolves a single flat index per row and writes a contiguous slice
+    /// rather than re-deriving an index per cell. An empty-height rectangle
+    /// yields nothing (the `top()..bottom()` range is empty); a zero-width
+    /// rectangle yields each row with an empty span, so the flattened cells
+    /// still match [`positions`](Self::positions).
+    pub fn rows(self) -> impl Iterator<Item = (u16, core::ops::Range<u16>)> {
+        let (left, right) = (self.left(), self.right());
+        (self.top()..self.bottom()).map(move |y| (y, left..right))
+    }
 }
 
 impl From<(Position, Size)> for Rect {
@@ -363,5 +378,28 @@ mod tests {
                 Position::new(2, 2),
             ]
         );
+    }
+
+    #[test]
+    fn rows_yields_one_span_per_row() {
+        let r = Rect::new(1, 3, 2, 2);
+        let visited: Vec<_> = r.rows().collect();
+        assert_eq!(visited, vec![(3, 1..3), (4, 1..3)]);
+
+        // Zero height yields no rows. Zero width still yields one (empty)
+        // span per row — every span is `left..left`, so the flattened set
+        // is empty, matching `positions()`; the buffer's `row_slice_mut`
+        // turns an empty span into a no-op slice.
+        assert_eq!(Rect::new(5, 5, 4, 0).rows().count(), 0);
+        let zero_w: Vec<_> = Rect::new(5, 5, 0, 4).rows().collect();
+        assert_eq!(zero_w, vec![(5, 5..5), (6, 5..5), (7, 5..5), (8, 5..5)]);
+
+        // The flattened spans cover exactly the same cells as `positions()`.
+        let r = Rect::new(2, 1, 3, 4);
+        let via_rows: Vec<_> = r
+            .rows()
+            .flat_map(|(y, xs)| xs.map(move |x| Position::new(x, y)))
+            .collect();
+        assert_eq!(via_rows, r.positions().collect::<Vec<_>>());
     }
 }

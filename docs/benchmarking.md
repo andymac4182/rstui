@@ -94,8 +94,8 @@ iters / 100 warmup, against the fixed 160×48 frame:
 | `buffer/diff/full` | ~14 µs |
 | `buffer/diff/resized` | ~5.4 µs |
 | `buffer/fill` | ~2.6 µs |
-| `buffer/set_str` | ~3.4 µs |
-| `buffer/clear_region` | ~3.9 µs |
+| `buffer/set_str` | ~3.3 µs |
+| `buffer/clear_region` | ~0.63 µs |
 | `layout/split/nested` | ~0.42 µs |
 
 The headline: `buffer/diff` was ~40 µs (the dominant per-frame cost) until
@@ -104,9 +104,14 @@ recover each `Position` from its linear index, instead of synthesizing a
 `Position` per cell and reparsing it through `index_of` (a `Rect::contains`
 bounds re-check + multiply) **twice** per cell. That cut every shape ~3–8×
 (`identical` 40→12 µs, `resized` 45→5.4 µs) with byte-identical output —
-see `docs/perf-review.md`. A full-frame `diff` still scans all 7 680 cells,
-so it remains the per-frame hot path to watch, now alongside `set_str`/
-`clear_region` which are within the same order of magnitude. To refresh this
+see `docs/perf-review.md`. The same `Position`↔`index_of` round trip drove
+the bulk writers: `set_str`, `set_style`, `clear_region`, and `resize` were
+rewritten to resolve **one** flat index per row (via `Buffer::row_slice_mut`
++ `Rect::rows`) and write through the contiguous row slice instead of an
+`index_of` per cell — `clear_region` 3.9→0.63 µs (a `slice::fill` lowers to
+a vectorized store loop), `set_str` 4.1→3.3 µs, byte-identical (CR-08/03/06/04,
+see `docs/perf-review.md`). A full-frame `diff` still scans all 7 680 cells,
+so it remains the per-frame hot path to watch. To refresh this
 table after a deliberate change to a hot path, re-run on a quiet machine:
 
 ```sh
