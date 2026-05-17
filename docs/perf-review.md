@@ -10,14 +10,35 @@ fix, and an API-breaking flag. Raw reports: `target/perf-audit/*.md`
 leverage-ranked plan, conflict-free implementation batches, and the
 validation path for each change.
 
-> **Landed so far** (Tier 0): **Batch B** — `Buffer::diff` flat-slice
-> rewrite + `reset`→`slice::fill` (commit `6bede93`): the documented #1
-> per-frame hot path, **3.3–8.4× faster** measured (`buffer/diff/identical`
-> 40.1→12.3 µs, `resized` 45.2→5.4 µs), byte-identical, full gate green.
-> **Batch A** — crossterm assembles each frame in a reused `Vec<u8>` and
-> issues one `write_all` (commit `2d3af7c`): **~10k–40k locked syscalls per
-> frame → 1**, byte-identical (composed with the `ColorLevel` degrade
-> feature on `main`). Remaining Tier-0/1/2 below are not yet started.
+> **Landed on `origin/main`** (measured, gate-green, byte-identical unless
+> noted):
+> - **Batch B** `Buffer::diff` flat-slice rewrite + `reset`→`slice::fill`:
+>   the documented #1 hot path, **3.3–8.4× faster** (`diff/identical`
+>   40.1→12.3 µs, `resized` 45.2→5.4 µs).
+> - **Batch A** crossterm one reused `Vec<u8>` + single `write_all`/frame:
+>   **~10k–40k locked syscalls/frame → 1** (composed with `ColorLevel`).
+> - **Batch C (CR-05)** `Layout::split_into` + scratch-free `solve`:
+>   `layout/split/nested` **416 → 83 ns (~5×)**.
+> - **Batch B2 (CR-08/03/06/04)** `Buffer::row_slice_mut`/`Rect::rows` +
+>   row-slice `set_str`/`set_style`/`clear_region`/`resize`:
+>   `clear_region` **3.9 → 0.63 µs (~6.5×)**, `set_str` faster.
+> - **Batch D** `Line::render` Left-align width-scan skip + empty-style
+>   row-fill guard + `Span::width` ASCII fast path.
+> - **Batch H** plugin-host `read_frame`/encoders/`Log` zero-extra-copy
+>   frame path.
+> - **Batch E partial** `TextEdit` O(1) `len()` cache + single-walk
+>   `delete_backward` (CM-2/CM-4); `SelectionSpan` frame-scoped projector
+>   (CM-1).
+>
+> **Remaining backlog** (sequenced in the team task list / below): Batch E
+> **CM-3** (`TextArea` `line_lens` cache — deferred, needs dedicated focus
+> to keep the parallel cache exact across every 2D split/join/splice),
+> Batch F (runtime RT-01/02/03/05/07), Batch I (acp-client), Batch J
+> (bench scenarios), Batch G (widgets W1–W6), Tier-2 (API-additive
+> caching + borrowed constructors). Landing is **serial from one isolated
+> worktree** (fetch→rebase `origin/main`→`cargo xtask ci`→FF push) — the
+> parallel-agents-in-one-shared-worktree approach corrupts state in this
+> multi-stream repo and must not be retried.
 
 Severity = how often the cost is paid: **P0** every frame / per-cell ·
 **P1** per widget render · **P2** per event/interaction · **P3** cold.
