@@ -379,9 +379,7 @@ pub(crate) fn render(src: &str, area: Rect, buf: &mut Buffer, base: Style, theme
     for c in &g.commits {
         let x = col_x(c.order);
         let y = lane_y(c.lane);
-        if c.is_merge
-            && let Some(from) = c.merge_from
-        {
+        if let Some(from) = c.merge_from.filter(|_| c.is_merge) {
             let fy = lane_y(from);
             vjoin(&mut s, x, fy, y);
             s.set(x, fy, if fy < y { '┬' } else { '┴' }, edge);

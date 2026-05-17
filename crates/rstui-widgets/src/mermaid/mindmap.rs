@@ -148,12 +148,16 @@ fn parse_node_body(body: &str) -> (String, Shape) {
         ("(", ")", Shape::Round),
     ];
     for (lhs, rhs, shape) in pairs {
-        if let Some(rest) = inner.strip_prefix(lhs)
-            && let Some(label) = rest.strip_suffix(rhs)
-            && !label.is_empty()
-        {
-            return (unquote(label.trim()), shape);
+        let Some(rest) = inner.strip_prefix(lhs) else {
+            continue;
+        };
+        let Some(label) = rest.strip_suffix(rhs) else {
+            continue;
+        };
+        if label.is_empty() {
+            continue;
         }
+        return (unquote(label.trim()), shape);
     }
     // A delimiter was present but did not form a known matched pair — keep
     // the whole line as bare text rather than dropping it.
