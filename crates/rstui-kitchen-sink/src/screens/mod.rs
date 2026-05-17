@@ -24,10 +24,13 @@ pub(crate) mod ide;
 pub(crate) mod login;
 pub(crate) mod logs;
 pub(crate) mod mail;
+pub(crate) mod metrics;
 pub(crate) mod navigation;
+pub(crate) mod observability;
 pub(crate) mod player;
 pub(crate) mod rich_text;
 pub(crate) mod settings_app;
+pub(crate) mod traces;
 pub(crate) mod welcome;
 
 use rstui_core::{KeyCode, Margin, Position, Rect};
@@ -117,8 +120,8 @@ impl ScreenOutcome {
     }
 }
 
-/// Every screen, in sidebar order: the eight Widgets screens, then the ten
-/// Experiences screens.
+/// Every screen, in sidebar order: the eight Widgets screens, the ten
+/// Experiences screens, then the three Observability screens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Screen {
     /// Overview, quickstart, and the global keymap.
@@ -157,6 +160,15 @@ pub(crate) enum Screen {
     Board,
     /// A live, streaming log / terminal tail.
     Logs,
+    /// An OpenTelemetry service overview: golden-signal stats, a
+    /// throughput/error chart, a service-health heatmap, an error stream.
+    Observability,
+    /// A metrics explorer: a multi-series latency chart, a distribution
+    /// histogram with percentile markers, a latency heatmap.
+    Metrics,
+    /// A distributed-trace explorer: a span waterfall / flame graph and a
+    /// selected-span attribute table.
+    Traces,
 }
 
 /// One visual row of the navigation rail: a section header or a screen entry.
@@ -171,7 +183,7 @@ pub(crate) enum SidebarRow {
 impl Screen {
     /// Every screen in fixed display order. The sidebar, the hotkeys, and the
     /// command palette all index this, so they cannot disagree.
-    pub(crate) const ALL: [Screen; 18] = [
+    pub(crate) const ALL: [Screen; 21] = [
         Screen::Welcome,
         Screen::Forms,
         Screen::Navigation,
@@ -190,6 +202,9 @@ impl Screen {
         Screen::Login,
         Screen::Board,
         Screen::Logs,
+        Screen::Observability,
+        Screen::Metrics,
+        Screen::Traces,
     ];
 
     /// This screen's index into [`ALL`](Self::ALL).
@@ -211,8 +226,10 @@ impl Screen {
     pub(crate) fn group(self) -> &'static str {
         if self.index() < 8 {
             "WIDGETS"
-        } else {
+        } else if self.index() < 18 {
             "EXPERIENCES"
+        } else {
+            "OBSERVABILITY"
         }
     }
 
@@ -237,6 +254,9 @@ impl Screen {
             Screen::Login => "Sign In",
             Screen::Board => "Kanban Board",
             Screen::Logs => "Live Logs",
+            Screen::Observability => "Observability",
+            Screen::Metrics => "Metrics",
+            Screen::Traces => "Traces",
         }
     }
 
@@ -261,6 +281,9 @@ impl Screen {
             Screen::Login => '⚿',
             Screen::Board => '▥',
             Screen::Logs => '☷',
+            Screen::Observability => '◉',
+            Screen::Metrics => '∿',
+            Screen::Traces => '⋔',
         }
     }
 
@@ -285,6 +308,9 @@ impl Screen {
             Screen::Login => "Sign In — inputs with live validation",
             Screen::Board => "Kanban — move cards across columns",
             Screen::Logs => "Live Logs — a streaming, filtered tail",
+            Screen::Observability => "Observability — OTel golden signals, charts, errors",
+            Screen::Metrics => "Metrics — latency series, distribution, heatmap",
+            Screen::Traces => "Traces — span waterfall, flame graph, attributes",
         }
     }
 
@@ -350,6 +376,9 @@ pub(crate) struct ScreenState {
     pub(crate) login: login::State,
     pub(crate) board: board::State,
     pub(crate) logs: logs::State,
+    pub(crate) observability: observability::State,
+    pub(crate) metrics: metrics::State,
+    pub(crate) traces: traces::State,
 }
 
 impl ScreenState {
@@ -373,6 +402,9 @@ impl ScreenState {
             login: login::State::new(),
             board: board::State::new(),
             logs: logs::State::new(),
+            observability: observability::State::new(),
+            metrics: metrics::State::new(),
+            traces: traces::State::new(),
         }
     }
 
@@ -397,6 +429,9 @@ impl ScreenState {
             Screen::Login => self.login.on_key(code),
             Screen::Board => self.board.on_key(code),
             Screen::Logs => self.logs.on_key(code),
+            Screen::Observability => self.observability.on_key(code),
+            Screen::Metrics => self.metrics.on_key(code),
+            Screen::Traces => self.traces.on_key(code),
         }
     }
 
@@ -425,7 +460,9 @@ impl ScreenState {
             Screen::Login => self.login.on_click(pos, content),
             Screen::Files => self.files.on_click(pos, content),
             Screen::Feedback => self.feedback.on_click(pos, content),
-            Screen::Containers | Screen::Logs => ScreenOutcome::ignored(),
+            Screen::Observability => self.observability.on_click(pos, content),
+            Screen::Traces => self.traces.on_click(pos, content),
+            Screen::Containers | Screen::Logs | Screen::Metrics => ScreenOutcome::ignored(),
         }
     }
 
@@ -440,6 +477,7 @@ impl ScreenState {
             Screen::Mail => self.mail.on_scroll(up),
             Screen::Logs => self.logs.on_scroll(up),
             Screen::Ide => self.ide.on_scroll(up),
+            Screen::Traces => self.traces.on_scroll(up),
             _ => {}
         }
     }
@@ -509,6 +547,9 @@ impl ScreenState {
             Screen::Login => self.login.view(theme, tick, frame, area),
             Screen::Board => self.board.view(theme, tick, frame, area),
             Screen::Logs => self.logs.view(theme, tick, frame, area),
+            Screen::Observability => self.observability.view(theme, tick, frame, area),
+            Screen::Metrics => self.metrics.view(theme, tick, frame, area),
+            Screen::Traces => self.traces.view(theme, tick, frame, area),
         }
     }
 }

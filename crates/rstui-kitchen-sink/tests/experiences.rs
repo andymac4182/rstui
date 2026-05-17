@@ -175,3 +175,61 @@ fn experiences_survive_resize_and_ticks() {
         assert!(!h.snapshot().is_empty());
     }
 }
+
+#[test]
+fn observability_suite_is_a_third_rail_section() {
+    let s = harness().snapshot();
+    assert!(s.contains("WIDGETS"), "rail still has Widgets:\n{s}");
+    assert!(s.contains("EXPERIENCES"), "rail still has Experiences");
+    assert!(
+        s.contains("OBSERVABILITY"),
+        "rail has the new Observability section:\n{s}"
+    );
+}
+
+#[test]
+fn otel_overview_renders_signals_chart_heatmap_and_logs() {
+    let mut h = harness();
+    goto(&mut h, "observability");
+    let s = h.snapshot();
+    assert!(s.contains("Request rate"), "a golden-signal tile:\n{s}");
+    assert!(s.contains("Throughput vs errors"), "the line chart panel");
+    assert!(s.contains("Service health"), "the health heatmap panel");
+    assert!(
+        s.contains("Recent errors & warnings"),
+        "the live log stream panel"
+    );
+}
+
+#[test]
+fn metrics_explorer_renders_distribution_and_heatmap() {
+    let mut h = harness();
+    goto(&mut h, "metrics");
+    let s = h.snapshot();
+    assert!(s.contains("Distribution"), "the latency histogram:\n{s}");
+    assert!(s.contains("Latency heatmap"), "the latency heatmap");
+    // The range strip cycles with Tab.
+    h.handle(key(KeyCode::Tab));
+    assert!(h.is_running(), "Tab cycles the range without panicking");
+}
+
+#[test]
+fn trace_explorer_toggles_waterfall_and_flame() {
+    let mut h = harness();
+    goto(&mut h, "traces");
+    let before = h.snapshot();
+    assert!(
+        before.contains("Span waterfall"),
+        "waterfall view:\n{before}"
+    );
+    assert!(
+        before.contains("service.name"),
+        "the selected-span attribute table"
+    );
+    h.handle(ch('f'));
+    let after = h.snapshot();
+    assert!(
+        after.contains("Flame graph"),
+        "`f` toggles to the flame graph:\n{after}"
+    );
+}

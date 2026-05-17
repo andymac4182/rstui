@@ -34,6 +34,7 @@ caller-owned state it projects — this is the part that matters most), the
 | **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider | [forms-and-data.md](forms-and-data.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
 | **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, Flow | [overlays-and-control.md](overlays-and-control.md) |
+| **Observability** | LineChart, Heatmap, Histogram, StatPanel, FlameGraph, TraceWaterfall, LogStream | [observability.md](observability.md) |
 
 ## Alphabetical index
 
@@ -59,16 +60,21 @@ caller-owned state it projects — this is the part that matters most), the
 | [Drawer](overlays-and-control.md#drawer) | overlays | `drawer_demo` |
 | [Editor](core-set.md#editor) | core | `editor_demo` |
 | [Extmark](rich-rendering.md#extmark) | rich | `extmark_demo` |
+| [FlameGraph](observability.md#flamegraph) | observability | `flame_graph_demo` |
 | [Flow](overlays-and-control.md#flow) | overlays | `flow_demo` |
 | [Form](forms-and-data.md#form) | forms/data | `form_demo` |
 | [Gauge](core-set.md#gauge) | core | `gauge_demo` |
 | [Grid](overlays-and-control.md#grid) | overlays | `grid_demo` |
+| [Heatmap](observability.md#heatmap) | observability | `heatmap_demo` |
 | [HelpOverlay](overlays-and-control.md#helpoverlay) | overlays | `help_overlay_demo` |
+| [Histogram](observability.md#histogram) | observability | `histogram_demo` |
 | [Input](core-set.md#input) | core | `input_demo` |
 | [Kbd](overlays-and-control.md#kbd) | overlays | `kbd_demo` |
+| [LineChart](observability.md#linechart) | observability | `line_chart_demo` |
 | [LineNumberGutter](rich-rendering.md#linenumbergutter) | rich | `line_number_gutter_demo` |
 | [Link](rich-rendering.md#link) | rich | `markdown_links_demo` |
 | [List](core-set.md#list) | core | `list_demo` |
+| [LogStream](observability.md#logstream) | observability | `log_stream_demo` |
 | [Markdown](rich-rendering.md#markdown) | rich | `markdown_demo` |
 | [MaskedInput](forms-and-data.md#maskedinput) | forms/data | `masked_input_demo` |
 | [Menu](navigation-and-layout.md#menu) | nav/layout | `menu_demo` |
@@ -87,6 +93,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Sparkline](forms-and-data.md#sparkline) | forms/data | `sparkline_demo` |
 | [Spinner](core-set.md#spinner) | core | `spinner_demo` |
 | [SplitPane](navigation-and-layout.md#splitpane) | nav/layout | `split_pane_demo` |
+| [StatPanel](observability.md#statpanel) | observability | `stat_panel_demo` |
 | [StatusBar](core-set.md#statusbar) | core | `status_bar_demo` |
 | [Stepper](navigation-and-layout.md#stepper) | nav/layout | `stepper_demo` |
 | [Switch](forms-and-data.md#switch) | forms/data | `switch_demo` |
@@ -94,6 +101,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Tabs](core-set.md#tabs) | core | `tabs_demo` |
 | [Toast](core-set.md#toast) | core | `toast_demo` |
 | [Tooltip](navigation-and-layout.md#tooltip) | nav/layout | `tooltip_demo` |
+| [TraceWaterfall](observability.md#tracewaterfall) | observability | `trace_waterfall_demo` |
 | [Tree](core-set.md#tree) | core | `tree_demo` |
 
 ## Shared patterns

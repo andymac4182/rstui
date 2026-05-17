@@ -1,8 +1,9 @@
 # Kitchen sink
 
 `rstui-kitchen-sink` is one interactive full-screen app that exercises **every
-widget** across eight screens, with live keyboard + mouse, theming, overlays
-and animation. It is the fastest way to *see* the whole library, and a
+widget** across its screens — a widget tour, app-experience scenes, and an
+OpenTelemetry observability suite — with live keyboard + mouse, theming,
+overlays and animation. It is the fastest way to *see* the whole library, and a
 full-scale worked example of the [composition model](composition.md).
 
 ```sh
@@ -48,6 +49,21 @@ theme + animation tick), a `Sidebar` rail, a `StatusBar` footer, and the
 overlay stack (`HelpOverlay`, `CommandPalette`, `Drawer`, quit `Modal`,
 `Toast` queue).
 
+## The observability suite
+
+A third rail section — an OpenTelemetry-style metrics / traces / logs
+dashboard built from the [observability widgets](widgets/observability.md):
+
+| Screen | Widgets it shows |
+|--------|------------------|
+| Observability | `StatPanel` (golden signals), `LineChart`, `Heatmap`, `LogStream` |
+| Metrics | `LineChart` (p50/p95/p99), `Histogram` + percentile markers, `Heatmap` |
+| Traces | `TraceWaterfall` ⇄ `FlameGraph` (toggle with `f`), `Table` of span attributes |
+
+Reach them from the `Observability` rail group, the command palette
+(`:observability` / `:metrics` / `:traces`), or the sidebar. They are
+arrow-driven; the series animate from the shared animation `tick`.
+
 ## Keybindings
 
 | Key(s) | Action |
@@ -56,6 +72,7 @@ overlay stack (`HelpOverlay`, `CommandPalette`, `Drawer`, quit `Modal`,
 | `Tab` | Toggle focus between the sidebar and the content pane |
 | `↑ ↓ ← →` | Navigate (sidebar selection or per-widget) |
 | `Enter` / `Space` | Activate / toggle / confirm |
+| `f` | Traces screen: toggle the span waterfall ⇄ flame graph |
 | `:` | Command palette — type to filter, `Enter` to jump |
 | `?` | Help overlay (the keymap) |
 | `g` | Settings drawer (toggle theme) |
