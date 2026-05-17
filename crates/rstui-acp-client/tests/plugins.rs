@@ -121,7 +121,22 @@ fn session_tracks_and_summarizes() {
     );
     assert!(registers(&a, "session"));
     assert!(has_footer(&a), "live stopwatch footer");
-    assert!(any_panel(&a), "/session summary panel");
+    assert!(
+        a.iter().any(|x| matches!(x, PluginAction::Modal { .. })),
+        "/session opens a summary modal with Reset/Close buttons"
+    );
+}
+
+#[test]
+fn fortune_binds_a_key_chord_to_its_command() {
+    let a = drive(env!("CARGO_BIN_EXE_rstui-acp-plugin-fortune"), None);
+    assert!(
+        a.iter().any(|x| matches!(
+            x,
+            PluginAction::RegisterKeybinding { command, .. } if command == "fortune"
+        )),
+        "fortune binds a chord to /fortune"
+    );
 }
 
 #[test]

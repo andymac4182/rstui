@@ -66,6 +66,7 @@ fn main() {
         prompts: 0,
         turns: 0,
     };
+    let mut modal_id: u64 = 0;
     serve(move |event, emit| match event {
         HostEvent::Init { .. } => {
             emit(PluginAction::RegisterCommand {
@@ -95,13 +96,30 @@ fn main() {
         }
         HostEvent::Refresh => emit(footer(&st)),
         HostEvent::Command { name, .. } if name == "session" => {
-            emit(PluginAction::Panel {
+            modal_id += 1;
+            emit(PluginAction::Modal {
+                id: modal_id,
                 title: "Session".to_owned(),
                 body: vec![
                     format!("elapsed   {}", mmss(st.elapsed())),
                     format!("turns     {}", st.turns),
                     format!("prompts   {}", st.prompts),
                 ],
+                buttons: vec!["Reset".to_owned(), "Close".to_owned()],
+            });
+        }
+        HostEvent::ModalResponse {
+            button, cancelled, ..
+        } if !cancelled && button == "Reset" => {
+            st = State {
+                start: SystemTime::now(),
+                prompts: 0,
+                turns: 0,
+            };
+            emit(footer(&st));
+            emit(status(&st));
+            emit(PluginAction::Note {
+                text: "session counters reset".to_owned(),
             });
         }
         _ => {}

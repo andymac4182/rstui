@@ -49,7 +49,50 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
     if let Some(ask) = app.ask() {
         render_ask(ask, frame, area);
     }
+    if let Some(m) = app.modal() {
+        render_modal(m, frame, area);
+    }
     render_toasts(app, frame, area);
+}
+
+fn render_modal(m: &crate::app::ModalState, frame: &mut Frame<'_>, area: Rect) {
+    let h = (m.body().len() as u16 + 6).clamp(7, area.height.saturating_sub(2).max(7));
+    let rect = centered(area, area.width.min(70), h);
+    let block = Block::bordered().title(format!(" {} ", m.title()));
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let [body_area, _, btn_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let body: Vec<Line> = m
+        .body()
+        .iter()
+        .map(|l| Line::styled(l.clone(), Style::new().fg(Color::Gray)))
+        .collect();
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), body_area);
+
+    // A horizontal row of buttons; the selected one is highlighted.
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, b) in m.buttons().iter().enumerate() {
+        let style = if i == m.selected() {
+            Style::new().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::new().fg(Color::White)
+        };
+        spans.push(Span::styled(format!(" {b} "), style));
+        spans.push(Span::raw("  "));
+    }
+    spans.push(Span::styled(
+        "  (←→ select · Enter · Esc)",
+        Style::new().fg(Color::DarkGray),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), btn_area);
 }
 
 fn render_header(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
@@ -767,6 +810,16 @@ fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
             &format!("/{}", spec.name),
             &format!("{}{tag}", spec.description),
         ));
+    }
+    if !app.keybindings().is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "Plugin keybindings:",
+            Style::new().fg(Color::Yellow),
+        ));
+        for (chord, (plugin, command, desc)) in app.keybindings() {
+            lines.push(kv(chord, &format!("{desc} → /{command} (⚙ {plugin})")));
+        }
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

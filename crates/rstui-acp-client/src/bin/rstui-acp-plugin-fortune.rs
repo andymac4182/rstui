@@ -30,6 +30,12 @@ fn main() {
                 name: "fortune".to_owned(),
                 description: "Draw a developer fortune".to_owned(),
             });
+            // Bind Ctrl+Y to draw a fortune without typing the command.
+            emit(PluginAction::RegisterKeybinding {
+                keys: "ctrl+y".to_owned(),
+                command: "fortune".to_owned(),
+                description: "Draw a fortune".to_owned(),
+            });
         }
         HostEvent::TurnEnded { .. } => {
             let f = FORTUNES[idx % FORTUNES.len()];
