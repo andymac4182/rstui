@@ -158,6 +158,35 @@ An app whose vocabulary is entirely its own builds complete maps with
 `Keymap::new("MyApp").bound(SAVE, &["ctrl+s"])` and
 `Keymaps::from_maps(vec![…])` instead of the batteries-included three.
 
+## UI: the `KeymapView` widget
+
+The visual half of "easy setting of keymaps" is a reusable widget, not
+per-app chrome: [`KeymapView`](widgets/overlays-and-control.md#keymapview)
+(in `rstui-widgets`) renders the live keymap as a selectable table with a
+per-row state (selected / **capturing** / disabled), an id column, scroll
+windowing and `hit()` for click-to-rebind. It is **engine-agnostic** — it
+takes plain `KeymapRow`s, so `rstui-widgets` keeps its `rstui-core`-only
+boundary (ADR 0002) and never depends on `rstui-keymap`. An app adapts its
+registry into rows in `view`:
+
+```rust
+let km = self.keymaps.effective();
+let rows: Vec<KeymapRow> = self.actions.iter().map(|&a| {
+    let keys: Vec<String> = split_caps(&km.keys_for(a)); // OS-aware caps
+    KeymapRow::new(a.help(), keys).id(a.id()).state(
+        if Some(a) == self.rebind { RowState::Capturing }
+        else if a == self.actions[self.sel] { RowState::Selected }
+        else if km.keys_for(a) == "—" { RowState::Disabled }
+        else { RowState::Normal })
+}).collect();
+KeymapView::new(&rows).header(/* map · OS · leader */);
+```
+
+The reducer still owns the cursor and the capture FSM (arm on a key,
+`Chord::from_event(&ev).spec()` → `set_override`, `Esc` cancels); the
+widget only draws state and reports the clicked row. All three apps
+(kitchen sink, acp-client, git-review) use this one widget.
+
 ## How the consumers use it
 
 - **`rstui-kitchen-sink`** — every shell binding (quit, palette, help,

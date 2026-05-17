@@ -183,6 +183,34 @@ HelpOverlay::new(entries: &[HelpEntry])
 
 ---
 
+## KeymapView
+
+![KeymapView demo](media/keymap_view_demo.gif)
+
+`HelpOverlay`'s **interactive** sibling: a keybinding *table* with a
+selection cursor, a per-row state (selected / capturing / disabled), an
+optional id column, scroll windowing, and `hit()` for click-to-rebind —
+the reusable "see and remap your keys" panel. Engine-agnostic: any
+`(label, keys, state)` source drives it (no keymap-engine dependency, so
+`rstui-widgets` stays `rstui-core`-only). Reuses `Kbd` for the key caps.
+Used by the kitchen sink, acp-client and git-review settings panels;
+adapts straight from [`rstui-keymap`](../keymaps.md)'s `keys_for`.
+
+- **Companion types:** `KeymapRow`, `RowState` (`Normal`/`Selected`/`Capturing`/`Disabled`)
+- **State model:** pure projection of a caller-owned `&[KeymapRow]` + the
+  reducer-owned selection / capture FSM.
+
+```rust
+KeymapView::new(rows: &[KeymapRow])
+.header(impl Into<Line>) .footer(impl Into<Line>)
+.scroll(usize) .block(Block) .separator(impl Into<Cow<str>>)
+.hit(area, pos) -> Option<usize>   // click → source row
+```
+
+**Demo:** `cargo run -p rstui-widgets --example keymap_view_demo`
+
+---
+
 ## Flow
 
 ![Flow demo](media/flow_demo.gif)
