@@ -142,6 +142,49 @@
 //! - [`calendar`]: [`Calendar`] — a month grid that does **no** date math
 //!   (the caller supplies the day numbers — dependency-free, no `chrono`); a
 //!   pure projection with optional [`Block`].
+//! - [`canvas`]: [`Canvas`]/[`Marker`]/[`Points`]/[`CanvasLine`]/[`Rectangle`] —
+//!   the keystone free-form plotting surface: a [`paint`](canvas::Canvas::paint)
+//!   closure draws caller-owned data in Cartesian space at sub-cell
+//!   [`Marker`] resolution (Braille `2×4`, half-block, dot, block); the
+//!   foundation the line/scatter charts plot on, immediate-mode (no retained
+//!   scene), a pure projection with an optional [`Block`].
+//! - [`scatter_plot`]: [`ScatterPlot`] (+ `scatter_plot::Series`) — an X/Y
+//!   point cloud inside auto-fitting framed axes; composes [`Canvas`] for the
+//!   cloud, a pure projection of caller-owned `&[(f64, f64)]` series.
+//! - [`pie_chart`]: [`PieChart`]/[`Slice`] — a proportional disc or donut of
+//!   coloured wedges with an optional legend; a pure projection, computes the
+//!   proportions from caller-owned slice values.
+//! - [`radar_chart`]: [`RadarChart`]/[`RadarAxis`]/[`RadarSeries`] — a
+//!   spider plot of N axes with ring gridlines and series polygons (composes
+//!   [`Canvas`]); a pure projection of caller-owned per-axis series.
+//! - [`box_plot`]: [`BoxPlot`]/[`BoxStats`]/[`BoxPlotOrientation`] — a
+//!   box-and-whisker over a shared scale; a pure projection of caller-owned
+//!   five-number summaries (no statistics computed).
+//! - [`candlestick`]: [`Candlestick`]/[`Candle`] — an OHLC financial chart
+//!   with eighth-block sub-cell bodies and a price axis; a pure projection of
+//!   a caller-owned `&[Candle]`.
+//! - [`waterfall`]: [`Waterfall`]/[`WaterfallStep`]/[`WaterfallKind`]/[`WaterfallDirection`] —
+//!   a financial bridge: signed steps float from the running cumulative with
+//!   absolute totals and connectors; a pure projection of signed steps.
+//! - [`funnel`]: [`Funnel`]/[`FunnelStage`] — a conversion funnel of centred
+//!   bands sized by stage value with derived percentages; a pure projection.
+//! - [`bullet_chart`]: [`BulletChart`]/[`Bullet`]/[`BulletChartDirection`] —
+//!   Stephen Few's bullet graph (measure bar over qualitative bands + target
+//!   tick), the compact KPI strip; a pure projection at sub-cell precision.
+//! - [`treemap`]: [`Treemap`]/[`TreemapTile`] — area-proportional squarified
+//!   tiling; a pure projection of caller-owned weighted tiles.
+//! - [`sankey`]: [`Sankey`]/[`SankeyNode`]/[`SankeyLink`] — a left→right flow
+//!   diagram (throughput-sized node bars, proportional link bands, composes
+//!   [`Canvas`]); a pure projection of caller-owned nodes + links.
+//! - [`gantt`]: [`Gantt`]/[`GanttTask`] — a project timeline (one bar per
+//!   task on a shared axis, progress fill, today marker); a pure projection,
+//!   no date math (the [`Calendar`] discipline).
+//! - [`calendar_heatmap`]: [`CalendarHeatmap`] — a GitHub-style contribution
+//!   calendar (weeks × weekdays, intensity-ramped); a pure projection of a
+//!   caller-owned `&[u64]` day series, no date math.
+//! - [`stacked_bar_chart`]: [`StackedBarChart`]/[`StackedBar`]/[`StackMode`] —
+//!   multi-series **stacked**/**grouped** bars, the [`BarChart`] composition
+//!   additive; a pure projection at eighth-block precision.
 //! - [`description_list`]: [`DescriptionList`]/[`DescriptionRow`] — an aligned
 //!   key→value pane; values wrap by reusing [`Paragraph`] (no second wrap).
 //! - [`badge`]: [`Badge`]/[`BadgeLevel`] — a tiny inline status pill with
@@ -257,9 +300,14 @@ pub mod avatar;
 pub mod badge;
 pub mod bar_chart;
 pub mod block;
+pub mod box_plot;
 pub mod breadcrumb;
+pub mod bullet_chart;
 pub mod button;
 pub mod calendar;
+pub mod calendar_heatmap;
+pub mod candlestick;
+pub mod canvas;
 pub mod card;
 pub mod checkbox;
 pub mod command_palette;
@@ -274,6 +322,8 @@ pub mod extmark;
 pub mod flame_graph;
 pub mod flow;
 pub mod form;
+pub mod funnel;
+pub mod gantt;
 pub mod gauge;
 pub mod grid;
 pub mod heatmap;
@@ -293,8 +343,12 @@ pub mod mermaid;
 pub mod modal;
 pub mod pagination;
 pub mod paragraph;
+pub mod pie_chart;
 pub mod popover;
+pub mod radar_chart;
 pub mod radio;
+pub mod sankey;
+pub mod scatter_plot;
 pub mod scroll_view;
 pub mod scrollbar;
 pub mod select;
@@ -304,6 +358,7 @@ pub mod slider;
 pub mod sparkline;
 pub mod spinner;
 pub mod split_pane;
+pub mod stacked_bar_chart;
 pub mod stat_panel;
 pub mod status_bar;
 pub mod stepper;
@@ -314,6 +369,8 @@ pub mod toast;
 pub mod tooltip;
 pub mod trace_waterfall;
 pub mod tree;
+pub mod treemap;
+pub mod waterfall;
 
 pub use accordion::{Accordion, AccordionSection};
 pub use alert::{Alert, AlertLevel};
@@ -323,6 +380,7 @@ pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use breadcrumb::Breadcrumb;
 pub use button::Button;
 pub use calendar::Calendar;
+pub use canvas::{Canvas, CanvasLine, Context, Marker, Painter, Points, Rectangle, Shape};
 pub use card::Card;
 pub use checkbox::Checkbox;
 pub use command_palette::CommandPalette;
@@ -386,3 +444,19 @@ pub use toast::{Toast, ToastCorner, ToastLevel, ToastMessage};
 pub use tooltip::Tooltip;
 pub use trace_waterfall::{TraceSpan, TraceWaterfall};
 pub use tree::{Tree, TreeGuides, TreeItem};
+// The business-dashboard chart cluster — a later additive export wave (like
+// the group above). `scatter_plot::Series` and the Mermaid AST stay
+// module-qualified; `Series` is too generic to promote to the crate root.
+pub use box_plot::{BoxPlot, BoxPlotOrientation, BoxStats};
+pub use bullet_chart::{Bullet, BulletChart, BulletChartDirection};
+pub use calendar_heatmap::CalendarHeatmap;
+pub use candlestick::{Candle, Candlestick};
+pub use funnel::{Funnel, FunnelStage};
+pub use gantt::{Gantt, GanttTask};
+pub use pie_chart::{PieChart, Slice};
+pub use radar_chart::{RadarAxis, RadarChart, RadarSeries};
+pub use sankey::{Sankey, SankeyLink, SankeyNode};
+pub use scatter_plot::ScatterPlot;
+pub use stacked_bar_chart::{StackMode, StackedBar, StackedBarChart};
+pub use treemap::{Treemap, TreemapTile};
+pub use waterfall::{Waterfall, WaterfallDirection, WaterfallKind, WaterfallStep};
