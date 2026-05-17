@@ -111,7 +111,7 @@ pub use focus::{FocusId, FocusRing};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Alignment, Constraint, Direction, Layout};
 pub use scroll::ScrollState;
-pub use selection::{Selection, selected_text};
+pub use selection::{Selection, SelectionSpan, selected_text};
 pub use style::{Color, ColorLevel, Modifier, Style};
 pub use stylize::{Styled, Stylize};
 pub use terminal::{CompletedFrame, Frame, Terminal};
