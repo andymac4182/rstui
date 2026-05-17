@@ -98,7 +98,7 @@ experience screen.
 | `↑ ↓ ← →` | Navigate (sidebar selection or per-widget) |
 | `Enter` / `Space` | Activate / toggle / confirm |
 | `f` | Traces screen: toggle the span waterfall ⇄ flame graph |
-| `s` `o` `c` `/` `e` | Data Grid: sort · group · collapse · filter · edit cell (`[` `]` pick the active column) |
+| `s` `o` `c` `/` `e` `G` | Data Grid: sort · group · collapse · filter · edit cell · `G` opens the modal group/sort config panel (`[` `]` pick the active column) |
 | `:` | Command palette — type to filter, `Enter` to jump |
 | `?` | Help overlay — the **live** keymap (reverse-looked-up, follows remaps) |
 | `g`, or `?`→`k` | Settings drawer — the keymap manager, the shared [`KeymapView`](widgets/overlays-and-control.md#keymapview) widget (capture-to-rebind, disable, theme). `?`→`k` is the universal gateway, the same two keystrokes in every rstui app |

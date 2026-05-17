@@ -68,6 +68,8 @@ pub(crate) struct State {
     active_col: usize,
     /// `/` filter-entry mode: typed chars extend the filter live.
     filtering: bool,
+    /// `G` opens the modal group/sort config panel overlay.
+    config_open: bool,
     /// Body rows the last `view` showed — so `on_scroll`/paging know the
     /// viewport length without an area (the lib.rs geom-cache idiom).
     body_rows: std::cell::Cell<usize>,
@@ -103,6 +105,7 @@ impl State {
             visual,
             active_col: 0,
             filtering: false,
+            config_open: false,
             body_rows: std::cell::Cell::new(10),
         }
     }
@@ -364,6 +367,9 @@ impl State {
                 self.grid.set_filter(String::new());
                 self.reproject();
             }
+            // The modal group/sort config panel — pick the group column and
+            // the (multi-key) sort independently. Mouse-driven once open.
+            KeyCode::Char('G') => self.config_open = !self.config_open,
             KeyCode::Char('e' | ' ') | KeyCode::Enter => return self.activate(),
             _ => return ScreenOutcome::ignored(),
         }
@@ -380,9 +386,44 @@ impl State {
         // dropdown panel overlay.
         let hit = DataTable::new(&self.columns, &self.rows, &self.visual, &self.grid)
             .cell_select(&self.choice)
+            .config(self.config_open)
             .block(Block::bordered().border_type(BorderType::Rounded))
             .hit(grid, pos);
         match hit {
+            // ---- the modal group/sort config panel ----
+            Some(DataTableHit::ConfigGroup(col)) => {
+                // Toggle this column as the (independent) group column.
+                let g = (self.grid.grouped_by() != Some(col)).then_some(col);
+                self.grid.set_group_by(g);
+                self.reproject();
+                ScreenOutcome::consumed()
+            }
+            Some(DataTableHit::ConfigSort(col)) => {
+                // Cycle this column in the ordered sort keys:
+                // absent → Ascending → Descending → removed.
+                let mut keys: Vec<_> = self.grid.sort_keys().to_vec();
+                match keys.iter().position(|(c, _)| *c == col) {
+                    None => keys.push((col, SortDirection::Ascending)),
+                    Some(i) if keys[i].1 == SortDirection::Ascending => {
+                        keys[i].1 = SortDirection::Descending;
+                    }
+                    Some(i) => {
+                        keys.remove(i);
+                    }
+                }
+                self.grid.set_sort_keys(keys);
+                self.reproject();
+                ScreenOutcome::consumed()
+            }
+            Some(DataTableHit::ConfigGroupDirection) => {
+                self.grid.toggle_group_direction();
+                self.reproject();
+                ScreenOutcome::consumed()
+            }
+            Some(DataTableHit::ConfigClose) => {
+                self.config_open = false;
+                ScreenOutcome::consumed()
+            }
             Some(DataTableHit::Header(col)) => {
                 self.active_col = col;
                 self.grid.toggle_sort(col);
@@ -425,6 +466,7 @@ impl State {
             DataTable::new(&self.columns, &self.rows, &self.visual, &self.grid)
                 .edit(&self.edit)
                 .cell_select(&self.choice)
+                .config(self.config_open)
                 .block(Block::bordered().border_type(BorderType::Rounded))
                 .style(theme.body())
                 .header_style(theme.caption())
@@ -434,7 +476,9 @@ impl State {
         );
 
         let active = HEADERS.get(self.active_col).copied().unwrap_or("?");
-        let hint = if self.choice.is_open() {
+        let hint = if self.config_open {
+            "group/sort panel — click G | sort per column · order row · outside: close".to_string()
+        } else if self.choice.is_open() {
             "dropdown — ↑↓ highlight · Enter choose".to_string()
         } else if self.grid.editing().is_some() {
             "editing — type · ←→ caret · Backspace · Enter save".to_string()
@@ -442,7 +486,7 @@ impl State {
             "filter — type to match · Backspace · Enter done".to_string()
         } else {
             format!(
-                "↑↓ select · [ ] col=({active}) · s sort · o group · c collapse · / filter · Space/e field"
+                "↑↓ select · [ ] col=({active}) · s sort · o group · c collapse · / filter · G panel · Space/e field"
             )
         };
         frame.render_widget(Line::from(hint.fg(theme.dim)), help_area);

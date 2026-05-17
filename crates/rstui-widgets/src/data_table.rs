@@ -446,6 +446,19 @@ pub enum DataTableHit {
         /// [`CellField::Select`] options.
         index: usize,
     },
+    /// The **group/sort config panel** (open via [`DataTable::config`]) was
+    /// clicked on this column's *group* zone → make it (or, if already it,
+    /// clear) the grouping column ([`DataTableState::set_group_by`]).
+    ConfigGroup(usize),
+    /// The config panel's *sort* zone for this column → cycle it in the
+    /// ordered sort keys (absent → Ascending → Descending → removed).
+    ConfigSort(usize),
+    /// The config panel's group-order row →
+    /// [`DataTableState::toggle_group_direction`].
+    ConfigGroupDirection,
+    /// A click **outside** the open config panel → dismiss it (it is a
+    /// modal overlay; the reducer clears its open flag).
+    ConfigClose,
 }
 
 /// The whole caller-owned interaction state — the `ScrollState`/`Selection`
@@ -927,6 +940,7 @@ pub struct DataTable<'a> {
     state: &'a DataTableState,
     edit: Option<&'a TextEdit>,
     cell_select: Option<&'a CellSelectState>,
+    config: bool,
     block: Option<Block<'a>>,
     column_spacing: u16,
     show_header: bool,
@@ -955,6 +969,7 @@ impl<'a> DataTable<'a> {
             state,
             edit: None,
             cell_select: None,
+            config: false,
             block: None,
             column_spacing: 1,
             show_header: true,
@@ -984,6 +999,18 @@ impl<'a> DataTable<'a> {
     #[must_use]
     pub fn cell_select(mut self, cell_select: &'a CellSelectState) -> Self {
         self.cell_select = Some(cell_select);
+        self
+    }
+
+    /// Opens the **group/sort config panel** — a modal overlay listing the
+    /// columns so the user picks the grouping column and the (multi-key)
+    /// sort independently, plus the group order. Caller-owned `open` flag
+    /// the reducer toggles (e.g. on a key); the widget only projects it and
+    /// reports clicks via [`hit`](Self::hit) as `Config*`
+    /// [`DataTableHit`]s (never callbacks). Default closed.
+    #[must_use]
+    pub fn config(mut self, open: bool) -> Self {
+        self.config = open;
         self
     }
 
@@ -1099,8 +1126,37 @@ impl<'a> DataTable<'a> {
         if area.is_empty() {
             return None;
         }
-        // The open dropdown panel is the top-most overlay (drawn last over
-        // the rows below), so it is hit-tested FIRST — a click inside it is
+        // The config panel is the top-most *modal* overlay (rendered last),
+        // so it is hit-tested before anything else: clicks inside act on
+        // group/sort; a click outside dismisses it (modal), never reaching
+        // the rows behind.
+        if self.config {
+            let panel = self.config_panel(area);
+            if !panel.is_empty() {
+                if !panel.contains(pos) {
+                    return Some(DataTableHit::ConfigClose);
+                }
+                let rel = pos.y - panel.y;
+                if rel == 0 {
+                    return None; // the title row — no-op, panel stays open
+                }
+                if rel == panel.height.saturating_sub(1) {
+                    return Some(DataTableHit::ConfigGroupDirection);
+                }
+                let ci = (rel - 1) as usize;
+                if ci < self.columns.len() {
+                    let mid = panel.x.saturating_add(panel.width / 2);
+                    return Some(if pos.x < mid {
+                        DataTableHit::ConfigGroup(ci)
+                    } else {
+                        DataTableHit::ConfigSort(ci)
+                    });
+                }
+                return None;
+            }
+        }
+        // The open dropdown panel is the next top-most overlay (drawn over
+        // the rows below), so it is hit-tested next — a click inside it is
         // the option it visually covers, never the data row underneath.
         if let Some(es) = self.editing_select(area) {
             let panel = self.dropdown_panel(area, es.field, es.options.len());
@@ -1231,6 +1287,39 @@ impl<'a> DataTable<'a> {
                 above,
             )
         }
+    }
+
+    /// The group/sort **config panel** rect — a modal overlay centred in
+    /// the framed `inner`: a title row, a row per column, then a
+    /// group-order row, clamped to `inner`. Empty when closed, there are
+    /// no columns, or there is no room. A pure function of `area` so the
+    /// overlay render and [`hit`](Self::hit) place it identically.
+    fn config_panel(&self, area: Rect) -> Rect {
+        if !self.config || self.columns.is_empty() {
+            return Rect::ZERO;
+        }
+        let inner = self.geometry(area).0;
+        if inner.is_empty() {
+            return Rect::ZERO;
+        }
+        let want_h = u16::try_from(self.columns.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2);
+        let h = want_h.min(inner.height);
+        let w = 34u16.min(inner.width).max(1);
+        let x = inner.x.saturating_add(inner.width.saturating_sub(w) / 2);
+        let y = inner.y.saturating_add(inner.height.saturating_sub(h) / 2);
+        Rect::new(x, y, w, h)
+    }
+
+    /// The sort key rank (1-based) + direction for `column`, if it is a
+    /// sort key — for the config panel's per-column marker.
+    fn sort_rank(&self, column: usize) -> Option<(usize, SortDirection)> {
+        self.state
+            .sort_keys()
+            .iter()
+            .position(|(c, _)| *c == column)
+            .map(|i| (i + 1, self.state.sort_keys()[i].1))
     }
 }
 
@@ -1446,6 +1535,75 @@ impl Widget for DataTable<'_> {
                     .render(panel, buf);
             }
         }
+
+        // ---- the group/sort config panel: the top-most modal overlay ----
+        // Drawn last (over everything) and `clear_region`d opaque; `hit`
+        // resolves clicks against the *same* `config_panel` rect, so the
+        // row/zone clicked is the action taken. A pure projection of the
+        // caller-owned group/sort state — the reducer mutates it.
+        if self.config {
+            let panel = self.config_panel(area);
+            if !panel.is_empty() {
+                buf.clear_region(panel);
+                let cbase = self.style.patch(self.group_style);
+                buf.set_style(panel, cbase);
+                let tbase = cbase.patch(self.header_style);
+                let right = panel.right();
+                let last = panel.y.saturating_add(panel.height.saturating_sub(1));
+                stamp_str(buf, panel.x, panel.y, right, " Group / Sort", tbase);
+                for (i, col) in self.columns.iter().enumerate() {
+                    let ry = panel.y.saturating_add(1 + i as u16);
+                    if ry >= last {
+                        break;
+                    }
+                    let g = if self.state.grouped_by() == Some(i) {
+                        "G"
+                    } else {
+                        " "
+                    };
+                    let hdr: String = col
+                        .header
+                        .spans
+                        .iter()
+                        .map(|sp| sp.content.as_ref())
+                        .collect();
+                    stamp_str(buf, panel.x, ry, right, &format!(" {g} {hdr}"), cbase);
+                    let mark = match self.sort_rank(i) {
+                        Some((r, SortDirection::Ascending)) => format!("▲{r}"),
+                        Some((r, SortDirection::Descending)) => format!("▼{r}"),
+                        None => "·".to_string(),
+                    };
+                    let sx = right.saturating_sub(mark.chars().count() as u16 + 1);
+                    stamp_str(buf, sx, ry, right, &mark, cbase);
+                }
+                let arrow = if self.state.group_direction() == SortDirection::Ascending {
+                    '▲'
+                } else {
+                    '▼'
+                };
+                stamp_str(
+                    buf,
+                    panel.x,
+                    last,
+                    right,
+                    &format!(" group order {arrow}  ·  outside: close"),
+                    tbase,
+                );
+            }
+        }
+    }
+}
+
+/// Stamps `s` from `(x, y)` rightward in `style`, clipped at `right` — the
+/// config panel's plain-text row writer.
+fn stamp_str(buf: &mut Buffer, x: u16, y: u16, right: u16, s: &str, style: Style) {
+    let mut cx = x;
+    for ch in s.chars() {
+        if cx >= right {
+            break;
+        }
+        buf.set_cell(Position::new(cx, y), ch, style);
+        cx = cx.saturating_add(1);
     }
 }
 
@@ -2080,6 +2238,60 @@ mod tests {
             grid(DataTable::new(&c, &r, &v, &st).show_header(false), 9, 2),
             "ab   cd  \nef   gh  \n"
         );
+    }
+
+    #[test]
+    fn config_panel_hit_maps_clicks_to_group_sort_actions() {
+        let c = cols(); // 2 columns
+        let r = [DataRow::new(["a", "b"])];
+        let mut st = DataTableState::new();
+        st.set_group_by(Some(1));
+        let v = project(&c, &r, &st);
+        let dt = DataTable::new(&c, &r, &v, &st).config(true);
+        let area = Rect::new(0, 0, 34, 8);
+        // config_panel centres a 34×4 box in the 34×8 inner → panel (0,2).
+        // y2 title, y3 col0, y4 col1, y5 group-order. Split x at mid=17.
+        assert_eq!(dt.hit(area, Position::new(2, 2)), None); // title: no-op
+        assert_eq!(
+            dt.hit(area, Position::new(2, 3)),
+            Some(DataTableHit::ConfigGroup(0))
+        );
+        assert_eq!(
+            dt.hit(area, Position::new(20, 3)),
+            Some(DataTableHit::ConfigSort(0))
+        );
+        assert_eq!(
+            dt.hit(area, Position::new(2, 4)),
+            Some(DataTableHit::ConfigGroup(1))
+        );
+        assert_eq!(
+            dt.hit(area, Position::new(20, 4)),
+            Some(DataTableHit::ConfigSort(1))
+        );
+        assert_eq!(
+            dt.hit(area, Position::new(2, 5)),
+            Some(DataTableHit::ConfigGroupDirection)
+        );
+        // A click outside the modal panel dismisses it.
+        assert_eq!(
+            dt.hit(area, Position::new(2, 0)),
+            Some(DataTableHit::ConfigClose)
+        );
+        // The panel renders its title (proof the overlay drew opaquely).
+        let out = grid(
+            DataTable::new(&c, &r, &v, &st)
+                .config(true)
+                .show_header(false),
+            34,
+            8,
+        );
+        assert!(out.contains("Group / Sort"), "config panel renders:\n{out}");
+        // Closed → no panel; the same point is a normal hit, never Config*.
+        let closed = DataTable::new(&c, &r, &v, &st); // .config not set
+        assert!(!matches!(
+            closed.hit(area, Position::new(2, 3)),
+            Some(DataTableHit::ConfigGroup(_) | DataTableHit::ConfigClose)
+        ));
     }
 
     #[test]

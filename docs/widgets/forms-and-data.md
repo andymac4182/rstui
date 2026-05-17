@@ -239,7 +239,8 @@ aligned rows.
 - **Companion types:** `DataColumn`, `DataRow`, `DataTableState`,
   `CellField` (`Text`/`Checkbox`/`Switch`/`Select`), `CellSelectState`,
   `cell_truthy`, `VisualRow` (`Group`/`Data`), `DataTableHit`
-  (`Header`/`Group`/`Cell`), `SortDirection` (`Ascending`/`Descending`)
+  (`Header`/`Group`/`Cell`/`DropdownOption`/`Config*`), `SortDirection`
+  (`Ascending`/`Descending`)
 - **State model:** pure projection of caller-owned `[DataColumn]` /
   `[DataRow]` / a flattened `[VisualRow]` (from `data_table::project`, run
   by the reducer once per data/spec change) / `DataTableState` (composes
@@ -252,21 +253,30 @@ aligned rows.
   `cell_truthy` for booleans, `CellSelectState::choose` for the dropdown).
   *Any other* widget (Slider/Radio/DatePicker/custom) renders into the rect
   from `cell_rect` — the ADR 0012 accessor escape hatch. The reducer runs
-  the filter→sort→group pipeline and owns every control's state; change
-  events surface as pure `hit`/`cell_rect` accessors, never callbacks
+  the filter → **two-tier group/sort** pipeline (the grouping column is
+  independent of the ordered multi-key sort: tier 1 lists groups by
+  key/`group_direction`, tier 2 sorts rows within each by the sort keys)
+  and owns every control's state; change events surface as pure
+  `hit`/`cell_rect` accessors, never callbacks. A modal **config-panel
+  overlay** (`.config(open)`) lets the user set the group column and the
+  multi-key sort independently — hit-tested first, returning the
+  `Config*` `DataTableHit`s
   ([ADR 0014](../adr/0014-comprehensive-interactive-datatable.md)).
 
 ```rust
 DataColumn::new(impl Into<Line>)
 .width(Constraint) .editable(bool) .field(CellField) // Text|Checkbox|Switch|Select(opts)
 DataTable::new(&[DataColumn], &[DataRow], &[VisualRow], &DataTableState)
-.edit(&TextEdit) .cell_select(&CellSelectState) .block(Block)
+.edit(&TextEdit) .cell_select(&CellSelectState) .config(bool) .block(Block)
 .column_spacing(u16) .show_header(bool) .style(Style) .header_style(Style)
 .group_style(Style) .highlight_style(Style) .cursor_style(Style)
 .hit(area: Rect, pos: Position) -> Option<DataTableHit>
 .cell_rect(area: Rect, source: usize, column: usize) -> Option<Rect>
-// reducer-side: the pipeline + the dropdown's total caller-owned state
+// reducer-side: the pipeline + the caller-owned group/sort state
 data_table::project(&[DataColumn], &[DataRow], &DataTableState) -> Vec<VisualRow>
+DataTableState::{sort_keys, set_sort_keys, push_sort, clear_sort,
+                 grouped_by, set_group_by, group_direction,
+                 toggle_group_direction}
 CellSelectState::{open, close, move_highlight, reveal, choose}
 ```
 

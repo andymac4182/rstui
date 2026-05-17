@@ -147,6 +147,27 @@ no model change:
 Demonstrated in the kitchen-sink **Data Grid** screen (an editable text
 `name`, a `Select` `role`, a `Checkbox` `active`).
 
+## Follow-up (delivered): two-tier group/sort + config panel
+
+A further additive (the multi-key sort + independent grouping ADR 0014 §6
+deferred), again non-breaking — `sort()` still returns the primary key,
+`toggle_sort`/`set_sort`/`set_group_by`/`grouped_by` unchanged, so every
+existing caller compiles untouched:
+
+- `DataTableState.sort` is now an ordered `Vec<(col, dir)>` (multi-key);
+  the grouping column is chosen **independently** with its own
+  `group_direction`. `project()` does true **two-tier** ordering: tier 1
+  lists the *groups* by key/direction, tier 2 orders the rows *within*
+  each group by the sort keys (ungrouped = multi-key sort over all rows).
+- A **modal config-panel overlay** (`DataTable::config(open)`, a
+  caller-owned flag) lists the columns so the user sets the group column
+  and the per-column sort independently, plus the group order. It is the
+  top-most overlay — `clear_region`-opaque, drawn last, and hit-tested
+  *first* — exposing `DataTableHit::{ConfigGroup, ConfigSort,
+  ConfigGroupDirection, ConfigClose}` (a click outside dismisses it). No
+  callbacks; the reducer maps the hits to the state methods. Wired into
+  the kitchen-sink Data Grid screen (`G` toggles it).
+
 ## Evidence
 
 - `crates/rstui-widgets/src/tree.rs` establishes the precedent verbatim:
