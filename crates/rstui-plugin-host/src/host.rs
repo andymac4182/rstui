@@ -55,7 +55,9 @@ use crate::message::{
 };
 use crate::permission::{Decision, PermissionPolicy};
 use crate::process::{ExitOutcome, PluginProcess, PluginSpawnSpec, ProcessRunner};
-use crate::protocol::{Frame, MessageType, ProtocolError, read_frame, write_frame};
+use crate::protocol::{
+    Frame, MessageType, ProtocolError, read_frame, write_frame, write_frame_parts,
+};
 
 /// A plugin's identity, taken from its manifest `name`.
 ///
@@ -391,12 +393,16 @@ impl PluginHost {
         channel: &FrameChannel,
         deadline: RunDeadline,
     ) -> Result<(), HostError> {
-        let init = Frame::new(
+        // PROTO-3: borrow the version bytes straight into the codec — no
+        // `Vec<u8>` copy + `Frame` just to send once.
+        let corr = correlation_id(0);
+        write_frame_parts(
+            &mut process.stdin(),
             MessageType::Initialize,
-            correlation_id(0),
-            self.host_api_version.as_bytes().to_vec(),
-        );
-        write_frame(&mut process.stdin(), &init).map_err(|source| HostError::Protocol {
+            &corr,
+            self.host_api_version.as_bytes(),
+        )
+        .map_err(|source| HostError::Protocol {
             plugin: plugin.clone(),
             source,
         })?;
@@ -436,12 +442,15 @@ impl PluginHost {
             kind.reduction(),
             crate::hook::HookReduction::Observe
         ));
-        let frame = Frame::new(
+        let corr = correlation_id(0);
+        let payload = encode_hook_dispatch(kind, &[]);
+        write_frame_parts(
+            &mut process.stdin(),
             MessageType::HookDispatch,
-            correlation_id(0),
-            encode_hook_dispatch(kind, &[]),
-        );
-        write_frame(&mut process.stdin(), &frame).map_err(|source| HostError::Protocol {
+            &corr,
+            &payload,
+        )
+        .map_err(|source| HostError::Protocol {
             plugin: plugin.clone(),
             source,
         })
@@ -467,12 +476,13 @@ impl PluginHost {
         deadline: RunDeadline,
     ) -> Result<HookOutcome, HostError> {
         let corr = correlation_id(id);
-        let frame = Frame::new(
+        let payload = encode_hook_dispatch(HookKind::BeforeCapability, input);
+        if let Err(source) = write_frame_parts(
+            &mut process.stdin(),
             MessageType::HookDispatch,
-            corr,
-            encode_hook_dispatch(HookKind::BeforeCapability, input),
-        );
-        if let Err(source) = write_frame(&mut process.stdin(), &frame) {
+            &corr,
+            &payload,
+        ) {
             let _ = process.kill();
             return Err(HostError::Protocol {
                 plugin: plugin.clone(),

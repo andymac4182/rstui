@@ -286,8 +286,33 @@ impl Frame {
 /// assert_eq!(decoded.message_type, MessageType::Shutdown);
 /// ```
 pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<(), ProtocolError> {
+    // Delegates to the borrowed-payload form so there is exactly one
+    // assembly implementation — output is byte-identical by construction.
+    write_frame_parts(w, frame.message_type, &frame.correlation_id, &frame.payload)
+}
+
+/// Writes a frame from **borrowed** parts — the allocation-free send path
+/// (PROTO-3). Identical wire bytes to [`write_frame`] (which now forwards
+/// here), but the caller need not own a [`Frame`]: a sender that already
+/// holds the payload as a slice (e.g. `host_api_version.as_bytes()`) avoids
+/// the `Vec<u8>` copy that constructing a one-shot `Frame` forced.
+/// `Frame` / [`Frame::new`] / [`read_frame`] are unchanged — this is a
+/// purely additive second codec constructor, the same shape as the widgets'
+/// `from_slice` borrowed constructors.
+///
+/// # Errors
+///
+/// Identical to [`write_frame`]: [`ProtocolError::FrameTooLarge`] when
+/// `1 + 16 + payload.len()` exceeds [`MAX_FRAME_SIZE`] (nothing written),
+/// [`ProtocolError::Io`] on a failed write/flush.
+pub fn write_frame_parts<W: Write>(
+    w: &mut W,
+    message_type: MessageType,
+    correlation_id: &[u8; 16],
+    payload: &[u8],
+) -> Result<(), ProtocolError> {
     // Total bytes that the length field counts: type (1) + id (16) + payload.
-    let body_len = 1usize + 16 + frame.payload.len();
+    let body_len = 1usize + 16 + payload.len();
 
     if body_len > MAX_FRAME_SIZE {
         return Err(ProtocolError::FrameTooLarge {
@@ -305,13 +330,13 @@ pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<(), ProtocolErr
     buf.extend_from_slice(&len_u32.to_be_bytes());
 
     // 1-byte message type.
-    buf.push(frame.message_type.to_byte());
+    buf.push(message_type.to_byte());
 
     // 16-byte correlation id.
-    buf.extend_from_slice(&frame.correlation_id);
+    buf.extend_from_slice(correlation_id);
 
     // Payload.
-    buf.extend_from_slice(&frame.payload);
+    buf.extend_from_slice(payload);
 
     debug_assert_eq!(buf.len(), total);
 
@@ -850,5 +875,42 @@ mod tests {
         assert_eq!(&buf[21..], &payload[..], "payload");
         // Total length
         assert_eq!(buf.len(), 4 + 20);
+    }
+
+    // ── PROTO-3: the borrowed-parts writer is byte-identical ──────────────────
+
+    #[test]
+    fn write_frame_parts_is_byte_identical_to_write_frame() {
+        // The allocation-free send path must put exactly the same bytes on
+        // the wire as `write_frame(&Frame)` for every message type and a
+        // range of payloads — pins the shared assembly so a future change
+        // to one path cannot silently diverge from the other.
+        let ids = [[0u8; 16], [0xABu8; 16]];
+        let payloads: [&[u8]; 4] = [b"", b"x", b"hook-dispatch-bytes", &[0u8, 255, 1, 254]];
+        let all_types = [
+            MessageType::Initialize,
+            MessageType::HookDispatch,
+            MessageType::CapabilityResponse,
+            MessageType::Shutdown,
+            MessageType::Ready,
+            MessageType::CapabilityCall,
+            MessageType::HookResult,
+            MessageType::Log,
+        ];
+        for mt in all_types {
+            for id in &ids {
+                for p in &payloads {
+                    let mut via_frame = Vec::new();
+                    write_frame(&mut via_frame, &Frame::new(mt, *id, p.to_vec())).unwrap();
+                    let mut via_parts = Vec::new();
+                    write_frame_parts(&mut via_parts, mt, id, p).unwrap();
+                    assert_eq!(
+                        via_frame, via_parts,
+                        "wire bytes diverged for {mt:?} id={id:?} payload_len={}",
+                        p.len()
+                    );
+                }
+            }
+        }
     }
 }
