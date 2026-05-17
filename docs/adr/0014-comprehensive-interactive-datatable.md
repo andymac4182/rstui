@@ -122,6 +122,31 @@ caret/scroll implementation). Mouse and change events are surfaced as
    gutter are recorded clean future additives over this exact shape (the
    `Tree` "defer cleanly" precedent), not gaps.
 
+## Follow-up (delivered): any form field per cell
+
+The original slice's editing was a single borrowed `TextEdit`. A
+follow-up generalises it **additively, non-breaking** (default
+`CellField::Text` is byte-for-byte the prior behaviour; `.edit(&TextEdit)`
+unchanged), exactly as Decision §3 anticipated — a bounded pure extension,
+no model change:
+
+- A per-column **`CellField`** (`Text` / `Checkbox` / `Switch` / `Select`)
+  the widget renders by **reusing** the matching widget
+  (`Input`/`Checkbox`/`Switch`/`Select`) — no second implementation. The
+  cell `Line` stays the single value of record, so sort/filter are
+  untouched and the reducer writes edits back the same way (`cell_truthy`
+  for booleans, `CellSelectState::choose` for the dropdown).
+- **`CellSelectState`** — a new caller-owned, total dropdown state (the
+  `ScrollState`/`Selection` sibling: `open`/`close`/`move_highlight`/
+  `reveal`/`choose`), fuzz-proved.
+- **Any other widget** (Slider/Radio/DatePicker/custom) uses the existing
+  `cell_rect` accessor — the ADR 0012 §1 escape hatch, total for any
+  widget, no new contract. The pure-projection / single-reducer /
+  no-callbacks / dependency-free invariants all still hold.
+
+Demonstrated in the kitchen-sink **Data Grid** screen (an editable text
+`name`, a `Select` `role`, a `Checkbox` `active`).
+
 ## Evidence
 
 - `crates/rstui-widgets/src/tree.rs` establishes the precedent verbatim:

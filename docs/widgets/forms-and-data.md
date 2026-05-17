@@ -231,31 +231,43 @@ Divider::new()
 ![DataTable demo](media/data_table_demo.gif)
 
 The comprehensive interactive grid: sortable/filterable/groupable,
-mouse-hit-testable, virtualized for fast scroll, with optional per-column
-in-cell editing — the spreadsheet pane to [`Table`](core-set.md#table)'s
+mouse-hit-testable, virtualized for fast scroll, with **any form field per
+cell** — text, checkbox, switch, a dropdown, or *any* widget via
+`cell_rect` — the spreadsheet pane to [`Table`](core-set.md#table)'s
 aligned rows.
 
 - **Companion types:** `DataColumn`, `DataRow`, `DataTableState`,
-  `VisualRow` (`Group`/`Data`), `DataTableHit` (`Header`/`Group`/`Cell`),
-  `SortDirection` (`Ascending`/`Descending`)
+  `CellField` (`Text`/`Checkbox`/`Switch`/`Select`), `CellSelectState`,
+  `cell_truthy`, `VisualRow` (`Group`/`Data`), `DataTableHit`
+  (`Header`/`Group`/`Cell`), `SortDirection` (`Ascending`/`Descending`)
 - **State model:** pure projection of caller-owned `[DataColumn]` /
   `[DataRow]` / a flattened `[VisualRow]` (from `data_table::project`, run
   by the reducer once per data/spec change) / `DataTableState` (composes
   [`ScrollState`](../core-reference.md#scrollstate)) / an optional editing
-  [`TextEdit`](../core-reference.md#textedit). The reducer runs the
-  filter→sort→group pipeline and owns the edit; change events surface as
-  pure `hit`/`cell_rect` accessors, never callbacks ([ADR
-  0014](../adr/0014-comprehensive-interactive-datatable.md)).
+  [`TextEdit`](../core-reference.md#textedit) (text cell) /
+  `CellSelectState` (open dropdown). A column's `CellField` picks the cell
+  control; the widget renders it by **reusing** `Input`/`Checkbox`/`Switch`/
+  `Select`, the cell `Line` staying the single value of record (so
+  sort/filter keep working and the reducer writes edits back —
+  `cell_truthy` for booleans, `CellSelectState::choose` for the dropdown).
+  *Any other* widget (Slider/Radio/DatePicker/custom) renders into the rect
+  from `cell_rect` — the ADR 0012 accessor escape hatch. The reducer runs
+  the filter→sort→group pipeline and owns every control's state; change
+  events surface as pure `hit`/`cell_rect` accessors, never callbacks
+  ([ADR 0014](../adr/0014-comprehensive-interactive-datatable.md)).
 
 ```rust
+DataColumn::new(impl Into<Line>)
+.width(Constraint) .editable(bool) .field(CellField) // Text|Checkbox|Switch|Select(opts)
 DataTable::new(&[DataColumn], &[DataRow], &[VisualRow], &DataTableState)
-.edit(&TextEdit) .block(Block) .column_spacing(u16) .show_header(bool)
-.style(Style) .header_style(Style) .group_style(Style)
-.highlight_style(Style) .cursor_style(Style)
+.edit(&TextEdit) .cell_select(&CellSelectState) .block(Block)
+.column_spacing(u16) .show_header(bool) .style(Style) .header_style(Style)
+.group_style(Style) .highlight_style(Style) .cursor_style(Style)
 .hit(area: Rect, pos: Position) -> Option<DataTableHit>
 .cell_rect(area: Rect, source: usize, column: usize) -> Option<Rect>
-// reducer-side pipeline:
+// reducer-side: the pipeline + the dropdown's total caller-owned state
 data_table::project(&[DataColumn], &[DataRow], &DataTableState) -> Vec<VisualRow>
+CellSelectState::{open, close, move_highlight, reveal, choose}
 ```
 
 **Demo:** `cargo run -p rstui-widgets --example data_table_demo`
