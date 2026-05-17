@@ -40,6 +40,8 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
         render_help(app, frame, area);
     } else if app.log_visible() {
         render_log(app, frame, area);
+    } else if app.plugins_overlay() {
+        render_plugins_overlay(app, frame, area);
     }
     if let Some(perm) = app.pending_permission() {
         render_permission(perm, frame, area);
@@ -153,7 +155,7 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
             Constraint::Length(sidebar_w.clamp(24, 40)),
         ])
         .areas(area);
-        render_todos_sidebar(app, frame, side);
+        render_sidebar(app, frame, side);
         m
     } else {
         area
@@ -276,32 +278,134 @@ fn render_completion(app: &ChatApp, frame: &mut Frame<'_>, composer_area: Rect) 
     );
 }
 
-fn render_todos_sidebar(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
-    let (done, total) = app.todo_progress();
-    let block = Block::bordered().title(format!(" Todos — {done}/{total} "));
+fn section(out: &mut Vec<Line<'static>>, title: &str) {
+    if !out.is_empty() {
+        out.push(Line::raw(""));
+    }
+    out.push(Line::styled(
+        format!("── {title} "),
+        Style::new().fg(Color::Cyan),
+    ));
+}
+
+/// The docked sidebar: stacks the Todos panel, any plugin-contributed
+/// panels, and a plugin status/commands block — the opencode "sidebar
+/// slots" analogue.
+fn render_sidebar(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let block = Block::bordered().title(" Sidebar ");
     let inner = block.inner(area);
     clear(frame, area);
     frame.render_widget(block, area);
 
-    let mut lines: Vec<Line> = Vec::new();
-    for todo in app.todos() {
-        // opencode glyphs/colours: ✓ done (muted), • in-progress (warning),
-        // space pending (muted).
-        let (glyph, color) = match todo.status {
-            crate::acp::TodoStatus::Completed => ("✓", Color::DarkGray),
-            crate::acp::TodoStatus::InProgress => ("•", Color::Yellow),
-            crate::acp::TodoStatus::Pending => (" ", Color::Gray),
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("[{glyph}] "), Style::new().fg(color)),
-            Span::styled(todo.content.clone(), Style::new().fg(color)),
-        ]));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    if !app.todos().is_empty() {
+        let (done, total) = app.todo_progress();
+        section(&mut lines, &format!("Todos {done}/{total}"));
+        for todo in app.todos() {
+            // opencode glyphs/colours: ✓ done (muted), • in-progress
+            // (warning), space pending (muted).
+            let (glyph, color) = match todo.status {
+                crate::acp::TodoStatus::Completed => ("✓", Color::DarkGray),
+                crate::acp::TodoStatus::InProgress => ("•", Color::Yellow),
+                crate::acp::TodoStatus::Pending => (" ", Color::Gray),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("[{glyph}] "), Style::new().fg(color)),
+                Span::styled(todo.content.clone(), Style::new().fg(color)),
+            ]));
+        }
     }
+
+    for (plugin, (title, body)) in app.panels() {
+        section(&mut lines, &format!("{title} ({plugin})"));
+        for l in body {
+            lines.push(Line::styled(l.clone(), Style::new().fg(Color::Gray)));
+        }
+    }
+
+    if !app.statuses().is_empty() {
+        section(&mut lines, "Status");
+        for (k, v) in app.statuses() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{k}: "), Style::new().fg(Color::DarkGray)),
+                Span::styled(v.clone(), Style::new().fg(Color::White)),
+            ]));
+        }
+    }
+
+    let names = app.plugin_names();
+    if !names.is_empty() {
+        section(&mut lines, "Plugins");
+        for n in names {
+            lines.push(Line::styled(format!("⚙ {n}"), Style::new().fg(Color::Gray)));
+        }
+    }
+
     if lines.is_empty() {
         lines.push(Line::styled(
-            "No todos yet.",
+            "No todos or plugin content yet.",
             Style::new().fg(Color::DarkGray),
         ));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The `/plugins` overlay: a plugin-manager panel — each loaded plugin with
+/// the slash commands it registered and any status keys it set.
+fn render_plugins_overlay(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let rect = centered(area, area.width.min(78), area.height.clamp(10, 22));
+    let block = Block::bordered().title(" Plugins (Esc to close) ");
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let names = app.plugin_set();
+    if names.is_empty() {
+        lines.push(Line::styled(
+            "No plugins loaded. Launch with --plugin <cmd>, or drop the",
+            Style::new().fg(Color::Gray),
+        ));
+        lines.push(Line::styled(
+            "reference plugins next to the binary for auto-discovery.",
+            Style::new().fg(Color::Gray),
+        ));
+    }
+    for name in &names {
+        lines.push(Line::styled(
+            format!("⚙ {name}"),
+            Style::new().fg(Color::Cyan),
+        ));
+        for spec in app.command_specs() {
+            if let crate::app::CommandSource::Plugin(p) = &spec.source {
+                if p == name {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    /{:<12} ", spec.name),
+                            Style::new().fg(Color::White),
+                        ),
+                        Span::styled(spec.description.clone(), Style::new().fg(Color::Gray)),
+                    ]));
+                }
+            }
+        }
+        if let Some((title, body)) = app.panels().get(name) {
+            lines.push(Line::styled(
+                format!("    ▸ panel “{title}” ({} lines)", body.len()),
+                Style::new().fg(Color::DarkGray),
+            ));
+        }
+    }
+    if !app.statuses().is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Status keys:", Style::new().fg(Color::Yellow)));
+        for (k, v) in app.statuses() {
+            lines.push(Line::styled(
+                format!("  {k} = {v}"),
+                Style::new().fg(Color::Gray),
+            ));
+        }
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
