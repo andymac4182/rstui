@@ -866,3 +866,38 @@ fn plugin_modal_escape_cancels() {
     assert!(h.app().modal().is_none(), "Esc cancels the modal");
     assert!(h.is_running());
 }
+
+#[test]
+fn keymap_panel_opens_with_ctrl_k_navigates_rebinds_and_closes() {
+    let mut h = booted(100, 30);
+    assert!(!h.app().keymap_panel_open(), "panel starts closed");
+
+    // Ctrl+K is the global Action::Drawer binding — resolved through the
+    // keymap on any screen, after the plugin-chord layer.
+    h.message(Msg::Key(KeyEvent::new(
+        KeyCode::Char('k'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(h.app().keymap_panel_open(), "Ctrl+K opens the keymap panel");
+    let s = h.snapshot();
+    assert!(
+        s.contains("Keymap") && s.contains("Quit"),
+        "the shared KeymapView widget renders the live bindings:\n{s}"
+    );
+
+    // Navigate and arm a capture; the panel owns these keys (they do not
+    // leak to the picker underneath).
+    h.message(Msg::Key(KeyEvent::char('j')));
+    h.message(Msg::Key(KeyEvent::char('r')));
+    assert!(
+        h.snapshot().contains("press a key"),
+        "the row is armed for capture:\n{}",
+        h.snapshot()
+    );
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::F(5))));
+    assert!(h.is_running(), "rebinding must not quit");
+
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Esc)));
+    assert!(!h.app().keymap_panel_open(), "Esc closes the panel");
+    assert!(h.is_running(), "closing the panel must not quit");
+}

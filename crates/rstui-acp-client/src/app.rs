@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Size, TextArea};
-use rstui_keymap::Chord;
+use rstui_keymap::{Action, Chord, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd, Frame};
 
 use crate::Config;
@@ -17,6 +17,41 @@ use crate::acp::{
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
 use crate::registry::Registry;
 use crate::ui;
+
+/// acp-client's mode-independent **global** command surface as semantic
+/// [`Action`]s, resolved through [`Keymaps`] so they are remappable, shown
+/// in the keymap panel, and overridable from a `RSTUI_KEYMAP` config file
+/// (ADR 0015 — the same engine the kitchen sink and git-review use).
+///
+/// The deeply contextual keys (the composer's text entry, the
+/// modal/permission/ask dialogs, the slash-completion popup, plugin
+/// chords) stay raw by design — ADR 0015 keeps the keymap shell-level, the
+/// same boundary the other two apps draw for text/motion keys.
+const COMMANDS: &[(Action, &str)] = &[
+    (Action::Help, "Help overlay"),
+    (Action::Drawer, "Keymap settings"),
+    (Action::Quit, "Quit"),
+];
+
+/// acp-client's own keymap (no kitchen-sink leftovers): one named map of
+/// the global commands, via [`Keymaps::from_maps`]. Bindings are
+/// non-text chords (Fn/Ctrl) so they never shadow the composer.
+fn acp_keymaps() -> Keymaps {
+    let mut km = Keymap::new("acp-client");
+    km.bind(Action::Quit, &["ctrl+c", "ctrl+q", "f10"]);
+    km.bind(Action::Help, &["f1"]);
+    km.bind(Action::Drawer, &["ctrl+k"]);
+    Keymaps::from_maps(vec![km])
+}
+
+/// Split a `keys_for` display string into [`rstui_widgets::KeymapView`]
+/// caps: `"⌃C / F10"` → `["⌃C", "F10"]`; `"—"` → `[]` (disabled).
+fn caps(keys: &str) -> Vec<String> {
+    if keys == "—" {
+        return Vec::new();
+    }
+    keys.split(" / ").map(str::to_owned).collect()
+}
 
 /// Which top-level screen is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,6 +339,20 @@ pub struct ChatApp {
     theme_restore: Option<crate::theme::AcpTheme>,
     /// `true` while the `/theme` picker overlay is open.
     picking: bool,
+    /// The customisable keymap (the app-owned global-command map;
+    /// `RSTUI_KEYMAP` may load user overrides). Resolved before the
+    /// screen dispatch, after the plugin-chord layer.
+    keymaps: Keymaps,
+    /// Monotonic per-key counter — the deterministic clock
+    /// [`Keymaps::resolve`] needs (no animation tick; the map has no
+    /// leader, so this only has to advance).
+    tick: u64,
+    /// The keymap settings panel (the shared `KeymapView` widget) is open.
+    keymap_panel: bool,
+    /// Selected row in the keymap panel.
+    km_sel: usize,
+    /// The command armed for capture-to-rebind (next key binds it).
+    km_rebind: Option<Action>,
 }
 
 impl ChatApp {
@@ -355,7 +404,29 @@ impl ChatApp {
             theme_picker: rstui_theme::ThemePickerState::new(),
             theme_restore: None,
             picking: false,
+            keymaps: acp_keymaps(),
+            tick: 0,
+            keymap_panel: false,
+            km_sel: 0,
+            km_rebind: None,
         }
+    }
+
+    /// Apply a user keymap choice: a built-in map **name** (only
+    /// `"acp-client"` here) or a path to a `RSTUI_KEYMAP` config file
+    /// (`id = keys` lines — see `docs/keymaps.md`). Unknown name /
+    /// unreadable file keeps the defaults; a typo never breaks your keys.
+    /// Mirrors `RSTUI_THEME`.
+    #[must_use]
+    pub fn with_keymap(mut self, name_or_path: &str) -> Self {
+        if std::path::Path::new(name_or_path).is_file() {
+            if let Ok(text) = std::fs::read_to_string(name_or_path) {
+                self.keymaps.load_overrides(&text);
+            }
+        } else {
+            self.keymaps.set_active(name_or_path);
+        }
+        self
     }
 
     // ---- read-only accessors (used by the view + Harness tests) ----
@@ -425,6 +496,28 @@ impl ChatApp {
     #[must_use]
     pub fn help_visible(&self) -> bool {
         self.show_help
+    }
+
+    /// The keymap settings panel is open (rendered by `ui::render`).
+    #[must_use]
+    pub fn keymap_panel_open(&self) -> bool {
+        self.keymap_panel
+    }
+
+    /// The keymap panel rows, projected from the live keymap.
+    #[must_use]
+    pub fn keymap_panel_rows(&self) -> Vec<rstui_widgets::KeymapRow<'static>> {
+        self.keymap_rows()
+    }
+
+    /// `(active map name, OS label, capturing?)` for the panel chrome.
+    #[must_use]
+    pub fn keymap_panel_status(&self) -> (&'static str, &'static str, bool) {
+        (
+            self.keymaps.active_name(),
+            Keymaps::os_name(),
+            self.km_rebind.is_some(),
+        )
     }
 
     /// The active colour theme.
@@ -1115,6 +1208,9 @@ impl ChatApp {
             self.show_plugins = false;
             return Cmd::none();
         }
+        if self.keymap_panel {
+            return self.keymap_panel_key(key);
+        }
         if self.modal.is_some() {
             return self.modal_key(key);
         }
@@ -1143,10 +1239,95 @@ impl ChatApp {
                 }
             }
         }
+        // Global commands resolve through the keymap *after* the plugin
+        // chords (a plugin binding still wins) and before the screen
+        // dispatch — so quit/help/keymap-panel are remappable and
+        // RSTUI_KEYMAP-configurable, uniformly on every screen. Only
+        // non-text chords are bound, so plain keys fall straight through.
+        self.tick = self.tick.wrapping_add(1);
+        if let Some(action) = self.keymaps.resolve(&key, self.tick) {
+            return self.do_action(action);
+        }
+        if self.keymaps.armed() {
+            return Cmd::none();
+        }
         match self.screen {
             Screen::Picker => self.picker_key(key),
             Screen::Connecting | Screen::Chat => self.chat_key(key),
         }
+    }
+
+    /// Perform a resolved global command — the single place an
+    /// acp-client keymap binding takes effect.
+    fn do_action(&mut self, action: Action) -> Cmd<Msg> {
+        match action {
+            Action::Quit => return self.begin_quit(),
+            Action::Help => self.show_help = true,
+            Action::Drawer => {
+                self.keymap_panel = true;
+                self.km_sel = 0;
+                self.km_rebind = None;
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
+    /// The keymap settings panel (the shared `KeymapView` widget): browse
+    /// the live bindings and **capture a key to rebind** a command or
+    /// disable it — the same reducer-owned FSM the kitchen sink and
+    /// git-review use.
+    fn keymap_panel_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        if let Some(act) = self.km_rebind.take() {
+            if key.code == KeyCode::Esc {
+                self.push_system("rebind cancelled".to_owned());
+            } else {
+                let chord = Chord::from_event(&key);
+                self.keymaps.set_override(act, chord.spec());
+                self.push_system(format!("bound → {}", chord.display()));
+            }
+            return Cmd::none();
+        }
+        let last = COMMANDS.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.keymap_panel = false,
+            KeyCode::Down | KeyCode::Char('j') => self.km_sel = (self.km_sel + 1).min(last),
+            KeyCode::Up | KeyCode::Char('k') => self.km_sel = self.km_sel.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Char('r') => {
+                self.km_rebind = Some(COMMANDS[self.km_sel.min(last)].0);
+            }
+            KeyCode::Char('x') => {
+                let act = COMMANDS[self.km_sel.min(last)].0;
+                self.keymaps.set_override(act, "none");
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
+    /// The keymap panel rows, projected from the **live** keymap (the
+    /// reducer owns the cursor + capture FSM; `KeymapView` just draws it).
+    fn keymap_rows(&self) -> Vec<rstui_widgets::KeymapRow<'static>> {
+        let km = self.keymaps.effective();
+        COMMANDS
+            .iter()
+            .enumerate()
+            .map(|(i, &(action, label))| {
+                let keys = km.keys_for(action);
+                let state = if self.km_rebind == Some(action) {
+                    rstui_widgets::RowState::Capturing
+                } else if i == self.km_sel {
+                    rstui_widgets::RowState::Selected
+                } else if keys == "—" {
+                    rstui_widgets::RowState::Disabled
+                } else {
+                    rstui_widgets::RowState::Normal
+                };
+                rstui_widgets::KeymapRow::new(label, caps(&keys))
+                    .id(action.id())
+                    .state(state)
+            })
+            .collect()
     }
 
     fn modal_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
