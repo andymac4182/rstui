@@ -14,8 +14,11 @@ pub enum AcpEvent {
     AgentText(String),
     /// A chunk of agent "thinking" (rendered dim, separate from the answer).
     Thought(String),
-    /// A tool call the agent initiated (title / one-line summary).
-    ToolCall(String),
+    /// A new tool call the agent initiated (ACP `tool_call`).
+    ToolCall(ToolCallInfo),
+    /// A progress/result update to an existing tool call
+    /// (ACP `tool_call_update`); only changed fields are present.
+    ToolCallUpdate(ToolCallPatch),
     /// The agent's execution plan (ACP `plan`) — the full todo list, which
     /// the client replaces wholesale on each update (per the ACP contract).
     Plan(Vec<TodoEntry>),
@@ -40,6 +43,142 @@ pub enum AcpEvent {
     Error(String),
     /// The agent process exited / the connection closed.
     Disconnected(String),
+}
+
+/// The ACP tool category, used to pick an icon/label (`ToolKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    /// Reading files or data.
+    Read,
+    /// Modifying files/content.
+    Edit,
+    /// Removing files/data.
+    Delete,
+    /// Moving or renaming.
+    Move,
+    /// Searching for information.
+    Search,
+    /// Running commands/code.
+    Execute,
+    /// Internal reasoning/planning.
+    Think,
+    /// Retrieving external data.
+    Fetch,
+    /// Switching the session mode.
+    SwitchMode,
+    /// Anything else (default).
+    Other,
+}
+
+impl ToolKind {
+    /// Parses the ACP `kind` string.
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "read" => Self::Read,
+            "edit" => Self::Edit,
+            "delete" => Self::Delete,
+            "move" => Self::Move,
+            "search" => Self::Search,
+            "execute" => Self::Execute,
+            "think" => Self::Think,
+            "fetch" => Self::Fetch,
+            "switch_mode" => Self::SwitchMode,
+            _ => Self::Other,
+        }
+    }
+
+    /// A short human label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Edit => "edit",
+            Self::Delete => "delete",
+            Self::Move => "move",
+            Self::Search => "search",
+            Self::Execute => "execute",
+            Self::Think => "think",
+            Self::Fetch => "fetch",
+            Self::SwitchMode => "mode",
+            Self::Other => "tool",
+        }
+    }
+}
+
+/// Execution status of a tool call (ACP `ToolCallStatus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    /// Not started (input streaming / awaiting approval).
+    Pending,
+    /// Currently running.
+    InProgress,
+    /// Finished successfully.
+    Completed,
+    /// Failed with an error.
+    Failed,
+}
+
+impl ToolStatus {
+    /// Parses the ACP `status` string.
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "in_progress" => Self::InProgress,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// One renderable piece of a tool call's output.
+#[derive(Debug, Clone)]
+pub enum ToolBody {
+    /// Plain text / content block.
+    Text(String),
+    /// A file modification rendered as a unified diff.
+    Diff {
+        /// Affected path.
+        path: String,
+        /// Pre-rendered unified-ish diff text.
+        text: String,
+    },
+}
+
+/// A new tool call (ACP `tool_call`).
+#[derive(Debug, Clone)]
+pub struct ToolCallInfo {
+    /// Stable id within the session.
+    pub id: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Category (icon/label).
+    pub kind: ToolKind,
+    /// Execution status.
+    pub status: ToolStatus,
+    /// Compact `[k=v, …]` summary of `rawInput`.
+    pub input: String,
+    /// Output content / diffs.
+    pub body: Vec<ToolBody>,
+}
+
+/// A partial update to an existing tool call (ACP `tool_call_update`):
+/// only the fields the agent changed are `Some`.
+#[derive(Debug, Clone)]
+pub struct ToolCallPatch {
+    /// The tool call being updated.
+    pub id: String,
+    /// New title, if changed.
+    pub title: Option<String>,
+    /// New kind, if changed.
+    pub kind: Option<ToolKind>,
+    /// New status, if changed.
+    pub status: Option<ToolStatus>,
+    /// New input summary, if `rawInput` changed.
+    pub input: Option<String>,
+    /// New body, if `content` changed (collections are replaced, not merged).
+    pub body: Option<Vec<ToolBody>>,
 }
 
 /// Execution status of a single ACP plan entry (todo).

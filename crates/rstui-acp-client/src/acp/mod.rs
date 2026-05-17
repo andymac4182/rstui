@@ -25,4 +25,5 @@ mod events;
 pub use driver::spawn_driver;
 pub use events::{
     AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, TodoEntry, TodoStatus,
+    ToolBody, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus,
 };

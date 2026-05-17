@@ -528,3 +528,108 @@ fn slash_todos_toggles_the_sidebar() {
     h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
     assert!(h.app().sidebar_visible(), "/todos again brings it back");
 }
+
+// ---- Iteration 3: rich, customizable tool calls ----
+
+use rstui_acp_client::acp::{ToolBody, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus};
+
+fn tool(id: &str, title: &str, kind: ToolKind, status: ToolStatus) -> ToolCallInfo {
+    ToolCallInfo {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        kind,
+        status,
+        input: "path=src/main.rs".to_owned(),
+        body: vec![ToolBody::Text("line one\nline two".to_owned())],
+    }
+}
+
+#[test]
+fn tool_call_registers_and_renders_a_card() {
+    let mut h = chatting(120, 40);
+    h.message(Msg::Acp(AcpEvent::ToolCall(tool(
+        "t1",
+        "Read main.rs",
+        ToolKind::Read,
+        ToolStatus::InProgress,
+    ))));
+    assert_eq!(h.app().tool_calls().len(), 1);
+    assert!(h.app().tool_call("t1").is_some());
+    let snap = h.snapshot();
+    assert!(snap.contains("Read main.rs"), "tool title is shown");
+    assert!(snap.contains("running"), "in-progress status label shown");
+}
+
+#[test]
+fn tool_call_update_merges_and_keeps_one_card() {
+    let mut h = chatting(120, 40);
+    h.message(Msg::Acp(AcpEvent::ToolCall(tool(
+        "t1",
+        "Edit file",
+        ToolKind::Edit,
+        ToolStatus::Pending,
+    ))));
+    h.message(Msg::Acp(AcpEvent::ToolCallUpdate(ToolCallPatch {
+        id: "t1".to_owned(),
+        title: None,
+        kind: None,
+        status: Some(ToolStatus::Completed),
+        input: None,
+        body: Some(vec![ToolBody::Diff {
+            path: "a.rs".to_owned(),
+            text: "-old\n+new".to_owned(),
+        }]),
+    })));
+    assert_eq!(
+        h.app().tool_calls().len(),
+        1,
+        "an update merges, it does not add a second card"
+    );
+    assert_eq!(
+        h.app().tool_call("t1").unwrap().status,
+        ToolStatus::Completed
+    );
+}
+
+#[test]
+fn details_toggle_collapses_completed_tool_output() {
+    let mut h = chatting(120, 40);
+    h.message(Msg::Acp(AcpEvent::ToolCall(tool(
+        "t1",
+        "Read file",
+        ToolKind::Read,
+        ToolStatus::Completed,
+    ))));
+    assert!(h.app().details(), "details on by default");
+    assert!(
+        h.snapshot().contains("line one"),
+        "completed tool body shown when details on"
+    );
+    typ(&mut h, "/details");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(!h.app().details());
+    let snap = h.snapshot();
+    assert!(
+        snap.contains("output hidden") && !snap.contains("line one"),
+        "completed tool body collapses when details off (opencode rule)"
+    );
+}
+
+#[test]
+fn failed_tool_keeps_its_body_even_with_details_off() {
+    let mut h = chatting(120, 40);
+    typ(&mut h, "/details");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(!h.app().details());
+    h.message(Msg::Acp(AcpEvent::ToolCall(tool(
+        "bad",
+        "Run build",
+        ToolKind::Execute,
+        ToolStatus::Failed,
+    ))));
+    let snap = h.snapshot();
+    assert!(
+        snap.contains("failed") && snap.contains("line one"),
+        "a failed tool always expands (errors are never collapsed)"
+    );
+}
