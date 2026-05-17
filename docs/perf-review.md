@@ -35,21 +35,30 @@ validation path for each change.
 >   RT-02 audit-noted low-value, RT-03 cadence-risk — both skipped.)
 > - **Batch I partial** acp-client APP-4: `tool_call` id→index map,
 >   per-frame O(toolEntries×toolCalls) → O(1).
-> - **Batch G partial** per-frame int→glyph stamping, no allocation:
+> - **Batch G partial** per-frame allocation removed:
 >   `calendar` per-day `format!` (W1-01), `stepper` node `String`
 >   (W5-STEP-2), `line_number_gutter` per-row `to_string` (GUT-1),
->   `avatar` `Vec<char>` (W1-03).
+>   `avatar` `Vec<char>` (W1-03), **`table` T1** (each wrapped cell's
+>   `Line` deep-cloned twice/frame → once), **`paragraph` PG-1**
+>   (`compose_rows` early-exits at the visible window — was re-flowing the
+>   whole document every frame; caps a cost shared by Toast/DescriptionList/
+>   Table-wrap).
+> - **Batch I partial** acp-client: APP-4 `tool_call` O(n²)→O(1);
+>   **UI-3** `footer_segments` borrows instead of cloning the footer map
+>   every frame; **APP-3** diagnostic `log` capped (was unbounded).
 >
-> **Remaining backlog** (sequenced in the team task list / below), each its
-> own focused slice via the serial flow: Batch E **CM-3** (`TextArea`
+> 18 measured, gate-green, byte-identical slices total. **Remaining
+> backlog** (sequenced in the team task list / below), each its own
+> focused slice via the serial flow: Batch E **CM-3** (`TextArea`
 > `line_lens` — deferred: subtle 2-D cache, corrupts editing if wrong),
-> Batch I remainder (APP-1 transcript cap, APP-3 ring-buffer log, UI-3
-> borrow footer, DRV-1/2 typed `sacp` match), Batch J (bench scenarios),
-> the rest of Batch G — the `block.clone()`→destructure cluster ×8 (needs
-> per-widget restructuring to dodge partial-move borrows; **not**
-> mechanical), `table` T1/T3/T5, `paragraph` PG-1/2, `menu`/`sidebar`/
-> `pagination`/`breadcrumb`/`help_overlay`/`grid`/`editor`, gauge GAUGE-1
-> (P3) — and **Tier-2** (caller-owned cached layout models for
+> Batch I remainder (APP-1 transcript cap, DRV-1/2 typed `sacp` match),
+> Batch J (bench scenarios), the rest of Batch G — the
+> `block.clone()`→destructure cluster ×8 (needs per-widget restructuring
+> to dodge partial-move borrows; **not** mechanical), `table` T3/T5,
+> `paragraph` PG-2, `menu`/`sidebar`/`pagination`/`breadcrumb`/
+> `help_overlay`/`grid`/`editor` (minor bounded per-frame `Vec`s, path-
+> depth sized — low value vs. refactor risk), gauge GAUGE-1 (P3) — and
+> **Tier-2** (caller-owned cached layout models for
 > `Markdown`/`Diff`/`Mermaid`/`Paragraph`, `List`/`Table`/`Stepper`/`Tabs`
 > borrowed constructors, plugin-host PROTO-3 `Cow` payload, acp-client
 > UI-1/UI-2 per-`Entry` render memo — API-additive/-breaking, each needs
