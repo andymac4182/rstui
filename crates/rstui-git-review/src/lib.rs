@@ -288,6 +288,14 @@ pub fn write_file(repo: &Path, rel: &str, contents: &str) -> Result<(), String> 
 /// Returns the crossterm lifecycle error if the terminal cannot be entered or
 /// driven; the terminal is already restored on every return path.
 pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    rstui_crossterm::run_app(GitReview::new(config))?;
+    let mut app = GitReview::new(config);
+    // `RSTUI_KEYMAP=<map name|/path/to/keymap>` remaps commands without a
+    // rebuild or the in-app panel — the same typo-safe seam as `RSTUI_THEME`
+    // (see docs/keymaps.md). Headless `Harness` tests use `GitReview::new`
+    // directly, so they are unaffected.
+    if let Ok(km) = std::env::var("RSTUI_KEYMAP") {
+        app = app.with_keymap(&km);
+    }
+    rstui_crossterm::run_app(app)?;
     Ok(())
 }

@@ -81,7 +81,28 @@ caller-owned state the pure `view` reads:
 | `e` | Edit the selected commit's first changed file |
 | `Ctrl-S` | Save the edited file to the working tree (Edit mode) |
 | `Esc` | Leave Edit mode / close help (in Review, `Esc`/`q` quits) |
+| `Ctrl-K` | Keymap settings panel (the [`KeymapView`](widgets/overlays-and-control.md#keymapview) widget) |
 | `?` | Help overlay · `q` Quit · `Ctrl-C` always quits |
+
+## Customisable keymap
+
+Every **command** above (filter, focus, the diff/layout toggles, edit,
+help, quit, the keymap panel) is a semantic `Action` resolved through the
+shared [`rstui-keymap`](keymaps.md) engine (ADR 0015), so all of them are
+remappable three ways:
+
+- **In-app:** `Ctrl-K` opens the `KeymapView` settings panel — select a
+  row, press `r`/`Enter` to **capture a new key**, `x` to disable, `Esc`
+  to close. The help/footer re-derive from the live map.
+- **A config file / env:** `RSTUI_KEYMAP=/path/to/keymap` loads an
+  `id = keys` override file (e.g. `git.split = ctrl+b`); see
+  [keymaps.md](keymaps.md). Mirrors `RSTUI_THEME` — no rebuild, no panel.
+
+Pane-relative **motions** (`j`/`k`, `g`/`G`, `↑`/`↓`, `[`/`]`, page,
+`Home`) stay raw screen keys *by design*: ADR 0015 keeps the keymap
+shell-level, and `Chord` folds letter case (so vim's `g`/`G` could not be
+distinct actions) — the same boundary the kitchen sink draws for its
+arrows/typing. Text entry (the editor, the filter input) is likewise raw.
 
 ## Testing
 

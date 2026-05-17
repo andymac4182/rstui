@@ -11,16 +11,78 @@ use std::cell::Cell;
 use std::path::PathBuf;
 
 use rstui_core::{
-    Constraint, Event, Frame, KeyCode, KeyModifiers, Layout, Line, MouseButton, MouseEventKind,
-    Position, Rect, Span, Style, TextArea,
+    Constraint, Event, Frame, KeyCode, KeyEvent, KeyModifiers, Layout, Line, MouseButton,
+    MouseEventKind, Position, Rect, Span, Style, TextArea,
 };
+use rstui_keymap::{Action, Chord, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd};
 use rstui_widgets::{
-    Block, BorderType, Diff, Editor, HelpEntry, HelpOverlay, LineNumberGutter, List, Paragraph,
-    StatusBar,
+    Block, BorderType, Diff, Editor, HelpEntry, HelpOverlay, KeymapRow, KeymapView,
+    LineNumberGutter, List, Paragraph, RowState, StatusBar,
 };
 
 use crate::{Commit, Config, Loaded};
+
+/// `git-review`'s command surface as semantic [`Action`]s — every toggle and
+/// command routes through [`Keymaps`], so all of them are remappable, shown
+/// in the keymap panel, and overridable from a `RSTUI_KEYMAP` config file.
+///
+/// Pane-relative **motions** (`j`/`k`, `g`/`G`, arrows, `[`/`]`, page) stay
+/// raw screen keys by design — ADR 0015 keeps the keymap shell-level, and
+/// `Chord` folds letter case (Shift+g == g) so vim's case-sensitive `g`/`G`
+/// could not be distinct actions anyway. The same boundary the kitchen
+/// sink draws for arrows/typing.
+const FILTER: Action = Action::Custom("git.filter");
+const FOCUS: Action = Action::Custom("git.focus");
+const EDIT: Action = Action::Custom("git.edit");
+const SPLIT: Action = Action::Custom("git.split");
+const ORIENT: Action = Action::Custom("git.orient");
+const SHRINK: Action = Action::Custom("git.shrink");
+const GROW: Action = Action::Custom("git.grow");
+const GRAPH: Action = Action::Custom("git.graph");
+
+/// `(action, label)` in keymap-panel display order — the single source the
+/// app keymap is built from *and* the panel renders.
+const COMMANDS: &[(Action, &str)] = &[
+    (FILTER, "Filter commits"),
+    (FOCUS, "Switch focus: history ⇄ patch"),
+    (EDIT, "Edit the first changed file"),
+    (SPLIT, "Toggle side-by-side diff"),
+    (ORIENT, "History pane: left ⇄ top"),
+    (SHRINK, "Shrink the history/diff split"),
+    (GROW, "Grow the history/diff split"),
+    (GRAPH, "Toggle the commit graph tree"),
+    (Action::Drawer, "Keymap settings"),
+    (Action::Help, "Help"),
+    (Action::Quit, "Quit"),
+];
+
+/// The app's own keymap (no kitchen-sink leftovers): one named map built
+/// from [`COMMANDS`], via [`Keymaps::from_maps`].
+fn git_review_keymaps() -> Keymaps {
+    let mut km = Keymap::new("git-review");
+    km.bind(Action::Quit, &["q", "esc", "ctrl+c"]);
+    km.bind(Action::Help, &["?"]);
+    km.bind(Action::Drawer, &["ctrl+k"]);
+    km.bind(FILTER, &["/"]);
+    km.bind(FOCUS, &["tab"]);
+    km.bind(EDIT, &["e"]);
+    km.bind(SPLIT, &["s"]);
+    km.bind(ORIENT, &["t"]);
+    km.bind(SHRINK, &["-"]);
+    km.bind(GROW, &["=", "+"]);
+    km.bind(GRAPH, &["\\"]);
+    Keymaps::from_maps(vec![km])
+}
+
+/// The display caps for a `keys_for` string: `"⌃K / :"` → `["⌃K", ":"]`,
+/// the unbound sentinel `"—"` → `[]` (so the row reads disabled).
+fn caps(keys: &str) -> Vec<String> {
+    if keys == "—" {
+        return Vec::new();
+    }
+    keys.split(" / ").map(str::to_owned).collect()
+}
 
 /// Whether the detail pane is reviewing the diff or editing a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +170,19 @@ pub struct GitReview {
     edit_path: Option<String>,
     edit_dirty: bool,
     help: bool,
+    /// The customisable keymap (one app-owned map; `RSTUI_KEYMAP` may load
+    /// user overrides). Every command resolves through it.
+    keymaps: Keymaps,
+    /// A monotonic per-key counter — the deterministic clock
+    /// [`Keymaps::resolve`]/[`Keymaps::expire`] need (this app has no
+    /// animation tick; its map has no leader, so this only has to advance).
+    tick: u64,
+    /// The keymap settings panel ([`KeymapView`]) is open.
+    keymap_panel: bool,
+    /// The selected row in the keymap panel.
+    km_sel: usize,
+    /// The command armed for capture-to-rebind (the next key binds it).
+    km_rebind: Option<Action>,
     /// A transient one-line message (a save result, a soft error).
     status: String,
     /// A fatal load error — when set with no rows, the whole body is the
@@ -181,9 +256,31 @@ impl GitReview {
             edit_path: None,
             edit_dirty: false,
             help: false,
+            keymaps: git_review_keymaps(),
+            tick: 0,
+            keymap_panel: false,
+            km_sel: 0,
+            km_rebind: None,
             status: String::new(),
             error: None,
         }
+    }
+
+    /// Apply a user keymap choice: a built-in map **name** (only
+    /// `"git-review"` here) or a path to a `RSTUI_KEYMAP` config file
+    /// (`id = keys` lines — see `docs/keymaps.md`). Unknown name /
+    /// unreadable file keeps the defaults; a typo never breaks your keys.
+    /// The one seam `RSTUI_KEYMAP` flows through, mirroring `RSTUI_THEME`.
+    #[must_use]
+    pub fn with_keymap(mut self, name_or_path: &str) -> Self {
+        if std::path::Path::new(name_or_path).is_file() {
+            if let Ok(text) = std::fs::read_to_string(name_or_path) {
+                self.keymaps.load_overrides(&text);
+            }
+        } else {
+            self.keymaps.set_active(name_or_path);
+        }
+        self
     }
 
     /// Does `c` match the active filter (case-insensitive, any of
@@ -277,6 +374,12 @@ impl GitReview {
     }
 
     /// Handle one key press given the current mode/overlay.
+    ///
+    /// Routing: text-entry surfaces (the help dismiss, the keymap panel, the
+    /// filter input, the editor) own their keys raw; in Review every
+    /// **command** resolves through [`Keymaps`] (so it is remappable), and
+    /// only pane-relative **motions** fall through raw — the ADR 0015
+    /// shell-level boundary, the same one the kitchen sink draws.
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Cmd<Msg> {
         // Ctrl+C always quits, every mode (the universal terminal reflex).
         if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
@@ -286,13 +389,115 @@ impl GitReview {
             self.help = false; // Any key dismisses the cheat-sheet.
             return Cmd::none();
         }
+        if self.keymap_panel {
+            return self.on_key_keymap(code, mods);
+        }
         if self.filtering {
             return self.on_key_filter(code);
         }
-        match self.mode {
-            Mode::Edit => self.on_key_edit(code, mods),
-            Mode::Review => self.on_key_review(code),
+        if self.mode == Mode::Edit {
+            return self.on_key_edit(code, mods);
         }
+        // Review: commands through the keymap, motions raw.
+        self.tick = self.tick.wrapping_add(1);
+        let ev = KeyEvent::new(code, mods);
+        if let Some(action) = self.keymaps.resolve(&ev, self.tick) {
+            return self.do_action(action);
+        }
+        if self.keymaps.armed() {
+            return Cmd::none(); // a leader/prefix was pressed — swallow it
+        }
+        self.on_key_motion(code)
+    }
+
+    /// Perform a resolved command [`Action`] — the single place a Review
+    /// binding takes effect, so every keymap/remap routes through one switch.
+    fn do_action(&mut self, action: Action) -> Cmd<Msg> {
+        match action {
+            Action::Quit => return Cmd::quit(),
+            Action::Help => self.help = true,
+            Action::Drawer => {
+                self.keymap_panel = true;
+                self.km_sel = 0;
+                self.km_rebind = None;
+                self.status = "keymap: ↑↓ select · ⏎/r rebind · x disable · Esc close".to_owned();
+            }
+            FILTER => {
+                self.filtering = true;
+                self.status = "filter: type to narrow · Enter keep · Esc clear".to_owned();
+            }
+            FOCUS => {
+                self.focus = match self.focus {
+                    Focus::History => Focus::Detail,
+                    Focus::Detail => Focus::History,
+                };
+            }
+            SPLIT => self.diff_split = !self.diff_split,
+            ORIENT => {
+                self.orient = match self.orient {
+                    Orient::Left => Orient::Top,
+                    Orient::Top => Orient::Left,
+                };
+            }
+            SHRINK => self.split_pct = self.split_pct.saturating_sub(4).max(15),
+            GROW => self.split_pct = (self.split_pct + 4).min(75),
+            GRAPH => {
+                self.graph = !self.graph;
+                self.status = if self.graph {
+                    "graph tree on".to_owned()
+                } else {
+                    "graph tree off".to_owned()
+                };
+                return self.reload_history();
+            }
+            EDIT => {
+                if let Some((_, path)) = self.files.first() {
+                    let repo = self.repo.clone();
+                    let p = path.clone();
+                    return Cmd::perform(move || Msg::Opened {
+                        path: p.clone(),
+                        res: crate::read_file(&repo, &p),
+                    });
+                }
+                self.status = "this commit changed no editable file".to_owned();
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
+    /// The keymap settings panel ([`KeymapView`]): browse the live bindings
+    /// and **capture a key to rebind** a command or disable it — proving the
+    /// override path end to end, the same FSM the kitchen sink uses.
+    fn on_key_keymap(&mut self, code: KeyCode, mods: KeyModifiers) -> Cmd<Msg> {
+        // Armed: the next key *is* the new binding (Esc cancels).
+        if let Some(act) = self.km_rebind.take() {
+            if code == KeyCode::Esc {
+                self.status = "rebind cancelled".to_owned();
+            } else {
+                let chord = Chord::from_event(&KeyEvent::new(code, mods));
+                self.keymaps.set_override(act, chord.spec());
+                self.status = format!("bound → {}", chord.display());
+            }
+            return Cmd::none();
+        }
+        let last = COMMANDS.len().saturating_sub(1);
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.keymap_panel = false,
+            KeyCode::Down | KeyCode::Char('j') => self.km_sel = (self.km_sel + 1).min(last),
+            KeyCode::Up | KeyCode::Char('k') => self.km_sel = self.km_sel.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Char('r') => {
+                self.km_rebind = Some(COMMANDS[self.km_sel.min(last)].0);
+                self.status = "press a key to bind — Esc cancels".to_owned();
+            }
+            KeyCode::Char('x') => {
+                let act = COMMANDS[self.km_sel.min(last)].0;
+                self.keymaps.set_override(act, "none");
+                self.status = "disabled".to_owned();
+            }
+            _ => {}
+        }
+        Cmd::none()
     }
 
     /// Keys while the filter input row is focused.
@@ -373,52 +578,12 @@ impl GitReview {
         Cmd::none()
     }
 
-    /// Keys while reviewing commits/diffs.
-    fn on_key_review(&mut self, code: KeyCode) -> Cmd<Msg> {
+    /// Pane-relative **motions** while reviewing — raw screen keys by
+    /// design (ADR 0015 keeps the keymap shell-level; `Chord` folds letter
+    /// case so vim's `g`/`G` could not be distinct actions). Commands live
+    /// in [`do_action`](Self::do_action); these only move the cursor/scroll.
+    fn on_key_motion(&mut self, code: KeyCode) -> Cmd<Msg> {
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => return Cmd::quit(),
-            KeyCode::Char('?') => self.help = true,
-            KeyCode::Char('/') => {
-                self.filtering = true;
-                self.status = "filter: type to narrow · Enter keep · Esc clear".to_owned();
-            }
-            KeyCode::Char('s') => self.diff_split = !self.diff_split,
-            KeyCode::Char('t') => {
-                self.orient = match self.orient {
-                    Orient::Left => Orient::Top,
-                    Orient::Top => Orient::Left,
-                };
-            }
-            KeyCode::Char('-') => self.split_pct = self.split_pct.saturating_sub(4).max(15),
-            KeyCode::Char('=') | KeyCode::Char('+') => {
-                self.split_pct = (self.split_pct + 4).min(75);
-            }
-            KeyCode::Char('\\') => {
-                self.graph = !self.graph;
-                self.status = if self.graph {
-                    "graph tree on".to_owned()
-                } else {
-                    "graph tree off".to_owned()
-                };
-                return self.reload_history();
-            }
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::History => Focus::Detail,
-                    Focus::Detail => Focus::History,
-                };
-            }
-            KeyCode::Char('e') => {
-                if let Some((_, path)) = self.files.first() {
-                    let repo = self.repo.clone();
-                    let p = path.clone();
-                    return Cmd::perform(move || Msg::Opened {
-                        path: p.clone(),
-                        res: crate::read_file(&repo, &p),
-                    });
-                }
-                self.status = "this commit changed no editable file".to_owned();
-            }
             KeyCode::Char(']') | KeyCode::Char('n') => return self.select(1),
             KeyCode::Char('[') | KeyCode::Char('p') => return self.select(-1),
             KeyCode::Char('g') => return self.select(isize::MIN / 2),
@@ -441,6 +606,32 @@ impl GitReview {
             self.diff_scroll = max;
         }
         Cmd::none()
+    }
+
+    /// The keymap settings panel rows, projected from the **live** keymap
+    /// (so a switch or remap shows immediately) — the reducer owns the
+    /// cursor and the capture FSM; [`KeymapView`] just draws this.
+    fn keymap_rows(&self) -> Vec<KeymapRow<'static>> {
+        let km = self.keymaps.effective();
+        COMMANDS
+            .iter()
+            .enumerate()
+            .map(|(i, &(action, label))| {
+                let keys = km.keys_for(action);
+                let state = if self.km_rebind == Some(action) {
+                    RowState::Capturing
+                } else if i == self.km_sel {
+                    RowState::Selected
+                } else if keys == "—" {
+                    RowState::Disabled
+                } else {
+                    RowState::Normal
+                };
+                KeymapRow::new(label, caps(&keys))
+                    .id(action.id())
+                    .state(state)
+            })
+            .collect()
     }
 }
 
@@ -875,6 +1066,35 @@ impl App for GitReview {
                     .block(self.pane(" Keys ", true))
                     .key_style(palette::accent())
                     .style(Style::new()),
+                area,
+            );
+        }
+
+        if self.keymap_panel {
+            let rows = self.keymap_rows();
+            let header = format!(
+                " {} · {} — every command, remappable",
+                self.keymaps.active_name(),
+                Keymaps::os_name()
+            );
+            let footer = if self.km_rebind.is_some() {
+                "● press a key to bind — Esc cancels".to_owned()
+            } else {
+                "↑↓/jk select · ⏎/r rebind · x disable · Esc close".to_owned()
+            };
+            frame.render_widget(
+                KeymapView::new(&rows)
+                    .block(self.pane(" Keymap ", true))
+                    .header(Line::styled(header, palette::accent()))
+                    .footer(Line::styled(footer, palette::dim()))
+                    .separator("")
+                    .style(Style::new())
+                    .label_style(Style::new())
+                    .id_style(palette::dim())
+                    .key_style(palette::accent())
+                    .selected_style(palette::selection())
+                    .capturing_style(palette::good())
+                    .disabled_style(palette::dim()),
                 area,
             );
         }
