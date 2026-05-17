@@ -552,6 +552,20 @@ fn ctrl_v_pastes_the_clipboard_into_a_focused_input() {
 }
 
 #[test]
+fn kanban_cards_render_their_title_text() {
+    // Regression: the card box was 2 rows inside a bordered Block ⇒ zero
+    // inner height ⇒ the title never drew. It must be visible on the card.
+    let mut h = harness();
+    goto(&mut h, "Kanban Board");
+    let s = h.snapshot();
+    assert!(s.contains("Backlog"), "on the Kanban board:\n{s}");
+    assert!(
+        s.contains("Audit widget catalog"),
+        "the seeded card's title text renders inside the card:\n{s}"
+    );
+}
+
+#[test]
 fn kanban_card_drag_moves_it_to_the_target_column() {
     let mut h = harness();
     goto(&mut h, "Kanban Board");

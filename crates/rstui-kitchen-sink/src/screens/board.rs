@@ -245,8 +245,13 @@ impl State {
             );
 
             for (ri, card) in self.cards[ci].iter().enumerate() {
+                // 3-row stride == the `card_at` hit-test's `/ 3` (unchanged,
+                // so click/drag still lands on the same card). The box is a
+                // full 3 rows so a bordered card actually has a content row
+                // for its title — a 2-row box left zero inner height, which
+                // is why card text was missing.
                 let y = inner.y + 2 + ri as u16 * 3;
-                if y + 2 > inner.bottom() {
+                if y + 3 > inner.bottom() {
                     break;
                 }
                 let here = ci == self.col && ri == self.row;
@@ -256,7 +261,7 @@ impl State {
                     .drag
                     .as_ref()
                     .is_some_and(|d| d.from_col == ci && d.from_row == ri);
-                let crect = Rect::new(inner.x, y, inner.width, 2);
+                let crect = Rect::new(inner.x, y, inner.width, 3);
                 let cblock = Block::bordered()
                     .border_type(if here {
                         BorderType::Thick
