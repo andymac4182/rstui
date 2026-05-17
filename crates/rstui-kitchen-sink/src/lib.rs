@@ -47,6 +47,12 @@ use rstui_widgets::ToastLevel;
 use screens::{Screen, ScreenState};
 use theme::{Mode, Theme};
 
+/// App action: open the theme picker directly. A keymapped
+/// [`Action::Custom`](keymap::Action::Custom) (default `Ctrl+T`), so it is a
+/// real one-key shortcut from anywhere — not buried in the settings drawer —
+/// and is remappable via a `RSTUI_KEYMAP` config like every other binding.
+const THEME_PICK: keymap::Action = keymap::Action::Custom("ks.theme");
+
 /// One queued toast: its level, body, and the animation tick it was born on
 /// (so [`update`](App::update) can expire it without a wall clock).
 #[derive(Debug, Clone)]
@@ -248,7 +254,14 @@ impl KitchenSink {
             selected: RefCell::new(String::new()),
             sel_region: Cell::new(None),
             clipboard: String::new(),
-            keymaps: keymap::Keymaps::new(),
+            keymaps: {
+                // Add the app's one custom action (Ctrl+T → theme picker)
+                // to every built-in map, so it resolves like any binding
+                // and a user keymap file can remap `ks.theme`.
+                let mut k = keymap::Keymaps::new();
+                k.bind(THEME_PICK, "ctrl+t");
+                k
+            },
             drawer_sel: 0,
             rebind: None,
             fps: rstui_widgets::FpsMeter::new(),
@@ -481,8 +494,13 @@ impl KitchenSink {
                 }
             }
             Action::Paste => self.paste_clipboard(),
-            // The kitchen sink defines no app-specific actions; the engine
-            // supports them (`rstui_keymap::Action::Custom`) for other apps.
+            // The one app-specific action: open the theme picker directly
+            // (its `Esc` restores the pre-picker palette via `theme_restore`).
+            THEME_PICK => {
+                self.theme_restore = Some((self.theme, self.theme_name.clone()));
+                self.overlay = Overlay::ThemePicker;
+            }
+            // Any other engine `Custom` is a no-op for this app.
             Action::Custom(_) => {}
         }
         Cmd::none()

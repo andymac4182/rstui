@@ -35,6 +35,7 @@ const RAW_HELP: &[(&str, &str)] = &[
     ("↑ ↓ ← →", "navigate / adjust"),
     ("Enter Space", "activate / toggle"),
     ("PgUp PgDn", "page / scroll"),
+    ("Ctrl+T", "theme picker (browse + preview live)"),
 ];
 
 /// The screen indices whose label or title contains `query`

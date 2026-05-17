@@ -40,6 +40,7 @@ const ORIENT: Action = Action::Custom("git.orient");
 const SHRINK: Action = Action::Custom("git.shrink");
 const GROW: Action = Action::Custom("git.grow");
 const GRAPH: Action = Action::Custom("git.graph");
+const THEME: Action = Action::Custom("git.theme");
 
 /// `(action, label)` in keymap-panel display order — the single source the
 /// app keymap is built from *and* the panel renders.
@@ -52,6 +53,7 @@ const COMMANDS: &[(Action, &str)] = &[
     (SHRINK, "Shrink the history/diff split"),
     (GROW, "Grow the history/diff split"),
     (GRAPH, "Toggle the commit graph tree"),
+    (THEME, "Theme picker (browse + preview live)"),
     (Action::Drawer, "Keymap settings"),
     (Action::Help, "Help"),
     (Action::Quit, "Quit"),
@@ -72,6 +74,7 @@ fn git_review_keymaps() -> Keymaps {
     km.bind(SHRINK, &["-"]);
     km.bind(GROW, &["=", "+"]);
     km.bind(GRAPH, &["\\"]);
+    km.bind(THEME, &["ctrl+t"]);
     Keymaps::from_maps(vec![km])
 }
 
@@ -437,6 +440,12 @@ impl GitReview {
                 self.km_sel = 0;
                 self.km_rebind = None;
                 self.status = "keymap: ↑↓ select · ⏎/r rebind · x disable · Esc close".to_owned();
+            }
+            THEME => {
+                // Open the theme picker directly (Ctrl+T); Esc restores the
+                // pre-picker palette via `theme_restore`.
+                self.theme_restore = Some(self.theme.clone());
+                self.picking = true;
             }
             FILTER => {
                 self.filtering = true;
@@ -1111,6 +1120,7 @@ impl App for GitReview {
                 HelpEntry::new(["-", "="], "Resize the history / diff split"),
                 HelpEntry::new(["\\"], "Toggle the visual commit tree (graph)"),
                 HelpEntry::new(["/"], "Filter commits (Enter keep · Esc clear)"),
+                HelpEntry::new(["Ctrl", "T"], "Theme picker (browse + preview live)"),
                 HelpEntry::new(["e"], "Edit the commit's first changed file"),
                 HelpEntry::new(["Ctrl", "S"], "Save the edited file (Edit mode)"),
                 HelpEntry::new(
