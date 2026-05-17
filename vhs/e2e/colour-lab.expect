@@ -1,0 +1,7 @@
+# Required substrings in the final frame of colour-lab.tape.
+# Taken from the kitchen-sink test suite (stable, source-of-truth):
+# `colour_lab_cursor_moves_with_arrows` proves Right+Right+Down moves the
+# 256-cube cursor from Indexed(0) to Indexed(18). Asserting that here proves
+# the same path works through a REAL terminal end to end.
+Colour
+Indexed(18)

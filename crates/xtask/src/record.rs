@@ -76,13 +76,15 @@ fn vhs_available() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Build everything the tapes launch: every `rstui-widgets` example and the
-/// `rstui-kitchen-sink` binary. Pre-building keeps compile noise out of the
-/// recordings and the tapes fast.
+/// Build everything the tapes launch: every `rstui-widgets` example, the
+/// `rstui-kitchen-sink` binary, and the `rstui-crossterm` e2e example
+/// fixtures. Pre-building keeps compile noise out of the recordings and the
+/// tapes fast.
 fn build_artifacts(root: &Path) -> bool {
     println!("xtask record: building examples + kitchen-sink…");
     cargo(root, &["build", "-p", "rstui-widgets", "--examples"])
         && cargo(root, &["build", "-p", "rstui-kitchen-sink"])
+        && cargo(root, &["build", "-p", "rstui-crossterm", "--examples"])
 }
 
 /// Run `cargo <args…>` at the workspace root, streaming output.

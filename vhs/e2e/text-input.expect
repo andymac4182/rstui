@@ -1,0 +1,11 @@
+# Required substrings in the final frame of text-input.tape.
+# `cargo xtask record e2e --check` fails if any is missing — i.e. a real
+# terminal failed to deliver Home/End/arrows/Delete/Backspace or the
+# Ctrl+A/Ctrl+E modifier shortcuts into the input end to end.
+#
+# The exact assembled state after the scripted key sequence:
+STATE val=Xhel cur=4 len=4
+# And the field rendered its caret at the end (cur == len):
+field: Xhel‹
+# Sanity: the fixture's own title line rendered.
+rstui text-input e2e
