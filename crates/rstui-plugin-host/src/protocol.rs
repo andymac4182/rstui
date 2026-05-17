@@ -905,7 +905,8 @@ mod tests {
                     let mut via_parts = Vec::new();
                     write_frame_parts(&mut via_parts, mt, id, p).unwrap();
                     assert_eq!(
-                        via_frame, via_parts,
+                        via_frame,
+                        via_parts,
                         "wire bytes diverged for {mt:?} id={id:?} payload_len={}",
                         p.len()
                     );
