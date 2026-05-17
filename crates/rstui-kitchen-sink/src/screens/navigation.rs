@@ -272,10 +272,8 @@ impl State {
     /// selects it.
     pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
         let [tabs, body, _crumb, _band] = Self::rows(content);
-        if tabs.contains(pos) {
-            let w = tabs.width.max(1) / TABS.len() as u16;
-            let idx = ((pos.x - tabs.x) / w.max(1)) as usize;
-            self.tab = idx.min(TABS.len() - 1);
+        if let Some(i) = crate::screens::tab_index_at(tabs, &TABS, 2, pos) {
+            self.tab = i;
             return ScreenOutcome::consumed();
         }
         if self.tab == 0 && body.contains(pos) {

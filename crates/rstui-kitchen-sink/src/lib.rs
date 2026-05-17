@@ -30,9 +30,11 @@ pub(crate) mod chrome;
 pub(crate) mod screens;
 pub(crate) mod theme;
 
+use std::cell::Cell;
+
 use rstui_core::{
-    Constraint, Event, KeyCode, KeyModifiers, Layout, MouseButton, MouseEventKind, Position, Rect,
-    Size, TextEdit,
+    Constraint, Event, KeyCode, KeyModifiers, Layout, Margin, MouseButton, MouseEventKind,
+    Position, Rect, Size, TextEdit,
 };
 use rstui_runtime::{App, Cmd, Frame};
 use rstui_widgets::ToastLevel;
@@ -108,13 +110,28 @@ pub enum Msg {
     Quit,
 }
 
+/// The shell rectangles the last [`view`](App::view) actually drew into.
+///
+/// Hit-testing must use *what was rendered*, never a guessed terminal size:
+/// a real terminal does not always send an initial `Resize`, so deriving the
+/// layout from a seed size makes every click land in the wrong place. `view`
+/// records the true geometry here each frame and the click/scroll reducer
+/// reads it back, so what the user sees and what a click selects can never
+/// drift.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ShellGeom {
+    /// The navigation rail rect.
+    pub(crate) sidebar: Rect,
+    /// The active screen's drawable rect (inside its frame border).
+    pub(crate) content: Rect,
+}
+
 /// The whole application: the active screen, navigation + focus state, the
 /// animation clock, the live toast queue, and every screen's interactive
 /// model. All of it is plain caller-owned data — widgets only ever read it.
 pub struct KitchenSink {
-    /// The terminal size last reported, so a click hit-tests the layout the
-    /// user currently sees (the model-owned live-resize idiom).
-    size: Size,
+    /// The geometry the last frame drew, captured by `view` for hit-testing.
+    geom: Cell<ShellGeom>,
     /// The screen the sidebar has selected.
     screen: Screen,
     /// The sidebar cursor (may differ from [`screen`](Self::screen) until
@@ -145,7 +162,9 @@ impl KitchenSink {
     #[must_use]
     pub fn new(size: Size) -> Self {
         Self {
-            size,
+            // A best-effort seed; `view` overwrites it with the real
+            // geometry on the very first frame (before any click).
+            geom: Cell::new(Self::compute_geom(Rect::from_size(size))),
             screen: Screen::Welcome,
             nav: 0,
             pane: Pane::Sidebar,
@@ -183,19 +202,28 @@ impl KitchenSink {
         Layout::horizontal([Constraint::Length(22), Constraint::Fill(1)]).areas(body)
     }
 
-    /// The sidebar rect for the current size — the click hit-test and the
-    /// renderer go through this one function so they cannot drift.
-    fn sidebar_rect(&self) -> Rect {
-        let [_, body, _] = Self::shell_rows(Rect::from_size(self.size));
-        Self::body_split(body)[0]
+    /// The shell geometry for a whole-screen `area` — the single source the
+    /// renderer (`view`) and the hit-test (`update`) both go through, so they
+    /// cannot disagree.
+    fn compute_geom(area: Rect) -> ShellGeom {
+        let [_, body, _] = Self::shell_rows(area);
+        let [sidebar, content_outer] = Self::body_split(body);
+        ShellGeom {
+            sidebar,
+            // Mirror the one-cell rounded frame `chrome::view_content` draws
+            // (`Block::bordered().inner()` == a 1-cell margin, no padding).
+            content: content_outer.inner(Margin::new(1, 1)),
+        }
     }
 
-    /// The content rect (inside its frame border) for the current size.
+    /// The navigation rail rect the last frame actually rendered.
+    fn sidebar_rect(&self) -> Rect {
+        self.geom.get().sidebar
+    }
+
+    /// The active screen's drawable rect the last frame actually rendered.
     fn content_rect(&self) -> Rect {
-        let [_, body, _] = Self::shell_rows(Rect::from_size(self.size));
-        let inner = Self::body_split(body)[1];
-        // Mirror the one-cell frame `view` draws around the screen.
-        inner.inner(rstui_core::Margin::new(1, 1))
+        self.geom.get().content
     }
 
     /// Move the sidebar cursor by `delta`, clamped to the screen list.
@@ -316,7 +344,9 @@ impl App for KitchenSink {
                 // Toasts live ~40 frames (~5s at 8fps).
                 self.notices.retain(|n| now.saturating_sub(n.born) < 40);
             }
-            Msg::Resized(size) => self.size = size,
+            // No-op: `view` recaptures the true geometry from the resized
+            // frame, so hit-testing follows the reflow automatically.
+            Msg::Resized(_) => {}
             Msg::Paste(text) => {
                 if self.overlay == Overlay::Palette {
                     self.palette_query.insert_str(&text);
@@ -327,6 +357,19 @@ impl App for KitchenSink {
             Msg::Key(code, _mods) => {
                 if self.overlay != Overlay::None {
                     return self.key_in_overlay(code);
+                }
+                // A focused text screen owns *every* character (so `q`, `:`,
+                // digits, space all type) — non-char keys (Tab, Esc, arrows,
+                // Enter) still flow through the global keymap below.
+                if self.pane == Pane::Content
+                    && self.screen.is_text_entry()
+                    && matches!(code, KeyCode::Char(_))
+                {
+                    let out = self.screens.on_key(self.screen, code, self.tick);
+                    if let Some((level, body)) = out.toast {
+                        self.notify(level, body);
+                    }
+                    return Cmd::none();
                 }
                 // Global chords first.
                 match code {
@@ -355,7 +398,7 @@ impl App for KitchenSink {
                         };
                         return Cmd::none();
                     }
-                    KeyCode::Char(d @ '1'..='8') => {
+                    KeyCode::Char(d @ '1'..='9') => {
                         let idx = (d as u8 - b'1') as usize;
                         if idx < Screen::ALL.len() {
                             self.nav = idx;
@@ -401,11 +444,14 @@ impl App for KitchenSink {
                 }
                 let sidebar = self.sidebar_rect();
                 if sidebar.contains(pos) {
-                    // The sidebar inner starts one row down (frame title).
+                    // The rail is grouped + scrollable, so map the clicked
+                    // inner row through the same geometry the renderer uses.
+                    let inner_rows = sidebar.height.saturating_sub(2);
+                    let offset = Screen::sidebar_offset(self.nav, inner_rows);
                     let row = pos.y.saturating_sub(sidebar.y + 1) as usize;
-                    if row < Screen::ALL.len() {
-                        self.nav = row;
-                        self.screen = Screen::ALL[row];
+                    if let Some(i) = Screen::screen_at_row(row, offset) {
+                        self.nav = i;
+                        self.screen = Screen::ALL[i];
                         self.pane = Pane::Content;
                     }
                 } else {
@@ -432,6 +478,9 @@ impl App for KitchenSink {
 
     fn view(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
+        // Record exactly what this frame lays out so the click/scroll
+        // reducer hit-tests the real geometry, not a guessed size.
+        self.geom.set(Self::compute_geom(area));
         frame.buffer_mut().set_style(area, self.theme.screen());
         let [header, body, footer] = Self::shell_rows(area);
         let [sidebar, content] = Self::body_split(body);
