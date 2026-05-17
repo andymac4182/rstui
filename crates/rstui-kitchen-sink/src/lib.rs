@@ -28,14 +28,15 @@
 
 pub(crate) mod chrome;
 pub(crate) mod clipboard;
+pub(crate) mod keymap;
 pub(crate) mod screens;
 pub(crate) mod theme;
 
 use std::cell::{Cell, RefCell};
 
 use rstui_core::{
-    Buffer, Constraint, Event, KeyCode, KeyModifiers, Layout, Margin, MouseButton, MouseEventKind,
-    Position, Rect, Selection, Size, Style, TextEdit, selected_text,
+    Buffer, Constraint, Event, KeyCode, KeyEvent, KeyModifiers, Layout, Margin, MouseButton,
+    MouseEventKind, Position, Rect, Selection, Size, Style, TextEdit, selected_text,
 };
 use rstui_runtime::{App, Cmd, Frame};
 use rstui_widgets::ToastLevel;
@@ -184,6 +185,14 @@ pub struct KitchenSink {
     /// this into the focused editable (the OS clipboard is also set via
     /// OSC 52, and the terminal's own paste arrives as [`Event::Paste`]).
     clipboard: String,
+    /// The customisable keymap registry (multiple maps, per-OS, overrides,
+    /// leader sequences). Every key event is resolved through this.
+    keymaps: keymap::Keymaps,
+    /// The selected action row in the settings drawer's keymap table.
+    drawer_sel: usize,
+    /// `Some(action)` while the drawer is capturing a key to rebind it to —
+    /// the next key press becomes that action's new binding.
+    rebind: Option<keymap::Action>,
 }
 
 impl KitchenSink {
@@ -211,6 +220,9 @@ impl KitchenSink {
             selected: RefCell::new(String::new()),
             sel_region: Cell::new(None),
             clipboard: String::new(),
+            keymaps: keymap::Keymaps::new(),
+            drawer_sel: 0,
+            rebind: None,
         }
     }
 
@@ -300,6 +312,62 @@ impl KitchenSink {
         }
     }
 
+    /// Performs a resolved keymap [`Action`](keymap::Action). The single
+    /// place a shell binding takes effect, so every keymap (and any user
+    /// remap) routes through one switch.
+    fn do_action(&mut self, action: keymap::Action) -> Cmd<Msg> {
+        use keymap::Action;
+        match action {
+            Action::Quit => self.overlay = Overlay::QuitConfirm,
+            Action::Help => self.overlay = Overlay::Help,
+            Action::Palette => {
+                self.overlay = Overlay::Palette;
+                self.palette_query = TextEdit::new();
+                self.palette_row = 0;
+            }
+            Action::Drawer => {
+                self.overlay = Overlay::Drawer;
+                self.drawer_sel = 0;
+            }
+            Action::FocusToggle => {
+                self.pane = match self.pane {
+                    Pane::Sidebar => Pane::Content,
+                    Pane::Content => Pane::Sidebar,
+                };
+            }
+            Action::Goto(n) => {
+                let idx = usize::from(n.saturating_sub(1));
+                if idx < Screen::ALL.len() {
+                    self.nav = idx;
+                    self.screen = Screen::ALL[idx];
+                    self.pane = Pane::Content;
+                }
+            }
+            Action::CycleKeymap => {
+                let name = self.keymaps.cycle();
+                self.notify(ToastLevel::Info, format!("Keymap → {name}"));
+            }
+            Action::Copy => {
+                if self.selection.is_empty() {
+                    // Nothing selected → Ctrl+C keeps its quit meaning.
+                    return Cmd::quit();
+                }
+                let txt = self.selected.borrow().clone();
+                self.do_copy(txt, "Copied");
+            }
+            Action::Cut => {
+                if !self.selection.is_empty() {
+                    let txt = self.selected.borrow().clone();
+                    let cut = self.screens.cut(self.screen, &txt);
+                    self.do_copy(txt, if cut { "Cut" } else { "Copied" });
+                    self.clear_selection();
+                }
+            }
+            Action::Paste => self.paste_clipboard(),
+        }
+        Cmd::none()
+    }
+
     /// Routes a completed click (a mouse-up with no intervening drag):
     /// dismiss a passive overlay, pick a rail row, or hand the active screen
     /// its click — the same routing the old single `Click` message did.
@@ -386,13 +454,41 @@ impl KitchenSink {
                 }
                 _ => {}
             },
-            Overlay::Drawer => match code {
-                KeyCode::Esc | KeyCode::Char('g') => self.overlay = Overlay::None,
-                KeyCode::Char('t') | KeyCode::Enter | KeyCode::Char(' ') => {
-                    self.theme = Theme::new(self.theme.mode.toggled());
+            Overlay::Drawer => {
+                let shown = keymap::Action::shown();
+                match code {
+                    KeyCode::Esc | KeyCode::Char('g') => self.overlay = Overlay::None,
+                    KeyCode::Char('t') | KeyCode::Char(' ') => {
+                        self.theme = Theme::new(self.theme.mode.toggled());
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.drawer_sel = self.drawer_sel.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.drawer_sel = (self.drawer_sel + 1).min(shown.len() - 1);
+                    }
+                    KeyCode::Char('c') => {
+                        let name = self.keymaps.cycle();
+                        self.notify(ToastLevel::Info, format!("Keymap → {name}"));
+                    }
+                    KeyCode::Char('r') | KeyCode::Enter => {
+                        // Arm capture: the next key (handled in `Msg::Key`)
+                        // becomes this action's binding.
+                        let act = shown[self.drawer_sel.min(shown.len() - 1)];
+                        self.rebind = Some(act);
+                        self.notify(
+                            ToastLevel::Info,
+                            format!("Press a key to bind “{}” (Esc cancels)", act.help()),
+                        );
+                    }
+                    KeyCode::Char('x') => {
+                        let act = shown[self.drawer_sel.min(shown.len() - 1)];
+                        self.keymaps.set_override(act, "none");
+                        self.notify(ToastLevel::Warning, format!("Disabled “{}”", act.help()));
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Overlay::Help => {
                 self.overlay = Overlay::None;
             }
@@ -451,6 +547,8 @@ impl App for KitchenSink {
                 let now = self.tick;
                 // Toasts live ~40 frames (~5s at 8fps).
                 self.notices.retain(|n| now.saturating_sub(n.born) < 40);
+                // Drop a leader sequence that was never completed in time.
+                self.keymaps.expire(now);
             }
             // No-op: `view` recaptures the true geometry from the resized
             // frame, so hit-testing follows the reflow automatically.
@@ -463,44 +561,46 @@ impl App for KitchenSink {
                 }
             }
             Msg::Key(code, mods) => {
-                let ctrl = mods.contains(KeyModifiers::CONTROL);
-                // Clipboard chords have top priority and work on every screen
-                // and overlay (so a selection can always be copied/cut and
-                // the clipboard pasted into whatever editable has focus).
-                if ctrl {
-                    match code {
-                        KeyCode::Char('c' | 'C') => {
-                            if self.selection.is_empty() {
-                                // Nothing selected → Ctrl+C keeps its
-                                // familiar "interrupt/quit" meaning.
-                                return Cmd::quit();
-                            }
-                            let txt = self.selected.borrow().clone();
-                            self.do_copy(txt, "Copied");
-                            return Cmd::none();
-                        }
-                        KeyCode::Char('x' | 'X') => {
-                            if !self.selection.is_empty() {
-                                let txt = self.selected.borrow().clone();
-                                let cut = self.screens.cut(self.screen, &txt);
-                                self.do_copy(txt, if cut { "Cut" } else { "Copied" });
-                                self.clear_selection();
-                            }
-                            return Cmd::none();
-                        }
-                        KeyCode::Char('v' | 'V') => {
-                            self.paste_clipboard();
-                            return Cmd::none();
-                        }
-                        _ => {}
+                use keymap::Action;
+                // Interactive re-bind capture (the settings drawer armed it):
+                // the very next key becomes that action's binding; `Esc`
+                // cancels. Short-circuits the whole keymap.
+                if let Some(act) = self.rebind.take() {
+                    if code == KeyCode::Esc {
+                        self.notify(ToastLevel::Info, "Rebind cancelled");
+                    } else {
+                        let chord = keymap::Chord::from_event(&KeyEvent::new(code, mods));
+                        self.keymaps.set_override(act, chord.spec());
+                        self.notify(
+                            ToastLevel::Success,
+                            format!("Bound {} → {}", act.help(), chord.display()),
+                        );
                     }
+                    return Cmd::none();
                 }
+                let ctrl = mods.contains(KeyModifiers::CONTROL);
+                // Resolve the event through the *active* keymap (this also
+                // advances the leader-sequence state machine).
+                let action = self.keymaps.resolve(&KeyEvent::new(code, mods), self.tick);
+                let clip = matches!(action, Some(Action::Copy | Action::Cut | Action::Paste));
+
+                // While an overlay is captured, only the clipboard actions
+                // act; everything else is the overlay's own raw input
+                // (palette typing, drawer keys, …).
                 if self.overlay != Overlay::None {
+                    if clip {
+                        return self.do_action(action.unwrap());
+                    }
                     return self.key_in_overlay(code);
                 }
-                // A focused text screen owns *every* character (so `q`, `:`,
-                // digits, space all type) — non-char keys (Tab, Esc, arrows,
-                // Enter) still flow through the global keymap below.
+                // Clipboard chords act on every screen (they carry Ctrl/Cmd
+                // and are never a typed character).
+                if clip {
+                    return self.do_action(action.unwrap());
+                }
+                // A focused text screen owns every plain character (so a
+                // keymap key like `q`/`:`/a digit *types* instead of firing
+                // its action) — non-char keys still reach the keymap.
                 if self.pane == Pane::Content
                     && self.screen.is_text_entry()
                     && !ctrl
@@ -512,47 +612,19 @@ impl App for KitchenSink {
                     }
                     return Cmd::none();
                 }
-                // Any navigation/overlay key drops a stale mouse selection
-                // (the content is about to change under it).
-                self.clear_selection();
-                // Global chords first.
-                match code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        self.overlay = Overlay::QuitConfirm;
-                        return Cmd::none();
-                    }
-                    KeyCode::Char('?') => {
-                        self.overlay = Overlay::Help;
-                        return Cmd::none();
-                    }
-                    KeyCode::Char(':') => {
-                        self.overlay = Overlay::Palette;
-                        self.palette_query = TextEdit::new();
-                        self.palette_row = 0;
-                        return Cmd::none();
-                    }
-                    KeyCode::Char('g') => {
-                        self.overlay = Overlay::Drawer;
-                        return Cmd::none();
-                    }
-                    KeyCode::Tab => {
-                        self.pane = match self.pane {
-                            Pane::Sidebar => Pane::Content,
-                            Pane::Content => Pane::Sidebar,
-                        };
-                        return Cmd::none();
-                    }
-                    KeyCode::Char(d @ '1'..='9') => {
-                        let idx = (d as u8 - b'1') as usize;
-                        if idx < Screen::ALL.len() {
-                            self.nav = idx;
-                            self.screen = Screen::ALL[idx];
-                            self.pane = Pane::Content;
-                        }
-                        return Cmd::none();
-                    }
-                    _ => {}
+                // A resolved shell action.
+                if let Some(a) = action {
+                    self.clear_selection();
+                    return self.do_action(a);
                 }
+                // A leader/prefix was just armed — swallow this key and wait
+                // for the rest of the sequence.
+                if self.keymaps.armed() {
+                    return Cmd::none();
+                }
+                // Unbound by the keymap: raw rail / screen routing
+                // (arrows, Enter, hjkl, PageUp, typing into a field, …).
+                self.clear_selection();
                 match self.pane {
                     Pane::Sidebar => match code {
                         KeyCode::Up | KeyCode::Char('k') => self.step_nav(-1),
@@ -731,6 +803,23 @@ impl KitchenSink {
 
     pub(crate) fn theme(&self) -> &Theme {
         &self.theme
+    }
+    /// The keymap registry (chrome reads it to draw live help/footer/drawer).
+    pub(crate) fn keymaps(&self) -> &keymap::Keymaps {
+        &self.keymaps
+    }
+    /// The selected action row in the drawer's keymap table.
+    pub(crate) fn drawer_sel(&self) -> usize {
+        self.drawer_sel
+    }
+    /// The action currently awaiting a captured key (rebind in progress).
+    pub(crate) fn rebind(&self) -> Option<keymap::Action> {
+        self.rebind
+    }
+    /// The active keymap's name (exposed for tests/embedders).
+    #[must_use]
+    pub fn active_keymap(&self) -> &'static str {
+        self.keymaps.active_name()
     }
     pub(crate) fn screen(&self) -> Screen {
         self.screen

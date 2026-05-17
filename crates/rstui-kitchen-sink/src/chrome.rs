@@ -6,26 +6,25 @@
 //! Each of those is a real catalog widget doing its real job, not a static
 //! sample — driving the app *is* the demo of the chrome.
 
-use rstui_core::{Constraint, Line, Modifier, Position, Rect, Style, TextEdit, stylize::Stylize};
+use rstui_core::{
+    Constraint, Layout, Line, Modifier, Position, Rect, Style, TextEdit, stylize::Stylize,
+};
 use rstui_runtime::Frame;
 use rstui_widgets::{
-    Block, BorderType, CommandPalette, Drawer, DrawerSide, HelpEntry, HelpOverlay, Modal,
+    Block, BorderType, CommandPalette, Drawer, DrawerSide, HelpEntry, HelpOverlay, List, Modal,
     Paragraph, Sidebar, SidebarItem, StatusBar, Toast, ToastCorner, ToastMessage, Wrap,
 };
 
+use crate::keymap;
 use crate::screens::Screen;
 use crate::{KitchenSink, Overlay, Pane};
 
-/// The global keymap, shown in the help overlay and (abbreviated) the footer.
-const KEYMAP: &[(&str, &str)] = &[
-    ("1-8", "jump to a screen"),
-    ("Tab", "move focus rail / screen"),
+/// Raw screen-level keys the keymap deliberately doesn't own (they fall
+/// through to the focused screen) — appended to help for completeness.
+const RAW_HELP: &[(&str, &str)] = &[
     ("↑ ↓ ← →", "navigate / adjust"),
     ("Enter Space", "activate / toggle"),
-    (":", "command palette"),
-    ("?", "this help"),
-    ("g", "settings drawer"),
-    ("q Esc", "quit (confirm)"),
+    ("PgUp PgDn", "page / scroll"),
 ];
 
 /// The screen indices whose label or title contains `query`
@@ -142,9 +141,25 @@ pub(crate) fn view_footer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
         Pane::Sidebar => "RAIL",
         Pane::Content => "SCREEN",
     };
+    // Hints derive from the *live* keymap, so they always show the real
+    // keys (per-OS, per-keymap, after any user remap).
+    let km = ks.keymaps().effective();
+    let (kmname, armed) = ks.keymaps().status();
+    let left = format!(
+        " {} palette · {} help · {} settings · {} quit",
+        km.keys_for(keymap::Action::Palette),
+        km.keys_for(keymap::Action::Help),
+        km.keys_for(keymap::Action::Drawer),
+        km.keys_for(keymap::Action::Quit),
+    );
+    let right = if armed {
+        format!(" ⟨leader⟩… · {} · {} ", kmname, keymap::Keymaps::os_name())
+    } else {
+        format!(" {} · {} ", kmname, keymap::Keymaps::os_name())
+    };
     frame.render_widget(
         StatusBar::new()
-            .left(Line::from(" : palette  ? help  g settings  q quit").style(style))
+            .left(Line::from(left).style(style))
             .center(
                 Line::from(format!(
                     "[{pane}]  {} / {}",
@@ -153,7 +168,7 @@ pub(crate) fn view_footer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
                 ))
                 .style(style.fg(theme.accent).add_modifier(Modifier::BOLD)),
             )
-            .right(Line::from(format!("rstui · {} ", theme.mode.label())).style(style))
+            .right(Line::from(right).style(style))
             .style(style),
         area,
     );
@@ -191,19 +206,35 @@ pub(crate) fn view_overlays(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect)
     let _ = theme;
 }
 
-/// The global help overlay — a real [`HelpOverlay`] over the keymap.
+/// The global help overlay — a real [`HelpOverlay`] built from the **live**
+/// keymap (reverse lookup), so a keymap switch or a user remap is reflected
+/// immediately (the Textual footer-doesn't-follow bug, done right).
 fn view_help(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     let theme = ks.theme();
-    let entries: Vec<HelpEntry> = KEYMAP
-        .iter()
-        .map(|(keys, desc)| HelpEntry::new([*keys], *desc))
+    let km = ks.keymaps().effective();
+    // Owned so the borrowed `HelpEntry`s outlive the render call.
+    let mut rows: Vec<(String, &'static str)> = keymap::Action::shown()
+        .into_iter()
+        .map(|a| (km.keys_for(a), a.help()))
         .collect();
+    for (k, d) in RAW_HELP {
+        rows.push(((*k).to_string(), *d));
+    }
+    let entries: Vec<HelpEntry> = rows
+        .iter()
+        .map(|(k, d)| HelpEntry::new([k.as_str()], *d))
+        .collect();
+    let title = format!(
+        " Keyboard · {} · {} ",
+        ks.keymaps().active_name(),
+        keymap::Keymaps::os_name()
+    );
     frame.render_widget(
         HelpOverlay::new(&entries)
             .block(
                 Block::bordered()
                     .border_type(BorderType::Rounded)
-                    .title(Line::from(" Keyboard ").style(theme.heading())),
+                    .title(Line::from(title).style(theme.heading())),
             )
             .style(theme.body())
             .key_style(theme.accent_text())
@@ -263,15 +294,64 @@ fn view_drawer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     let inner = drawer.inner(area);
     frame.render_widget(drawer, area);
 
-    let body = format!(
-        "Theme palette\n\n  ● {}  (every colour is 24-bit RGB)\n\n  t / Space / Enter  toggle Dark / Light\n  Esc / g            close\n\nThe swap repaints the whole app, proving\nthe full-colour path is live, not baked.",
-        theme.mode.label()
-    );
+    let km = ks.keymaps().effective();
+    let leader = km.leader.map_or_else(|| "—".to_string(), |c| c.display());
+    let [head, list_a, legend] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Fill(1),
+        Constraint::Length(5),
+    ])
+    .areas(inner);
+
     frame.render_widget(
-        Paragraph::new(body)
-            .style(theme.body())
+        Paragraph::new(format!(
+            "OS:      {}\nKeymap:  {}\nLeader:  {}\nTheme:   {}",
+            keymap::Keymaps::os_name(),
+            ks.keymaps().active_name(),
+            leader,
+            theme.mode.label(),
+        ))
+        .style(theme.body())
+        .wrap(Wrap { trim: true }),
+        head,
+    );
+
+    // The live action → keys table; `keys_for` reflects any user remap.
+    let items: Vec<Line> = keymap::Action::shown()
+        .into_iter()
+        .map(|a| {
+            Line::from(vec![
+                format!("{:<18}", a.help()).fg(theme.text),
+                // The stable config id (Textual's binding id) — the key a
+                // user puts in a config file to remap this action.
+                format!("{:<16}", a.id()).fg(theme.dim),
+                km.keys_for(a).fg(theme.accent),
+            ])
+        })
+        .collect();
+    frame.render_widget(
+        List::new(items)
+            .selected(Some(ks.drawer_sel()))
+            .highlight_symbol("▶ ")
+            .highlight_style(theme.selection())
+            .style(theme.body()),
+        list_a,
+    );
+
+    let legend_text = if let Some(act) = ks.rebind() {
+        format!("● Press a key to bind\n  “{}”  (Esc cancels)", act.help())
+    } else {
+        "↑↓ select · r/⏎ rebind · x disable\nc next keymap · t theme · Esc close".to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(legend_text)
+            .style(if ks.rebind().is_some() {
+                theme.accent_text()
+            } else {
+                theme.caption()
+            })
             .wrap(Wrap { trim: true }),
-        inner,
+        legend,
     );
 }
 
