@@ -129,12 +129,26 @@ validation path for each change.
 >   focused_link/theme wrinkle is moot where (as here) the call site
 >   never varies them. A public `MarkdownDoc` is now an *ergonomics*
 >   question (ADR), not an unimplemented performance fix.
-> - **Tier-2 architectural — remaining**: `Diff`/`Mermaid` re-parse
->   (same caller-cache pattern as UI-1/MD-1; needs a *real* hot caller
->   like the acp-client transcript was — git-review diff view the
->   candidate to verify), borrowed `List`/`Table`/`Stepper`/`Tabs`
->   constructors + plugin-host PROTO-3 `Cow` payload (genuine public-API
->   changes — semver, sequence behind an ADR note).
+> - **`Diff`/`Mermaid` re-parse — genuinely Tier-2 (verified by code,
+>   not asserted).** The UI-1/MD-1 pattern (parse cached in the reducer,
+>   read by the pure view) worked *only* because the acp-client parses
+>   markdown at a constant width (80) the reducer knows. The one real
+>   hot `Diff` caller — git-review `app.rs:928`
+>   `Diff::new(self.diff).syntax(true).side_by_side(self.diff_split)` —
+>   parses at the **render-area width**, which the reducer does not know;
+>   the key is `(diff, diff_split, width)`, width known only at render
+>   time. An ADR-0012-compliant width-keyed cache therefore *cannot* be a
+>   reducer-populated field — it requires the audit's caller-owned
+>   **cached layout model** (`DiffModel`), a genuine public-API addition
+>   (semver, ADR-noted). `Mermaid` has **no app hot caller at all**
+>   (only `mermaid_demo`), so its re-parse is not a real-world cost. The
+>   plan's Tier-2 classification holds *here* — a concrete code-grounded
+>   barrier (render-time-only width; no constant-width hot caller), not
+>   the over-broad labelling that hid DRV-1/PG-2/UI-1/CM-3.
+> - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors + plugin-host
+>   PROTO-3 `Cow` payload**: public-API changes *by definition* (the fix
+>   *is* a new/changed signature) — semver surface, sequence behind an
+>   ADR note. Not a hidden safe-by-construction slice.
 > - **`List`-API-coupled**: **SB-1/MENU-1/CP-1** build all-N rows then
 >   hand the whole `Vec` to `List`, which clips internally. Pre-windowing
 >   in the widget would duplicate `List`'s scroll/selection/highlight-bar
