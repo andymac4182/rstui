@@ -168,17 +168,24 @@ validation path for each change.
 >   `from_slice_renders_identically_to_the_owned_constructor` per widget
 >   pins `Cow::Borrowed == Cow::Owned` cell-for-cell; Menu/Sidebar/
 >   CommandPalette/Select (which compose `List`) all still pass.
-> - **plugin-host PROTO-3 — cold path, not worth an API break
->   (verified by code, DRV-2-class).** PROTO-1 (the actual 6–8-`Vec`
->   capability round-trip + `read_frame` double-alloc) already landed
->   (Batch H). PROTO-3 is the *structural* `Frame::payload: Vec<u8>` →
->   borrowed/`Cow` change on the **protocol struct** (semver-breaking by
->   definition). All 11 `host.broadcast(&HostEvent::…)` call sites are
->   **discrete events** (SessionStart/UserPrompt/Command/Shutdown/Init/
->   Refresh/TurnEnded/…) — there is *no* per-frame broadcast at all, so
->   the payload clone is a cold cost. An API-breaking change to a wire
->   protocol struct for a cold path has no real-world payoff; the
->   code-grounded determination is the deliverable (as with DRV-2).
+> - **plugin-host PROTO-3 — the genuine exception (code-verified twice
+>   over).** Unlike the 10 items the re-derivation cracked, here the
+>   "API-breaking" label is *true*, for a concrete reason found by
+>   reading the struct: `crates/rstui-plugin-host/src/protocol.rs` has
+>   `pub struct Frame { …, pub payload: Vec<u8> }` with **no lifetime
+>   parameter** and a **`pub` field** (callers do `decoded.payload`,
+>   construct `Frame { payload }`, and `pub fn Frame::new(.., Vec<u8>)`
+>   / `read_frame` / `write_frame` are public). `Vec<u8>` → `Cow<'a,[u8]>`
+>   forces `Frame<'a>`, a hard semver break across the crate's public
+>   wire-codec API — there is *no* private-field transparency trick like
+>   the widgets had (their fields were private; this one is `pub`). And
+>   it is cold: all `Frame` sends (`host.rs` init / send / veto-hook) are
+>   discrete plugin-lifecycle events — no per-render-frame broadcast
+>   exists. PROTO-1 (the actual 6–8-`Vec` round-trip + `read_frame`
+>   double-alloc, the real cost) already landed (Batch H). A
+>   semver-breaking change to a public wire-protocol struct for a cold
+>   path has no payoff; the code-grounded determination is the
+>   deliverable (DRV-2-class).
 > - **MENU-1 / SB-1 / CP-1 — DONE (caller-side windowing, no API
 >   change).** The "List-API-coupled, needs LIST-1" label was wrong (the
 >   4th over-broad classification the re-derivation overturned). `List`
