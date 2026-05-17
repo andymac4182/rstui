@@ -375,11 +375,20 @@ impl Widget for Editor<'_> {
         // offset (chars + 1 newline per skipped row) and advances one logical
         // line — including its newline — each iteration.
         let lines = model.lines();
-        let mut flat = lines
-            .iter()
-            .take(row_off)
-            .map(|l| l.chars().count() + 1)
-            .sum::<usize>();
+        // EDIT-1: `flat` (its O(chars-above-viewport) prefix sum, the
+        // per-visible-row recount below, and the per-cell `patch_at`) exists
+        // only to address extmarks. With none, that is pure per-frame waste
+        // for a focused editor scrolled deep into a document — skip it all.
+        let marked = !extmarks.is_empty();
+        let mut flat = if marked {
+            lines
+                .iter()
+                .take(row_off)
+                .map(|l| l.chars().count() + 1)
+                .sum::<usize>()
+        } else {
+            0
+        };
         for screen_row in 0..inner.height {
             let doc_row = row_off + screen_row as usize;
             let Some(line) = lines.get(doc_row) else {
@@ -392,11 +401,17 @@ impl Widget for Editor<'_> {
                     break;
                 }
                 // Cascade: base/focus fill → extmark pill at this flat index.
-                let cell = extmark::patch_at(base, extmarks, flat + col);
+                let cell = if marked {
+                    extmark::patch_at(base, extmarks, flat + col)
+                } else {
+                    base
+                };
                 buf.set_cell(Position::new(x, y), ch, cell);
                 x = x.saturating_add(1);
             }
-            flat += line.chars().count() + 1;
+            if marked {
+                flat += line.chars().count() + 1;
+            }
         }
 
         // The caret: translate the model cursor to a screen cell. If it is
@@ -414,13 +429,17 @@ impl Widget for Editor<'_> {
                         .unwrap_or(' ');
                     // Flatten the (row, col) cursor the same way the body
                     // does, so an extmark under the caret cascades beneath it.
-                    let cur_flat = lines
-                        .iter()
-                        .take(cur_row)
-                        .map(|l| l.chars().count() + 1)
-                        .sum::<usize>()
-                        + cur_col;
-                    let under = extmark::patch_at(base, extmarks, cur_flat);
+                    let under = if marked {
+                        let cur_flat = lines
+                            .iter()
+                            .take(cur_row)
+                            .map(|l| l.chars().count() + 1)
+                            .sum::<usize>()
+                            + cur_col;
+                        extmark::patch_at(base, extmarks, cur_flat)
+                    } else {
+                        base
+                    };
                     buf.set_cell(
                         Position::new(sx as u16, sy as u16),
                         glyph,
