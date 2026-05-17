@@ -96,13 +96,34 @@ driving the kitchen sink with scripted keystrokes and diffing its captured
 output against a committed golden file.
 
 ```sh
-cargo xtask record --e2e        # drive the live binary, capture .txt + .gif
-cargo xtask record --check      # re-capture and diff against goldens (regression)
+cargo xtask record e2e            # drive the real binaries, capture .txt
+cargo xtask record e2e --check    # re-capture and assert the .expect markers
 ```
 
-This complements, not replaces, the `Harness` tests: `Harness` proves the
-logic; VHS proves the wiring (crossterm translation, lifecycle, sizing). See
-[Recording](recording.md) for the tape format and
+This complements, not replaces, the deterministic tests: they prove the
+logic; VHS proves the *real terminal* wiring (crossterm key/modifier
+translation, the panic-safe lifecycle, sizing). The committed real-terminal
+gates (`vhs/e2e/*.tape` + `.expect`):
+
+| Tape | Drives | Proves end to end |
+|------|--------|-------------------|
+| `kitchen-sink-smoke` | the `rstui-kitchen-sink` binary | boots, key routing, chrome renders |
+| `text-input` | the `text_input_e2e` fixture | Left/Right/Backspace/Delete + `Ctrl+A`/`Ctrl+E` reach a `TextEdit` and assemble the exact final value/cursor |
+| `colour-lab` | the `rstui-kitchen-sink` binary | the Colour Lab paints and arrow keys move the 256-cube cursor |
+
+### The deterministic E2E suites (layer 2, in the `test` gate)
+
+These run with no TTY and gate every push via `cargo xtask ci`:
+
+| Suite | What it proves |
+|-------|----------------|
+| `rstui-crossterm` `event.rs` matrix | every special key × every modeled modifier (Home/End/arrows/Delete + Ctrl/Alt/Shift) round-trips, incl. press/repeat/release |
+| `rstui-smoke/tests/text_input_e2e.rs` | the full key set routes through `Harness` *and* the real `run` loop into `TextEdit`/`TextArea`, asserting model + caret cell + focus colour |
+| `rstui-smoke/tests/render_e2e.rs` | every `Color` (incl. `Indexed`/`Rgb`) and all 9 `Modifier` flags survive the text▸line▸span cascade onto the exact `Cell` |
+| `rstui-kitchen-sink/tests/render_e2e.rs` | all 8 screens render, are themed (cell colour, not glyphs), and survive navigation/resize/ticks |
+| `rstui-runtime/tests/runtime_e2e.rs` | resize reflow, focus routing, paste, window focus through the production loop |
+
+See [Recording](recording.md) for the tape format and
 [Kitchen sink](kitchen-sink.md) for the multi-resolution captures.
 
 ## What runs in CI
