@@ -587,7 +587,7 @@ mod drv2_tests {
     /// zero/many options.
     #[test]
     fn typed_describe_permission_is_byte_identical_to_the_json_walk() {
-        let cases = vec![
+        let cases = [
             req(
                 ToolCallUpdateFields::new().title(Some("Run the test suite".to_owned())),
                 vec![opt("allow", "Allow"), opt("deny", "Deny")],
