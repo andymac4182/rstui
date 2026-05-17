@@ -53,27 +53,40 @@ validation path for each change.
 >   `grid` GRID-1 (`cell()` solves one band, not the whole grid),
 >   `gauge` GAUGE-1 (no default-label `format!`).
 > - **Batch I**: APP-1 transcript cap (generous, sentinel).
-> - **Batch J (BN02/BN03)**: bench scenarios landed — `edit/textarea/
->   insert`, `selection/extract`, and `widget/{list,table,tree,paragraph,
->   markdown}/render`. **These produced the decisive empirical ranking:**
+> - **Batch J COMPLETE** (BN01+BN02+BN03 — the audit's bench-gap closed):
+>   `edit/textarea/insert`, `selection/extract`,
+>   `widget/{list,table,tree,paragraph,markdown}/render`, and
+>   `runtime/frame/{idle,changed}` (the end-to-end frame via the public
+>   `Harness`). **These produced the decisive empirical ranking:**
 >
-> | `widget/*/render` min (160×48) | |
+> | scenario, min (160×48) | |
 > |---|---|
-> | `tree` | ~19 µs (the clean windowed exemplar) |
-> | `table` | ~32 µs |
-> | `list` | ~34 µs |
-> | `paragraph` | ~59 µs (post-PG-1; wraps the window) |
-> | **`markdown`** | **~1.49 ms** |
+> | `widget/tree/render` | ~19 µs (clean windowed exemplar) |
+> | `widget/table/render` | ~32 µs |
+> | `widget/list/render` | ~34 µs |
+> | `widget/paragraph/render` | ~59 µs (post-PG-1) |
+> | `runtime/frame/idle` ≈ `runtime/frame/changed` | **~83 µs** |
+> | **`widget/markdown/render`** | **~1.49 ms** |
 >
-> Markdown render is **~100× the next-heaviest widget and ~120× a
-> full-frame `Buffer::diff`** (it re-parses + re-lays-out the whole
-> CommonMark source every render — MD-1). At 60 fps one Markdown pane is
-> ~9% of the entire frame budget. **This makes MD-1 (caller-owned
-> `Markdown` parse/layout cache) empirically the single highest-value
-> remaining optimization, by two orders of magnitude.**
+> Two findings drive everything remaining: (1) Markdown render is **~100×
+> the next-heaviest widget and ~120× a full-frame `Buffer::diff`** (it
+> re-parses the whole CommonMark source every render). (2) An *idle*
+> re-render costs the **same** as a changed one (~83 µs) — the per-frame
+> `view` re-projection dominates, not the (now ~12 µs) diff. So the only
+> high-leverage work left is **eliminating per-frame re-derivation**:
+> caller-owned caches/windowing. MD-1 is #1 by two orders of magnitude.
+>
+> **MD-1 design note (a real wrinkle, not a quick slice):** `blocks_into`
+> (the parse) takes `focused_link` *and* `theme` as inputs — the parse is
+> **not** purely source-dependent. A correct caller-owned `MarkdownDoc`
+> must key on `(source, focused_link, theme)` and re-derive on link-focus
+> change; a naive "parse once on source" cache silently renders **stale
+> link highlighting** — a correctness bug the static markdown snapshots
+> (which never toggle focus) would not catch. This is exactly why MD-1 is
+> an ADR-gated architectural change, not a byte-identical one-shot.
 >
 > **~29 measured, gate-green slices total** (the byte-identical set + the
-> additive bench + APP-1's generous cap). **The remainder is now
+> complete additive bench + APP-1's generous cap). **The remainder is now
 > empirically ranked, not just risk-classified** — none a quick
 > byte-identical slice:
 > - **Tier-2 architectural — now headed by MD-1** (`Markdown` cache:
