@@ -2,10 +2,11 @@
 //! quickstart [`Card`], a [`Kbd`] keymap strip, and a labelled [`Divider`]
 //! with [`Badge`]s. Stateless — it only reads the theme.
 
-use rstui_core::{Constraint, Layout, Line, Rect, Style, stylize::Stylize};
+use rstui_core::{Constraint, Layout, Line, Position, Rect, Style, stylize::Stylize};
 use rstui_runtime::Frame;
 use rstui_widgets::{
-    Avatar, Badge, BadgeLevel, Block, BorderType, Card, Divider, Kbd, Markdown, Paragraph, Wrap,
+    Avatar, Badge, BadgeLevel, Block, BorderType, Card, Divider, Flow, Kbd, Markdown, Paragraph,
+    Wrap,
 };
 
 use crate::screens::ScreenOutcome;
@@ -22,6 +23,7 @@ widget in the catalog.
 - `Tab` toggles focus between the rail and the screen
 - Every screen responds to the keyboard *and* the mouse
 - `:` opens a fuzzy command palette, `?` the keymap
+- Docs: [the rstui repo](https://github.com/andymac4182/rstui) — click it!
 
 Colours are 24-bit truecolor; `g` swaps the whole palette live.";
 
@@ -30,12 +32,37 @@ pub(crate) fn on_key(_code: rstui_core::KeyCode) -> ScreenOutcome {
     ScreenOutcome::ignored()
 }
 
+/// A click on the tour's Markdown link follows it (toasts the href). The
+/// layout here mirrors [`view`] exactly so the hit-test lands on the label.
+pub(crate) fn on_click(pos: Position, content: Rect) -> ScreenOutcome {
+    let [_, mid, _, _] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(4),
+        Constraint::Length(1),
+    ])
+    .areas(content);
+    let [tour, _card] = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)]).areas(mid);
+    if tour.contains(pos) {
+        let md = Markdown::new(TOUR).block(Block::bordered().border_type(BorderType::Rounded));
+        if let Some(i) = md.link_at(pos, tour) {
+            if let Some(link) = md.links().get(i) {
+                return ScreenOutcome::with_toast(
+                    crate::screens::ToastLevel::Success,
+                    format!("Open link → {}", link.href),
+                );
+            }
+        }
+    }
+    ScreenOutcome::ignored()
+}
+
 /// Draw the welcome screen.
 pub(crate) fn view(theme: &Theme, frame: &mut Frame<'_>, area: Rect) {
     let [banner, mid, keys, foot] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Fill(1),
-        Constraint::Length(2),
+        Constraint::Length(4),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -100,9 +127,23 @@ pub(crate) fn view(theme: &Theme, frame: &mut Frame<'_>, area: Rect) {
             .separator_style(Style::new().fg(theme.dim)),
         Rect::new(keys.x, keys.y, keys.width, 1),
     );
+    // A `Flow` chip-cloud: a wrapped run of variable-width pills (the one
+    // layout plain `Layout` can't express — break points depend on content).
     frame.render_widget(
-        Line::from("the same keys work on every screen".fg(theme.dim)),
-        Rect::new(keys.x, keys.y + 1, keys.width, 1),
+        Flow::new([
+            " rust ",
+            " pure projection ",
+            " no retained tree ",
+            " 24-bit colour ",
+            " mouse + keyboard ",
+            " headless-tested ",
+            " 18 screens ",
+            " 10 experiences ",
+            " Elm runtime ",
+        ])
+        .gap(1, 0)
+        .style(Style::new().fg(theme.base).bg(theme.accent_alt)),
+        Rect::new(keys.x, keys.y + 1, keys.width, 3),
     );
 
     // A labelled divider with status badges.

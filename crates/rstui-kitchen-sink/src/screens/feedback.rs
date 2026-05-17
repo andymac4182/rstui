@@ -4,7 +4,7 @@
 //! `Enter`/`Space`) to fire a real [`Toast`](rstui_widgets::Toast) into the
 //! global queue, cycling severity.
 
-use rstui_core::{Constraint, KeyCode, Layout, Line, Modifier, Rect, Style};
+use rstui_core::{Constraint, KeyCode, Layout, Line, Modifier, Position, Rect, Style};
 use rstui_runtime::Frame;
 use rstui_widgets::{
     Alert, AlertLevel, Badge, BadgeLevel, Block, BorderType, Paragraph, Popover, PopoverSide,
@@ -46,6 +46,14 @@ impl State {
             KeyCode::Left => ScreenOutcome::ignored(),
             _ => ScreenOutcome::ignored(),
         }
+    }
+
+    /// A click anywhere fires the next toast — the same affordance as `t`,
+    /// so the mouse exercises the live [`Toast`](rstui_widgets::Toast) queue.
+    pub(crate) fn on_click(&mut self, _pos: Position, _content: Rect) -> ScreenOutcome {
+        let (level, name) = LEVELS[self.next];
+        self.next = (self.next + 1) % LEVELS.len();
+        ScreenOutcome::with_toast(level, format!("{name} toast (clicked)"))
     }
 
     /// Draw the feedback gallery. `tick` animates the spinner + skeleton.

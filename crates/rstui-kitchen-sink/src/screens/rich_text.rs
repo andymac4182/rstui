@@ -83,14 +83,29 @@ impl State {
         ScreenOutcome::consumed()
     }
 
-    /// A click on the tab strip switches sub-view.
+    /// A click on the tab strip switches sub-view; a click on a link in the
+    /// Markdown document follows it.
     pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
-        let [tabs, _body, _foot] = Self::rows(content);
-        if tabs.contains(pos) {
-            let w = (tabs.width.max(1) / TABS.len() as u16).max(1);
-            self.tab = (((pos.x - tabs.x) / w) as usize).min(TABS.len() - 1);
+        let [tabs, body, _foot] = Self::rows(content);
+        if let Some(i) = crate::screens::tab_index_at(tabs, &TABS, 2, pos) {
+            self.tab = i;
             self.scroll = 0;
             return ScreenOutcome::consumed();
+        }
+        if self.tab == 1 && body.contains(pos) {
+            // Same source / scroll / block geometry as `view` renders, so the
+            // widget's own link hit-test lands on exactly the drawn label.
+            let md = Markdown::new(DOC)
+                .scroll(self.scroll)
+                .block(Block::bordered().border_type(BorderType::Rounded));
+            if let Some(idx) = md.link_at(pos, body) {
+                if let Some(link) = md.links().get(idx) {
+                    return ScreenOutcome::with_toast(
+                        crate::screens::ToastLevel::Success,
+                        format!("Open link → {}", link.href),
+                    );
+                }
+            }
         }
         ScreenOutcome::ignored()
     }

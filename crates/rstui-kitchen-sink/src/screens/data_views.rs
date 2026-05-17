@@ -3,7 +3,7 @@
 //! a [`Diff`], and an expandable [`Accordion`]. Three focusable panels
 //! (`←/→` switches, `↑/↓`/`Enter` act); the rest is live display.
 
-use rstui_core::{Constraint, KeyCode, Layout, Line, Modifier, Rect, Style};
+use rstui_core::{Constraint, KeyCode, Layout, Line, Modifier, Position, Rect, Style};
 use rstui_runtime::Frame;
 use rstui_widgets::{
     Accordion, AccordionSection, Bar, BarChart, Block, BorderType, Calendar, DatePicker,
@@ -134,6 +134,37 @@ impl State {
                 ScreenOutcome::consumed()
             }
         }
+    }
+
+    /// Click a panel to focus it; clicking the concepts panel also toggles
+    /// the selected accordion section. Geometry mirrors [`view`] exactly.
+    pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
+        let [top, mid, bottom] = Layout::vertical([
+            Constraint::Length(8),
+            Constraint::Length(11),
+            Constraint::Fill(1),
+        ])
+        .areas(content);
+        let [prog, _b] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Fill(1)]).areas(top);
+        let [cal, _d] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Fill(1)]).areas(mid);
+        let [_diff, acc] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Fill(1)]).areas(bottom);
+        if acc.contains(pos) {
+            self.panel = Panel::Sections;
+            self.expanded[self.acc_sel] = !self.expanded[self.acc_sel];
+            return ScreenOutcome::consumed();
+        }
+        if cal.contains(pos) {
+            self.panel = Panel::Dates;
+            return ScreenOutcome::consumed();
+        }
+        if prog.contains(pos) {
+            self.panel = Panel::Progress;
+            return ScreenOutcome::consumed();
+        }
+        ScreenOutcome::ignored()
     }
 
     /// Draw the dashboard. `tick` animates the auto gauge / sparkline / bars.

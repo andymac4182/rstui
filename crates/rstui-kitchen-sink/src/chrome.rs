@@ -75,10 +75,19 @@ pub(crate) fn view_header(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
 pub(crate) fn view_sidebar(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     let theme = ks.theme();
     let focused = ks.pane() == Pane::Sidebar;
-    let items: Vec<SidebarItem> = Screen::ALL
-        .iter()
-        .map(|s| SidebarItem::new(s.label()).icon(s.icon()))
+    let items: Vec<SidebarItem> = Screen::sidebar_rows()
+        .into_iter()
+        .map(|row| match row {
+            crate::screens::SidebarRow::Group(g) => SidebarItem::group(g),
+            crate::screens::SidebarRow::Item(i) => {
+                let s = Screen::ALL[i];
+                SidebarItem::new(s.label()).icon(s.icon())
+            }
+        })
         .collect();
+    let inner_rows = area.height.saturating_sub(2);
+    let selected = Screen::sidebar_selected_row(ks.nav());
+    let offset = Screen::sidebar_offset(ks.nav(), inner_rows);
 
     let border = if focused {
         theme.border_focused()
@@ -93,9 +102,11 @@ pub(crate) fn view_sidebar(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) 
 
     frame.render_widget(
         Sidebar::new(&items)
-            .selected(Some(ks.nav()))
+            .selected(Some(selected))
+            .offset(offset)
             .block(block)
             .style(Style::new().fg(theme.text).bg(theme.raised))
+            .group_style(theme.caption())
             .highlight_style(theme.selection()),
         area,
     );
@@ -135,8 +146,12 @@ pub(crate) fn view_footer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
         StatusBar::new()
             .left(Line::from(" : palette  ? help  g settings  q quit").style(style))
             .center(
-                Line::from(format!("[{pane}]  {} / 8", ks.screen().index() + 1))
-                    .style(style.fg(theme.accent).add_modifier(Modifier::BOLD)),
+                Line::from(format!(
+                    "[{pane}]  {} / {}",
+                    ks.screen().index() + 1,
+                    Screen::ALL.len()
+                ))
+                .style(style.fg(theme.accent).add_modifier(Modifier::BOLD)),
             )
             .right(Line::from(format!("rstui · {} ", theme.mode.label())).style(style))
             .style(style),
