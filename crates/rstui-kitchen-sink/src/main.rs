@@ -15,9 +15,24 @@ use rstui_crossterm::run_app;
 use rstui_kitchen_sink::KitchenSink;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // The seed size is corrected by the first live `Event::Resize`; the
-    // terminal is already restored by the time this returns, on success,
-    // error, or panic.
-    run_app(KitchenSink::new(Size::new(120, 40)))?;
+    // `--list-themes`: print every selectable theme name and exit. The VHS
+    // per-theme suite (`cargo xtask record themes`) shells out to this so
+    // xtask stays dependency-free — the binary owns theme knowledge.
+    if std::env::args().any(|a| a == "--list-themes") {
+        for theme in rstui_theme::Theme::all() {
+            println!("{}", theme.name);
+        }
+        return Ok(());
+    }
+
+    // `RSTUI_THEME="<name>"` skins the whole app with that gpui-component
+    // theme (unknown names keep the built-in default). The seed size is
+    // corrected by the first live `Event::Resize`; the terminal is already
+    // restored by the time this returns, on success, error, or panic.
+    let mut app = KitchenSink::new(Size::new(120, 40));
+    if let Ok(name) = std::env::var("RSTUI_THEME") {
+        app = app.with_theme(&name);
+    }
+    run_app(app)?;
     Ok(())
 }

@@ -104,6 +104,28 @@ impl Theme {
         }
     }
 
+    /// Build this 12-colour palette from a full [`rstui_theme::ThemePalette`]
+    /// (any of gpui-component's ~36 themes). The kitchen sink keeps its own
+    /// compact semantic set so all 21 screens stay unchanged — this just
+    /// projects the rich theme onto it, so picking a theme reskins everything.
+    pub(crate) fn from_palette(p: &rstui_theme::ThemePalette) -> Self {
+        Self {
+            mode: if p.is_dark() { Mode::Dark } else { Mode::Light },
+            base: p.background,
+            surface: p.popover,
+            raised: p.sidebar,
+            text: p.foreground,
+            dim: p.muted_foreground,
+            accent: p.primary,
+            accent_alt: p.accent,
+            border: p.border,
+            ok: p.success,
+            warn: p.warning,
+            err: p.danger,
+            info: p.info,
+        }
+    }
+
     /// The whole-screen background fill style.
     pub(crate) fn screen(&self) -> Style {
         Style::new().fg(self.text).bg(self.base)

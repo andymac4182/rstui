@@ -1,0 +1,43 @@
+# Theme-INVARIANT markers for the per-theme kitchen-sink walkthrough.
+#
+# `cargo xtask record themes --check` generates one VHS tape per
+# gpui-component theme that launches the real `rstui-kitchen-sink` binary
+# under `RSTUI_THEME="<name>"`, walks all 21 screens via the command
+# palette, opens the settings drawer, and quits. For every theme it then
+# asserts each marker below is present in the capture, PLUS the theme's own
+# name (added in code — the launch echo is on a `target/debug/` line which
+# the matcher excludes, so a pass means the settings drawer actually
+# rendered the chosen theme's name).
+#
+# Each screen marker is a fragment of that screen's `title()` — which the
+# header renders ONLY for the active screen (the sidebar shows the short
+# label, so a label would match even without navigating; a title fragment
+# genuinely proves the walkthrough reached that screen). One marker per
+# line; blank lines and '#' comments ignored.
+
+# Chrome, always rendered: brand + footer command hint.
+rstui
+palette
+
+# One title() fragment per screen, in walkthrough order.
+rstui kitchen sink
+focusable controls
+trees, tabs
+calendars, diffs
+alerts, toasts, spinners
+blocks, grids, scrolling
+Markdown, Mermaid
+truecolor
+channels, threads
+three-pane email client
+explorer with tree
+KPIs, charts, activity
+playlist, seek, transport
+buffer, problems
+live preferences
+inputs with live validation
+move cards across columns
+streaming, filtered tail
+OTel golden signals
+distribution, heatmap
+flame graph, attributes

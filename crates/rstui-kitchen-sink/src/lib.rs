@@ -154,6 +154,10 @@ pub struct KitchenSink {
     tick: u64,
     /// The active colour palette.
     theme: Theme,
+    /// The active theme's display name (the built-in `rstui Dark`/`Light`,
+    /// or a gpui-component theme picked via `RSTUI_THEME`). Shown in the
+    /// settings drawer so the live colour source is always visible.
+    theme_name: String,
     /// The live toast queue; [`update`](App::update) expires old entries.
     notices: Vec<Notice>,
     /// The command-palette query buffer (a real editable [`TextEdit`]).
@@ -210,6 +214,7 @@ impl KitchenSink {
             overlay: Overlay::None,
             tick: 0,
             theme: Theme::new(Mode::Dark),
+            theme_name: format!("rstui {}", Mode::Dark.label()),
             notices: Vec::new(),
             palette_query: TextEdit::new(),
             palette_row: 0,
@@ -224,6 +229,19 @@ impl KitchenSink {
             drawer_sel: 0,
             rebind: None,
         }
+    }
+
+    /// Skin the whole app with a named gpui-component theme (any of
+    /// [`rstui_theme::Theme::all`], case-insensitive). Unknown names keep the
+    /// built-in default — a typo never leaves a blank screen. This is the one
+    /// seam `RSTUI_THEME` flows through, so every screen reskins for free.
+    #[must_use]
+    pub fn with_theme(mut self, name: &str) -> Self {
+        if let Some(t) = rstui_theme::Theme::by_name(name) {
+            self.theme = Theme::from_palette(&t.palette);
+            self.theme_name = t.name;
+        }
+        self
     }
 
     /// Raise a toast that will live ~40 ticks.
@@ -460,6 +478,7 @@ impl KitchenSink {
                     KeyCode::Esc | KeyCode::Char('g') => self.overlay = Overlay::None,
                     KeyCode::Char('t') | KeyCode::Char(' ') => {
                         self.theme = Theme::new(self.theme.mode.toggled());
+                        self.theme_name = format!("rstui {}", self.theme.mode.label());
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.drawer_sel = self.drawer_sel.saturating_sub(1);
@@ -820,6 +839,9 @@ impl KitchenSink {
     #[must_use]
     pub fn active_keymap(&self) -> &'static str {
         self.keymaps.active_name()
+    }
+    pub(crate) fn theme_name(&self) -> &str {
+        &self.theme_name
     }
     pub(crate) fn screen(&self) -> Screen {
         self.screen

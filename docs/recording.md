@@ -24,7 +24,7 @@ run with `VHS_NO_SANDBOX=true`. Both entry points below set it for you.
 
 ```sh
 # from the repo root, either of:
-cargo xtask record [all|widgets|gallery|kitchen-sink|e2e] [--check]
+cargo xtask record [all|widgets|gallery|kitchen-sink|e2e|themes] [--check]
 scripts/record-demos.sh [all|widgets|gallery|kitchen-sink|e2e] [--check]
 ```
 
@@ -35,6 +35,8 @@ scripts/record-demos.sh [all|widgets|gallery|kitchen-sink|e2e] [--check]
 | `kitchen-sink` | the showcase at ~80×24 / ~120×40 / ~160×50 / ~200×60 → `docs/media/` |
 | `e2e` | drives the real `rstui-kitchen-sink` binary, captures terminal text |
 | `e2e --check` | the above **plus** a regression assertion (see below) |
+| `themes [name]` | one walkthrough per gpui-component theme (optional name filter) |
+| `themes --check` | the above **plus** the per-theme marker assertion (see below) |
 | `all` *(default)* | every target above |
 
 `record` pre-builds all examples and the kitchen sink first, so recordings
@@ -59,6 +61,8 @@ vhs/
     kitchen-sink-smoke.expect   # required substrings in the final frame
     kitchen-sink-dataviz.tape   # palette-drives the real binary through the
     kitchen-sink-dataviz.expect # observability/data-viz screens
+  themes/
+    walkthrough.expect          # theme-INVARIANT markers; per-theme tapes are generated
 ```
 
 - Every tape `Source vhs/common.tape`, so theme/font/padding are defined once.
@@ -87,6 +91,39 @@ cargo xtask record e2e --check    # exit non-zero if a marker is missing
 Add a new e2e scenario by dropping a `vhs/e2e/<name>.tape` whose `Output` is
 `target/vhs/e2e/<name>.txt` plus a `vhs/e2e/<name>.expect` listing the
 required substrings.
+
+## The per-theme walkthrough suite
+
+`record themes [--check]` is the e2e gate applied to **every
+gpui-component theme**. For each theme `rstui-kitchen-sink --list-themes`
+reports (so xtask stays dependency-free — the binary owns theme
+knowledge), it generates a tape into `target/vhs/themes/<slug>.tape`
+(not committed — it can never go stale) that:
+
+1. launches the real binary under `RSTUI_THEME="<name>"`,
+2. visits all 21 screens via the command palette (returning to the
+   sidebar pane between each, so `:` is always the global chord and is
+   never swallowed by a focused text screen),
+3. opens the settings drawer, which renders the active theme name, then
+   quits via the confirmation modal.
+
+`--check` then asserts, per theme, every marker in the committed
+`vhs/themes/walkthrough.expect` **plus the theme's own name**. The
+invariant markers are `title()` fragments (the header renders the active
+screen's title, so a present fragment proves the walkthrough actually
+reached that screen — a sidebar *label* would match without navigating).
+The theme-name marker proves the chosen theme booted and the drawer
+rendered it (the launch echo is on a `target/debug/` line, which the
+matcher excludes — a pass means the UI showed it).
+
+```sh
+cargo xtask record themes --check          # all themes (~15 min, opt-in)
+cargo xtask record themes tokyo --check    # just the Tokyo Night variants
+```
+
+This is opt-in like the rest of `record` (it needs VHS); it is the
+real-terminal companion to the deterministic `rstui-theme` fidelity
+tests (`crates/rstui-theme/tests/themes.rs`).
 
 ## Keeping media current
 

@@ -57,9 +57,10 @@ Tasks:
                not building). See docs/development.md.
   record [T] [--check]
                Regenerate documentation media with VHS. T = all (default)
-               | widgets | gallery | kitchen-sink | e2e. `e2e --check`
-               fails on a missing marker. NOT a ci gate (needs the VHS
-               toolchain). See docs/recording.md.
+               | widgets | gallery | kitchen-sink | e2e | themes.
+               `e2e --check` / `themes --check` fail on a missing marker
+               (`themes [name]` filters to matching themes). NOT a ci gate
+               (needs the VHS toolchain). See docs/recording.md.
   help         Show this message.";
 
 fn main() -> ExitCode {

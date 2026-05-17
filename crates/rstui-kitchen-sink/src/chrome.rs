@@ -309,7 +309,7 @@ fn view_drawer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
             keymap::Keymaps::os_name(),
             ks.keymaps().active_name(),
             leader,
-            theme.mode.label(),
+            ks.theme_name(),
         ))
         .style(theme.body())
         .wrap(Wrap { trim: true }),

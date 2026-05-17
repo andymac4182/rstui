@@ -772,6 +772,7 @@ dependencies = [
  "rstui-core",
  "rstui-crossterm",
  "rstui-runtime",
+ "rstui-theme",
  "rstui-widgets",
 ]
 

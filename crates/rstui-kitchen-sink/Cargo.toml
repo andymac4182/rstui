@@ -24,3 +24,6 @@ rstui-runtime = { path = "../rstui-runtime" }
 # The full-screen entry point (`run_app`) lives here; it owns the alternate
 # screen, raw mode, mouse + paste + focus capture, and panic-safe restore.
 rstui-crossterm = { path = "../rstui-crossterm" }
+# Every gpui-component theme as a terminal palette; `RSTUI_THEME` skins the
+# whole app with any of them, so the kitchen sink also demos the theme system.
+rstui-theme = { path = "../rstui-theme" }
