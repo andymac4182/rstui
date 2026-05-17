@@ -153,10 +153,26 @@ validation path for each change.
 >   re-parse is neither windowing-shaped nor a real-world cost — the only
 >   genuinely cache-class, no-hot-caller item; left as the documented
 >   future caller-owned-cache should a hot caller ever appear.
-> - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors + plugin-host
->   PROTO-3 `Cow` payload**: public-API changes *by definition* (the fix
->   *is* a new/changed signature) — semver surface, sequence behind an
->   ADR note. Not a hidden safe-by-construction slice.
+> - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors — no
+>   remaining hot caller (verified).** The real `List` build-all-then-clip
+>   costs *were* MENU-1/SB-1/CP-1, now DONE via caller-side windowing
+>   with no API change. `Stepper`/`Tabs` carry tiny fixed N (a wizard's
+>   ~5 steps, a tab bar's ~8 tabs) — not a per-frame cost. `Table` T1
+>   (clone-once) landed; its remaining cost is T3/T5 (below). So the
+>   "borrowed constructor" is an API micro-nicety with no measured hot
+>   caller left, not a slice — the fix would still be a public signature
+>   change by definition, for no remaining real cost.
+> - **plugin-host PROTO-3 — cold path, not worth an API break
+>   (verified by code, DRV-2-class).** PROTO-1 (the actual 6–8-`Vec`
+>   capability round-trip + `read_frame` double-alloc) already landed
+>   (Batch H). PROTO-3 is the *structural* `Frame::payload: Vec<u8>` →
+>   borrowed/`Cow` change on the **protocol struct** (semver-breaking by
+>   definition). All 11 `host.broadcast(&HostEvent::…)` call sites are
+>   **discrete events** (SessionStart/UserPrompt/Command/Shutdown/Init/
+>   Refresh/TurnEnded/…) — there is *no* per-frame broadcast at all, so
+>   the payload clone is a cold cost. An API-breaking change to a wire
+>   protocol struct for a cold path has no real-world payoff; the
+>   code-grounded determination is the deliverable (as with DRV-2).
 > - **MENU-1 / SB-1 / CP-1 — DONE (caller-side windowing, no API
 >   change).** The "List-API-coupled, needs LIST-1" label was wrong (the
 >   4th over-broad classification the re-derivation overturned). `List`
