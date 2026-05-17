@@ -308,9 +308,27 @@ impl Widget for Calendar<'_> {
                     buf.set_cell(Position::new(x, y), ' ', cell_style);
                 }
             }
-            // Right-aligned within the two digit columns.
-            let text = format!("{day:>2}");
-            put(buf, &text, cell_style, cell_x, y, right);
+            // Right-aligned within the two digit columns, written directly
+            // (W1-01): `format!("{day:>2}")` allocated a String per visible
+            // day every frame (≤31/frame) for two glyphs. `day` is 1..=31, so
+            // the tens digit is a space when single-digit — byte-identical to
+            // the old `{:>2}` output. The two background cells are already
+            // filled above; this overwrites exactly the same two columns.
+            let tens = (day / 10) as u8;
+            let ones = (day % 10) as u8;
+            let hi = if day >= 10 {
+                (b'0' + tens) as char
+            } else {
+                ' '
+            };
+            let lo = (b'0' + ones) as char;
+            if cell_x < right {
+                buf.set_cell(Position::new(cell_x, y), hi, cell_style);
+            }
+            let lo_x = cell_x.saturating_add(1);
+            if lo_x < right {
+                buf.set_cell(Position::new(lo_x, y), lo, cell_style);
+            }
 
             col += 1;
             if col == 7 {
