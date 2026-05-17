@@ -674,6 +674,13 @@ impl KitchenSink {
                 _ => {}
             },
             Overlay::Help => {
+                // The help overlay is the universal "I'm lost" affordance,
+                // so it doubles as the discoverable gateway into the keymap
+                // editor: `k` (consistent across all three apps) opens it;
+                // any other key just dismisses the cheat-sheet.
+                if code == KeyCode::Char('k') {
+                    return self.do_action(keymap::Action::Drawer);
+                }
                 self.overlay = Overlay::None;
             }
             Overlay::None => {}

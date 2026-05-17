@@ -93,9 +93,12 @@ help, quit, the keymap panel) is a semantic `Action` resolved through the
 shared [`rstui-keymap`](keymaps.md) engine (ADR 0015), so all of them are
 remappable three ways:
 
-- **In-app:** `Ctrl-K` opens the `KeymapView` settings panel — select a
-  row, press `r`/`Enter` to **capture a new key**, `x` to disable, `Esc`
-  to close. The help/footer re-derive from the live map.
+- **In-app:** open the help cheat-sheet with `?` and press **`k`** (the
+  universal gateway — the same two keystrokes in every rstui app), or the
+  `Ctrl-K` shortcut directly. Either opens the `KeymapView` settings
+  panel — select a row, press `r`/`Enter` to **capture a new key**, `x`
+  to disable, `Esc` to close. The help/status surface this; the
+  help/footer re-derive from the live map.
 - **A config file / env:** `RSTUI_KEYMAP=/path/to/keymap` loads an
   `id = keys` override file (e.g. `git.split = ctrl+b`); see
   [keymaps.md](keymaps.md). Mirrors `RSTUI_THEME` — no rebuild, no panel.

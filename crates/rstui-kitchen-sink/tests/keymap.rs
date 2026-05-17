@@ -165,3 +165,22 @@ fn remapping_does_not_break_existing_clipboard_or_nav() {
     h.handle(ch('n'));
     assert!(h.is_running());
 }
+
+#[test]
+fn help_then_k_is_the_universal_gateway_into_the_keymap_editor() {
+    let mut h = harness();
+    h.handle(ch('?')); // the universal "I'm lost" overlay
+    let s = h.snapshot();
+    assert!(
+        s.contains("Customise these keybindings"),
+        "help advertises the k gateway:\n{s}"
+    );
+    // `k` from help turns the cheat-sheet into the keymap editor.
+    h.handle(ch('k'));
+    let s = h.snapshot();
+    assert!(
+        s.contains("rebind") && s.contains("Settings drawer"),
+        "help → k opened the KeymapView keymap editor:\n{s}"
+    );
+    assert!(h.is_running());
+}

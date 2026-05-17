@@ -402,7 +402,14 @@ impl GitReview {
             return Cmd::quit();
         }
         if self.help {
-            self.help = false; // Any key dismisses the cheat-sheet.
+            self.help = false; // Any key dismisses the cheat-sheet…
+            // …and `k` (the universal gateway, same key in every app)
+            // turns the cheat-sheet into the keymap editor.
+            if code == KeyCode::Char('k') {
+                self.keymap_panel = true;
+                self.km_sel = 0;
+                self.km_rebind = None;
+            }
             return Cmd::none();
         }
         if self.picking {
@@ -955,7 +962,7 @@ impl GitReview {
             Line::styled("type to edit · Ctrl-S save · Esc back", self.theme.dim())
         } else {
             Line::styled(
-                "[ ]: commit · s: side-by-side · t: top/left · \\: tree · /: filter · ?: help",
+                "[ ]: commit · s: split · t: top/left · \\: tree · /: filter · ?: help · ⌃K/?→k: keymap",
                 self.theme.dim(),
             )
         };
@@ -1129,6 +1136,7 @@ impl App for GitReview {
                 ),
                 HelpEntry::new(["Esc"], "Leave Edit / close this help"),
                 HelpEntry::new(["q"], "Quit"),
+                HelpEntry::new(["k"], "Customise these keybindings (keymap editor)"),
             ];
             frame.render_widget(
                 HelpOverlay::new(&entries)

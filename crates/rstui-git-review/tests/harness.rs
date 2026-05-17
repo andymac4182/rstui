@@ -505,3 +505,21 @@ fn widening_the_history_pane_reveals_more_of_the_commit_subject() {
     assert!(h.is_running());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn help_then_k_is_the_universal_gateway_into_the_keymap_editor() {
+    let mut h = harness(repo_config());
+    h.handle(ch('?')); // open the help cheat-sheet
+    assert!(
+        h.snapshot().contains("Customise these keybindings"),
+        "help advertises the k gateway:\n{}",
+        h.snapshot()
+    );
+    h.handle(ch('k')); // …and k turns it into the keymap editor
+    let s = h.snapshot();
+    assert!(
+        s.contains("Keymap") && s.contains("git.split"),
+        "help → k opened the KeymapView keymap editor:\n{s}"
+    );
+    assert!(h.is_running());
+}
