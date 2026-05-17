@@ -2,6 +2,9 @@
 **/*.rs.bk
 *.pdb
 .DS_Store
-.claude/
+# Ignore local Claude state, but track the shared project skills so the
+# documentation-maintenance contract ships with the repo.
+.claude/*
+!.claude/skills/
 *.rlib
 *.rmeta
