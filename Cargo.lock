@@ -797,6 +797,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-theme"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rstui-widgets"
 version = "0.0.1"
 dependencies = [

@@ -23,6 +23,7 @@ fits what you are doing.
 
 - **Architecture decisions** — [`docs/adr/`](adr/README.md) (12 ADRs; the *why* behind every boundary)
 - **Composition model** — [`docs/composition.md`](composition.md) (how widgets compose into a screen; ADR 0012)
+- **Theming** — [`docs/theming.md`](theming.md) (every gpui-component theme, as a terminal palette)
 - **Conventions** — [`docs/conventions/`](conventions/README.md) (naming gate)
 - **Inner loop** — [`docs/development.md`](development.md) (`cargo xtask ci`)
 - **Merging** — [`docs/merging.md`](merging.md) (parallel-stream merge protocol)
@@ -39,6 +40,7 @@ fits what you are doing.
 | [`rstui-crossterm`](runtime.md#crossterm-the-live-terminal) | The crossterm-backed terminal driver — the only external dependency, isolated here |
 | [`rstui-plugin-host`](plugins.md) | Dependency-free permissioned plugin host: plugins run as separate OS processes, deny-by-default |
 | [`rstui-acp-client`](acp-client.md) | A full-screen Agent Client Protocol chat client built on the framework |
+| [`rstui-theme`](theming.md) | Optional: every gpui-component theme as a terminal-ready palette + `Style` constructors |
 | `rstui-kitchen-sink` | The interactive full-screen showcase exercising every widget — see [Kitchen sink](kitchen-sink.md) |
 | `rstui-bench` / `xtask` | The non-gating benchmark harness and workspace automation (`cargo xtask ci`, `record`) |
 
