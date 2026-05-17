@@ -69,12 +69,18 @@ pub struct Kbd<'a> {
     separator_style: Style,
 }
 
+/// Default cap delimiters wrapping each key label. The single source for
+/// both [`Kbd`]'s default and [`Kbd::cluster_width`], so a borrowed-keys
+/// width measure can never drift from the rendered one.
+const DEFAULT_OPEN: &str = "[";
+const DEFAULT_CLOSE: &str = "]";
+
 impl Default for Kbd<'_> {
     fn default() -> Self {
         Self {
             keys: Vec::new(),
-            open: Cow::Borrowed("["),
-            close: Cow::Borrowed("]"),
+            open: Cow::Borrowed(DEFAULT_OPEN),
+            close: Cow::Borrowed(DEFAULT_CLOSE),
             separator: Cow::Borrowed(" "),
             style: Style::new(),
             key_style: Style::new(),
@@ -147,13 +153,31 @@ impl<'a> Kbd<'a> {
     /// reasoning [`Modal::area`](crate::Modal::area) uses.
     #[must_use]
     pub fn width(&self) -> u16 {
-        if self.keys.is_empty() {
+        Self::measure(&self.keys, &self.separator, &self.open, &self.close)
+    }
+
+    /// The rendered width of a key cluster from **borrowed** keys (default
+    /// `[`/`]` caps), without constructing a `Kbd`.
+    ///
+    /// Lets a composing widget (e.g. [`HelpOverlay`](crate::HelpOverlay))
+    /// size its key column over every entry every frame with **no per-entry
+    /// `Vec<Cow>` clone** (HELP-1). Identical formula to
+    /// [`width`](Self::width) — both delegate to one private `measure`.
+    #[must_use]
+    pub fn cluster_width(keys: &[Cow<'_, str>], separator: &str) -> u16 {
+        Self::measure(keys, separator, DEFAULT_OPEN, DEFAULT_CLOSE)
+    }
+
+    /// The one place the cluster-width formula lives: each key wrapped in the
+    /// caps, joined by the separator.
+    fn measure(keys: &[Cow<'_, str>], separator: &str, open: &str, close: &str) -> u16 {
+        if keys.is_empty() {
             return 0;
         }
-        let cap = self.open.chars().count() + self.close.chars().count();
-        let keys: usize = self.keys.iter().map(|k| k.chars().count() + cap).sum();
-        let seps = self.separator.chars().count() * self.keys.len().saturating_sub(1);
-        u16::try_from(keys + seps).unwrap_or(u16::MAX)
+        let cap = open.chars().count() + close.chars().count();
+        let total: usize = keys.iter().map(|k| k.chars().count() + cap).sum();
+        let seps = separator.chars().count() * keys.len().saturating_sub(1);
+        u16::try_from(total + seps).unwrap_or(u16::MAX)
     }
 }
 

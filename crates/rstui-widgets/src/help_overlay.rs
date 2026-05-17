@@ -282,7 +282,10 @@ impl Widget for HelpOverlay<'_> {
         // 5. Two aligned columns: the key clusters left (column sized to the
         //    widest, clamped to the inner width), the descriptions right.
         let key_col = (0..self.entries.len())
-            .map(|i| self.kbd(i).width())
+            // HELP-1: measure from the borrowed keys — `self.kbd(i)` built a
+            // whole `Kbd` (cloning the key `Vec<Cow>`) per entry every frame
+            // just to call `.width()`. Same formula (one private `measure`).
+            .map(|i| Kbd::cluster_width(&self.entries[i].keys, self.separator.as_ref()))
             .max()
             .unwrap_or(0)
             .min(inner.width);
