@@ -47,11 +47,18 @@ production transport is made with the costs visible, not re-derived.
 2. **Shared-memory ring + futex park.** Lower mean (no pipe copy, no
    two write/read syscalls) but, again, a parked-then-woken peer pays a
    scheduler wakeup → tail not flat. Solves mean, not p95.
-3. **Shared-memory ring + adaptive spin.** Both ends busy-poll an atomic
-   doorbell while a turn is in flight (no sleep → no wakeup), backing
-   off to yield/sleep when idle (so an idle plugin frees its core).
-   This is the *only* option that yields a flat sub-µs tail. Cost: a
-   spinning core during active turns; `unsafe`; Rust-only.
+3. **Shared-memory ring + *scoped* adaptive spin.** Plugin RPC is
+   request/response, so the latency-critical wait is *bounded and
+   predictable*: the caller spins only in the window between "request
+   sent" and "response seen" (µs for an shm-fast plugin); the callee
+   spins a short *stay-hot* window after each message, then **parks on
+   a named semaphore**. No "spin for the whole turn" — spin is scoped to
+   each message exchange. This is the *only* option with a flat sub-µs
+   tail on the hot path, and — measured — it does **not** burn a core
+   (it parks between exchanges; see Evidence). Cost: `unsafe`; Rust-only;
+   a *cold* message arriving after the stay-hot window pays one
+   semaphore wake ≈ the stdio tail (~16 µs) — but a cold post-idle
+   message is by definition not the latency-critical one.
 4. **Do nothing** — ship the landed stdio result (p50 < 10 µs).
 
 ## Decision
@@ -70,7 +77,9 @@ works on macOS and Linux alike.
 It does **not** replace stdio/uds; `serve_auto`/`bridge()` keep their
 precedence and stdio stays the default. shm is selected only by an
 explicit `--shm <path>` for a plugin the host has deliberately marked
-latency-critical, and the host spins **only while a turn is in flight**.
+latency-critical. The spin is **scoped to each request→response
+exchange** (caller) plus a short post-message stay-hot window (callee),
+then both **park** — so a quiescent plugin uses ~0 % CPU.
 
 Implementation is **phased** (below); this ADR is `Proposed` and becomes
 `Accepted` on the go decision — the evidence already justifies it.
@@ -89,9 +98,19 @@ release, 500 000 iterations, 128-byte payload, single in-flight:
 min 41 ns. ~**40× lower p50** than stdio and a flat tail through p99.9.
 A single 1 ms `max` over 500 k iters is one OS preemption of the spin
 thread (expected on a non-real-time OS without core pinning; p99.9 =
-708 ns shows it is a lone blip, not the distribution). The premise is
-validated: shared memory + spin is the wake-up-free path, and it crushes
-"< 10 µs" including p99.
+708 ns shows it is a lone blip, not the distribution).
+
+A second prototype answered "does this burn a core?". With **scoped**
+adaptive spin (caller spins only request→response; callee a 200 µs
+stay-hot window then parks on a named POSIX semaphore): the hot-path
+distribution is **unchanged** (pipelined p50 **0.125 µs**, p99
+**0.583 µs**, flat), and between exchanges both processes were observed
+at **0.0 % CPU** (`ps`) — parked on the semaphore, not spinning. So the
+flat sub-µs tail is preserved for an active exchange while average CPU
+is *negligible*: the cost is microseconds of spin **per RPC**, not a
+pinned core. The premise is validated and the core-burn objection is
+disproved: scoped shm+spin crushes "< 10 µs" including p99 **without**
+monopolising a core at realistic plugin cadence.
 
 ## Consequences
 
@@ -104,10 +123,15 @@ Rust plugin — interactive/streaming plugins that would feel pipe jitter.
   atomics without a native addon, which would break the dependency-free
   TS posture (ADR 0007 lineage). TS plugins keep stdio/uds — this fast
   path is Rust-plugin-only, and that is documented, not hidden.
-- **CPU.** A spinning end is a core at ~100% *while waiting*. Adaptive
-  back-off frees an idle plugin's core, but many simultaneously-active
-  shm plugins is untenable — hence opt-in, single/few, host spins only
-  during an in-flight turn.
+- **CPU.** *Scoped* spin means a core is hot only inside a
+  request→response window (µs) and a short post-message stay-hot window;
+  between exchanges both ends park (measured ~0 % CPU). Average cost is
+  `spin_window × request_rate` — a rounding error at any realistic
+  plugin event rate, **not** a pinned core. Two residual rules still
+  hold: (a) keep it opt-in / single-few, since N tight-looping shm
+  plugins would still add up; (b) a *cold* message after the stay-hot
+  window pays one semaphore wake ≈ the stdio tail — acceptable because
+  cold post-idle messages are not the latency-critical ones.
 - **`unsafe`.** Confined to one audited crate (`rstui-acp-shm`,
   `[lints]` not inheriting the workspace forbid; every `unsafe` block
   carries a `SAFETY:` justification; reviewed as its own slice). The

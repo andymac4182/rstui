@@ -91,10 +91,13 @@ The only ways to push p95 (and p99) under 10 µs:
    so it is a **policy decision**, gated behind an opt-in
    `--spin`/`RSTUI_PLUGIN_SPIN` for the rare latency-critical plugin —
    never the default (a TUI host with many plugins must not burn N cores).
-2. **Shared-memory ring + spin** — measured p50 **125 ns**, p99 **625 ns**,
-   flat tail through p99.9 (~40× lower p50 than stdio). futex/eventfd
-   does *not* achieve this — a parked-then-woken peer still pays a
-   scheduler wakeup; only busy-spin removes it. Designed, measured, and
+2. **Shared-memory ring + *scoped* spin** — measured p50 **125 ns**,
+   p99 **625 ns**, flat tail through p99.9 (~40× lower p50 than stdio).
+   futex/eventfd does *not* achieve this — a parked-then-woken peer
+   still pays a scheduler wakeup; only busy-spin removes it. Spin is
+   scoped to each request→response exchange + a short stay-hot window,
+   then both ends **park** — measured ~0 % CPU between exchanges, so it
+   does **not** burn a core at realistic cadence. Designed, measured,
    recorded in [ADR 0016](../../docs/adr/0016-shared-memory-plugin-transport.md):
    opt-in, **Rust-plugin-only** (Node can't mmap without a native addon),
    `unsafe` isolated to one audited crate, no new dependency. Phased
