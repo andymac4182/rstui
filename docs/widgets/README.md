@@ -35,6 +35,7 @@ caller-owned state it projects — this is the part that matters most), the
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
 | **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, Flow | [overlays-and-control.md](overlays-and-control.md) |
 | **Observability** | LineChart, Heatmap, Histogram, StatPanel, FlameGraph, TraceWaterfall, LogStream | [observability.md](observability.md) |
+| **Charts & visualization** | Canvas, ScatterPlot, PieChart, RadarChart, BoxPlot, Candlestick, Waterfall, Funnel, BulletChart, Treemap, Sankey, Gantt, CalendarHeatmap, StackedBarChart | [charts.md](charts.md) |
 
 ## Alphabetical index
 
@@ -47,9 +48,14 @@ caller-owned state it projects — this is the part that matters most), the
 | [Badge](forms-and-data.md#badge) | forms/data | `badge_demo` |
 | [BarChart](forms-and-data.md#barchart) | forms/data | `bar_chart_demo` |
 | [Block](core-set.md#block) | core | `block_demo` |
+| [BoxPlot](charts.md#boxplot) | charts | `box_plot_demo` |
 | [Breadcrumb](navigation-and-layout.md#breadcrumb) | nav/layout | `breadcrumb_demo` |
+| [BulletChart](charts.md#bulletchart) | charts | `bullet_chart_demo` |
 | [Button](core-set.md#button) | core | `button_demo` |
 | [Calendar](forms-and-data.md#calendar) | forms/data | `calendar_demo` |
+| [CalendarHeatmap](charts.md#calendarheatmap) | charts | `calendar_heatmap_demo` |
+| [Candlestick](charts.md#candlestick) | charts | `candlestick_demo` |
+| [Canvas](charts.md#canvas) | charts | `canvas_demo` |
 | [Card](navigation-and-layout.md#card) | nav/layout | `card_demo` |
 | [Checkbox](core-set.md#checkbox) | core | `checkbox_demo` |
 | [CommandPalette](navigation-and-layout.md#commandpalette) | nav/layout | `command_palette_demo` |
@@ -64,6 +70,8 @@ caller-owned state it projects — this is the part that matters most), the
 | [FlameGraph](observability.md#flamegraph) | observability | `flame_graph_demo` |
 | [Flow](overlays-and-control.md#flow) | overlays | `flow_demo` |
 | [Form](forms-and-data.md#form) | forms/data | `form_demo` |
+| [Funnel](charts.md#funnel) | charts | `funnel_demo` |
+| [Gantt](charts.md#gantt) | charts | `gantt_demo` |
 | [Gauge](core-set.md#gauge) | core | `gauge_demo` |
 | [Grid](overlays-and-control.md#grid) | overlays | `grid_demo` |
 | [Heatmap](observability.md#heatmap) | observability | `heatmap_demo` |
@@ -83,8 +91,12 @@ caller-owned state it projects — this is the part that matters most), the
 | [Modal](core-set.md#modal) | core | `modal_demo` |
 | [Pagination](navigation-and-layout.md#pagination) | nav/layout | `pagination_demo` |
 | [Paragraph](core-set.md#paragraph) | core | `paragraph_demo` |
+| [PieChart](charts.md#piechart) | charts | `pie_chart_demo` |
 | [Popover](overlays-and-control.md#popover) | overlays | `popover_demo` |
+| [RadarChart](charts.md#radarchart) | charts | `radar_chart_demo` |
 | [Radio](core-set.md#radio) | core | `radio_demo` |
+| [Sankey](charts.md#sankey) | charts | `sankey_demo` |
+| [ScatterPlot](charts.md#scatterplot) | charts | `scatter_plot_demo` |
 | [Scrollbar](core-set.md#scrollbar) | core | `scrollbar_demo` |
 | [ScrollView](overlays-and-control.md#scrollview) | overlays | `scroll_view_demo` |
 | [Select](core-set.md#select) | core | `select_demo` |
@@ -94,6 +106,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Sparkline](forms-and-data.md#sparkline) | forms/data | `sparkline_demo` |
 | [Spinner](core-set.md#spinner) | core | `spinner_demo` |
 | [SplitPane](navigation-and-layout.md#splitpane) | nav/layout | `split_pane_demo` |
+| [StackedBarChart](charts.md#stackedbarchart) | charts | `stacked_bar_chart_demo` |
 | [StatPanel](observability.md#statpanel) | observability | `stat_panel_demo` |
 | [StatusBar](core-set.md#statusbar) | core | `status_bar_demo` |
 | [Stepper](navigation-and-layout.md#stepper) | nav/layout | `stepper_demo` |
@@ -104,6 +117,8 @@ caller-owned state it projects — this is the part that matters most), the
 | [Tooltip](navigation-and-layout.md#tooltip) | nav/layout | `tooltip_demo` |
 | [TraceWaterfall](observability.md#tracewaterfall) | observability | `trace_waterfall_demo` |
 | [Tree](core-set.md#tree) | core | `tree_demo` |
+| [Treemap](charts.md#treemap) | charts | `treemap_demo` |
+| [Waterfall](charts.md#waterfall) | charts | `waterfall_demo` |
 
 ## Shared patterns
 
