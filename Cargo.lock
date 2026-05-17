@@ -725,6 +725,7 @@ dependencies = [
  "rstui-acp-plugin-sdk",
  "rstui-core",
  "rstui-crossterm",
+ "rstui-keymap",
  "rstui-runtime",
  "rstui-widgets",
  "sacp",
@@ -766,11 +767,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-keymap"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+]
+
+[[package]]
 name = "rstui-kitchen-sink"
 version = "0.0.1"
 dependencies = [
  "rstui-core",
  "rstui-crossterm",
+ "rstui-keymap",
  "rstui-runtime",
  "rstui-theme",
  "rstui-widgets",

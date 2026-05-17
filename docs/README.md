@@ -21,8 +21,9 @@ fits what you are doing.
 
 ## Quick links
 
-- **Architecture decisions** — [`docs/adr/`](adr/README.md) (12 ADRs; the *why* behind every boundary)
+- **Architecture decisions** — [`docs/adr/`](adr/README.md) (15 ADRs; the *why* behind every boundary)
 - **Composition model** — [`docs/composition.md`](composition.md) (how widgets compose into a screen; ADR 0012)
+- **Keymaps** — [`docs/keymaps.md`](keymaps.md) (customisable, per-OS, multi-keymap keybindings; ADR 0015)
 - **Code review & editing roadmap** — [`docs/code-review-and-editing.md`](code-review-and-editing.md) (vim-grade editing + hunk-grade review: capability audit and wave plan)
 - **Theming** — [`docs/theming.md`](theming.md) (every gpui-component theme, as a terminal palette)
 - **Conventions** — [`docs/conventions/`](conventions/README.md) (naming gate)
@@ -38,6 +39,7 @@ fits what you are doing.
 | [`rstui-core`](core-reference.md) | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, focus, the `Widget` trait, text, text-edit, text-area, scroll, selection |
 | [`rstui-widgets`](widgets/README.md) | The concrete widget set (~57), one module per widget. The worked reference for third-party widget crates |
 | [`rstui-runtime`](runtime.md) | Elm-style `App`/`Cmd`, the deterministic `Harness`, and the live `run` loop they share |
+| [`rstui-keymap`](keymaps.md) | Customisable keybinding engine: semantic actions, multi-keymap, per-OS layers, leader sequences, runtime remap (ADR 0015) |
 | [`rstui-crossterm`](runtime.md#crossterm-the-live-terminal) | The crossterm-backed terminal driver — the only external dependency, isolated here |
 | [`rstui-plugin-host`](plugins.md) | Dependency-free permissioned plugin host: plugins run as separate OS processes, deny-by-default |
 | [`rstui-acp-client`](acp-client.md) | A full-screen Agent Client Protocol chat client built on the framework |

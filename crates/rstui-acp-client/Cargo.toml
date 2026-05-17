@@ -29,6 +29,10 @@ path = "src/lib.rs"
 # convention (a bare path dep makes a crate unpublishable); kept equal to the
 # workspace version by the `crate_dep_versions_match_workspace` xtask guard.
 rstui-core = { path = "../rstui-core", version = "0.0.1" }
+# The shared keymap engine (ADR 0015): the canonical chord parse/normalise
+# that the plugin-keybind layer and the runtime key lookup both go through,
+# so this client and the kitchen sink share one keybinding model.
+rstui-keymap = { path = "../rstui-keymap", version = "0.0.1" }
 # The async event loop (`run_async`, `AsyncEventSource`) is opt-in (ADR 0011);
 # ACP is inherently streaming + tokio, so this client needs it. One line with
 # `version` as the *last* key: the xtask release guard's per-line parser reads

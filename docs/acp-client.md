@@ -86,6 +86,13 @@ The wire, transports and plugin-author API live in the sibling crate
 **`rstui-acp-plugin-sdk`**, shared by the client (host side) and every
 reference plugin.
 
+A plugin can `RegisterKeybinding` a chord to one of its commands. Both the
+registration side (the plugin-declared string) and the runtime side (the
+pressed key) are canonicalised through the shared
+[`rstui-keymap`](keymaps.md) `Chord` (ADR 0015), so a plugin's `"ctrl+g"`
+and a pressed `Ctrl+G` meet in one vocabulary — the *same* engine the
+kitchen sink uses for its shell bindings.
+
 ### Reference plugins
 
 Self-contained binaries under `crates/rstui-acp-client/src/bin/`, each a

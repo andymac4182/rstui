@@ -1,0 +1,20 @@
+[package]
+name = "rstui-keymap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "A customisable, per-OS, multi-keymap keybinding engine for rstui apps: semantic actions with stable ids, chord + leader-sequence triggers, runtime overrides, reverse lookup — the Textual + OpenCode synthesis as one reusable, dependency-light crate."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Depends only on the dependency-free substrate for the key vocabulary
+# (`KeyCode`/`KeyEvent`/`KeyModifiers`). `version` + `path` per the workspace
+# publishability convention (a bare path dep makes a crate unpublishable);
+# kept equal to the workspace version by the `crate_dep_versions_match_workspace`
+# xtask guard.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }

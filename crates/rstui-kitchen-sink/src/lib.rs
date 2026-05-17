@@ -28,9 +28,12 @@
 
 pub(crate) mod chrome;
 pub(crate) mod clipboard;
-pub(crate) mod keymap;
 pub(crate) mod screens;
 pub(crate) mod theme;
+
+/// The keymap engine now lives in its own reusable crate (ADR 0015); this
+/// alias keeps the existing `crate::keymap::…` paths working unchanged.
+pub(crate) use rstui_keymap as keymap;
 
 use std::cell::{Cell, RefCell};
 
