@@ -16,8 +16,9 @@ pub enum AcpEvent {
     Thought(String),
     /// A tool call the agent initiated (title / one-line summary).
     ToolCall(String),
-    /// A plan/`todo` update line from the agent.
-    Plan(String),
+    /// The agent's execution plan (ACP `plan`) — the full todo list, which
+    /// the client replaces wholesale on each update (per the ACP contract).
+    Plan(Vec<TodoEntry>),
     /// The agent's advertised slash commands (`available_commands_update`):
     /// `(name, description)` pairs, surfaced in the autocomplete + help.
     AvailableCommands(Vec<(String, String)>),
@@ -39,6 +40,40 @@ pub enum AcpEvent {
     Error(String),
     /// The agent process exited / the connection closed.
     Disconnected(String),
+}
+
+/// Execution status of a single ACP plan entry (todo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoStatus {
+    /// Not started yet.
+    Pending,
+    /// Currently being worked on.
+    InProgress,
+    /// Finished.
+    Completed,
+}
+
+impl TodoStatus {
+    /// Parses the ACP `status` string (`pending`/`in_progress`/`completed`).
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "in_progress" => Self::InProgress,
+            "completed" => Self::Completed,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// One entry in the agent's execution plan (an ACP `PlanEntry`).
+#[derive(Debug, Clone)]
+pub struct TodoEntry {
+    /// Human-readable description of the task.
+    pub content: String,
+    /// Current execution status.
+    pub status: TodoStatus,
+    /// Relative priority (`high`/`medium`/`low`); empty if unspecified.
+    pub priority: String,
 }
 
 /// One selectable answer to a [`AcpEvent::Permission`] request.

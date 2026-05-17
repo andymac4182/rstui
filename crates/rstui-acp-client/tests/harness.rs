@@ -451,3 +451,80 @@ fn agent_advertised_commands_merge_into_the_command_set() {
     let comp = h.app().completion().expect("popup");
     assert!(comp.items.iter().any(|c| c.name == "deploy"));
 }
+
+// ---- Iteration 2: todos panel (ACP plan) ----
+
+use rstui_acp_client::acp::{TodoEntry, TodoStatus};
+
+fn todo(content: &str, status: TodoStatus) -> TodoEntry {
+    TodoEntry {
+        content: content.to_owned(),
+        status,
+        priority: "medium".to_owned(),
+    }
+}
+
+#[test]
+fn acp_plan_populates_todos_and_progress() {
+    let mut h = chatting(120, 36);
+    h.message(Msg::Acp(AcpEvent::Plan(vec![
+        todo("scaffold", TodoStatus::Completed),
+        todo("wire transport", TodoStatus::InProgress),
+        todo("write tests", TodoStatus::Pending),
+    ])));
+    assert_eq!(h.app().todos().len(), 3);
+    assert_eq!(h.app().todo_progress(), (1, 3));
+    // The sidebar auto-shows while work is open, and the panel is drawn.
+    assert!(h.app().sidebar_visible());
+    let snap = h.snapshot();
+    assert!(snap.contains("Todos"));
+    assert!(snap.contains("wire transport"));
+}
+
+#[test]
+fn acp_plan_replaces_the_whole_list_each_update() {
+    let mut h = chatting(120, 36);
+    h.message(Msg::Acp(AcpEvent::Plan(vec![todo(
+        "a",
+        TodoStatus::Pending,
+    )])));
+    h.message(Msg::Acp(AcpEvent::Plan(vec![
+        todo("x", TodoStatus::InProgress),
+        todo("y", TodoStatus::Pending),
+    ])));
+    assert_eq!(
+        h.app().todos().len(),
+        2,
+        "newest plan replaces, not appends"
+    );
+    assert_eq!(h.app().todos()[0].content, "x");
+}
+
+#[test]
+fn sidebar_auto_hides_once_every_todo_is_completed() {
+    let mut h = chatting(120, 36);
+    h.message(Msg::Acp(AcpEvent::Plan(vec![
+        todo("done a", TodoStatus::Completed),
+        todo("done b", TodoStatus::Completed),
+    ])));
+    assert!(
+        !h.app().sidebar_visible(),
+        "all-completed ⇒ Auto sidebar hides (opencode parity)"
+    );
+}
+
+#[test]
+fn slash_todos_toggles_the_sidebar() {
+    let mut h = chatting(120, 36);
+    h.message(Msg::Acp(AcpEvent::Plan(vec![todo(
+        "t",
+        TodoStatus::Pending,
+    )])));
+    assert!(h.app().sidebar_visible(), "auto-visible with open work");
+    typ(&mut h, "/todos");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(!h.app().sidebar_visible(), "/todos hides it");
+    typ(&mut h, "/todos");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(h.app().sidebar_visible(), "/todos again brings it back");
+}

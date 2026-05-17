@@ -297,12 +297,26 @@ fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
                 .map(|arr| {
                     arr.iter()
                         .map(|e| {
-                            let content = e.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                            let st = e.get("status").and_then(|s| s.as_str()).unwrap_or("");
-                            format!("• {content} ({st})")
+                            let content = e
+                                .get("content")
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            let status = super::events::TodoStatus::parse(
+                                e.get("status").and_then(|s| s.as_str()).unwrap_or(""),
+                            );
+                            let priority = e
+                                .get("priority")
+                                .and_then(|p| p.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            super::events::TodoEntry {
+                                content,
+                                status,
+                                priority,
+                            }
                         })
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                        .collect()
                 })
                 .unwrap_or_default();
             vec![AcpEvent::Plan(entries)]

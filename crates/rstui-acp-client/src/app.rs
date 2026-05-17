@@ -10,7 +10,8 @@ use rstui_runtime::{App, Cmd, Frame};
 
 use crate::Config;
 use crate::acp::{
-    AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, spawn_driver,
+    AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, TodoEntry, TodoStatus,
+    spawn_driver,
 };
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
 use crate::registry::Registry;
@@ -25,6 +26,18 @@ pub enum Screen {
     Connecting,
     /// Connected; the chat transcript + composer.
     Chat,
+}
+
+/// Visibility policy for the todo sidebar (opencode parity: it auto-shows
+/// while there is open work and hides once everything is done).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarMode {
+    /// Show only while there are todos and not all are completed.
+    Auto,
+    /// Always show.
+    Shown,
+    /// Never show.
+    Hidden,
 }
 
 /// The author of a transcript entry, which drives its styling.
@@ -124,6 +137,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("agents", "Switch agent (open the registry picker)"),
     ("new", "New session (back to the agent picker)"),
     ("clear", "Clear the transcript"),
+    ("todos", "Toggle the todo sidebar"),
     ("log", "Toggle the diagnostic log"),
     ("cancel", "Interrupt the streaming turn"),
     ("quit", "Exit the client"),
@@ -182,6 +196,8 @@ pub struct ChatApp {
     commands: BTreeMap<String, (String, String)>,
     agent_commands: BTreeMap<String, String>,
     completion: Option<Completion>,
+    todos: Vec<TodoEntry>,
+    sidebar: SidebarMode,
     toasts: Vec<Toast>,
     log: Vec<String>,
     show_log: bool,
@@ -219,6 +235,8 @@ impl ChatApp {
             commands: BTreeMap::new(),
             agent_commands: BTreeMap::new(),
             completion: None,
+            todos: Vec::new(),
+            sidebar: SidebarMode::Auto,
             toasts: Vec::new(),
             log: Vec::new(),
             show_log: false,
@@ -304,6 +322,33 @@ impl ChatApp {
     #[must_use]
     pub fn completion(&self) -> Option<&Completion> {
         self.completion.as_ref()
+    }
+    /// The agent's current execution plan (todos), newest plan wins.
+    #[must_use]
+    pub fn todos(&self) -> &[TodoEntry] {
+        &self.todos
+    }
+    /// Whether the todo sidebar should be drawn (resolves [`SidebarMode`]).
+    #[must_use]
+    pub fn sidebar_visible(&self) -> bool {
+        match self.sidebar {
+            SidebarMode::Hidden => false,
+            SidebarMode::Shown => true,
+            SidebarMode::Auto => {
+                !self.todos.is_empty()
+                    && self.todos.iter().any(|t| t.status != TodoStatus::Completed)
+            }
+        }
+    }
+    /// `(completed, total)` todo counts for the sidebar header.
+    #[must_use]
+    pub fn todo_progress(&self) -> (usize, usize) {
+        let done = self
+            .todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Completed)
+            .count();
+        (done, self.todos.len())
     }
     /// Active toasts.
     #[must_use]
@@ -449,6 +494,14 @@ impl ChatApp {
                 self.scroll = 0;
                 self.follow = true;
                 self.push_system("transcript cleared");
+                Cmd::none()
+            }
+            "todos" => {
+                self.sidebar = if self.sidebar == SidebarMode::Hidden {
+                    SidebarMode::Auto
+                } else {
+                    SidebarMode::Hidden
+                };
                 Cmd::none()
             }
             "log" => {
@@ -1090,14 +1143,19 @@ impl ChatApp {
                 });
                 self.follow = true;
             }
-            AcpEvent::Plan(t) => {
-                self.close_open_entry();
-                self.transcript.push(Entry {
-                    role: Role::Plan,
-                    text: t,
-                    open: false,
-                });
-                self.follow = true;
+            AcpEvent::Plan(entries) => {
+                // ACP replaces the whole plan on each update.
+                self.todos = entries;
+                let (done, total) = self.todo_progress();
+                if total > 0 {
+                    self.close_open_entry();
+                    self.transcript.push(Entry {
+                        role: Role::Plan,
+                        text: format!("plan updated — {done}/{total} done"),
+                        open: false,
+                    });
+                    self.follow = true;
+                }
             }
             AcpEvent::AvailableCommands(cmds) => {
                 self.agent_commands = cmds.into_iter().collect();

@@ -145,8 +145,21 @@ fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    // Dock the todo sidebar on the right when there is room for it.
+    let main = if app.sidebar_visible() && area.width >= 60 {
+        let sidebar_w = area.width / 4;
+        let [m, side] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(sidebar_w.clamp(24, 40)),
+        ])
+        .areas(area);
+        render_todos_sidebar(app, frame, side);
+        m
+    } else {
+        area
+    };
     let [transcript_area, composer_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(area);
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
 
     // ---- transcript ----
     let block = Block::bordered().title(transcript_title(app));
@@ -261,6 +274,36 @@ fn render_completion(app: &ChatApp, frame: &mut Frame<'_>, composer_area: Rect) 
             .selected(Some(comp.selected)),
         body,
     );
+}
+
+fn render_todos_sidebar(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let (done, total) = app.todo_progress();
+    let block = Block::bordered().title(format!(" Todos — {done}/{total} "));
+    let inner = block.inner(area);
+    clear(frame, area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for todo in app.todos() {
+        // opencode glyphs/colours: ✓ done (muted), • in-progress (warning),
+        // space pending (muted).
+        let (glyph, color) = match todo.status {
+            crate::acp::TodoStatus::Completed => ("✓", Color::DarkGray),
+            crate::acp::TodoStatus::InProgress => ("•", Color::Yellow),
+            crate::acp::TodoStatus::Pending => (" ", Color::Gray),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("[{glyph}] "), Style::new().fg(color)),
+            Span::styled(todo.content.clone(), Style::new().fg(color)),
+        ]));
+    }
+    if lines.is_empty() {
+        lines.push(Line::styled(
+            "No todos yet.",
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn transcript_title(app: &ChatApp) -> String {
