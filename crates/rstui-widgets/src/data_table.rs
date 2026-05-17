@@ -1,7 +1,7 @@
 //! [`DataTable`] — the comprehensive interactive data grid: sortable,
 //! filterable, groupable, mouse-hit-testable, virtualized for fast scroll,
 //! with **any form field per cell** — text, [`Checkbox`], [`Switch`], a
-//! [`Select`] dropdown ([`CellField`]), or *any* other widget via the
+//! [`Select`](crate::Select) dropdown ([`CellField`]), or *any* other widget via the
 //! [`cell_rect`](DataTable::cell_rect) accessor. The "spreadsheet pane" to
 //! [`Table`](crate::Table)'s "aligned rows".
 //!
@@ -88,7 +88,7 @@ use std::borrow::Cow;
 use crate::block::Block;
 use crate::checkbox::Checkbox;
 use crate::input::Input;
-use crate::select::Select;
+use crate::list::List;
 use crate::switch::Switch;
 use rstui_core::{
     Buffer, Constraint, Layout, Line, Position, Rect, ScrollState, Style, TextEdit, Widget,
@@ -113,7 +113,7 @@ pub fn cell_truthy(text: &str) -> bool {
 /// What control a [`DataColumn`]'s cells are — so a column can be plain
 /// text, a checkbox, a switch, or a dropdown. The widget renders each by
 /// **reusing** the matching widget ([`Input`]/[`Checkbox`]/[`Switch`]/
-/// [`Select`]); the cell's [`Line`] is always the value of record (the
+/// [`Select`](crate::Select)); the cell's [`Line`] is always the value of record (the
 /// reducer owns it). For *any other* control (a [`Slider`](crate::Slider),
 /// [`Radio`](crate::Radio), [`DatePicker`](crate::DatePicker), a custom
 /// widget) use [`DataTable::cell_rect`] to get the cell's on-screen rect and
@@ -136,7 +136,7 @@ pub enum CellField<'a> {
     /// One choice from these options. Closed it shows the cell value with a
     /// `▾`; while the cell is being edited and the caller-owned
     /// [`CellSelectState`] ([`DataTable::cell_select`]) is open it drops a
-    /// reused [`Select`] panel.
+    /// reused [`Select`](crate::Select) panel.
     Select(Vec<Cow<'a, str>>),
 }
 
@@ -409,7 +409,14 @@ pub enum VisualRow {
 /// [`Header`](Self::Header) → [`DataTableState::toggle_sort`];
 /// [`Group`](Self::Group) → [`DataTableState::toggle_collapse`];
 /// [`Cell`](Self::Cell) → [`DataTableState::select`] and, when the column is
-/// editable, [`DataTableState::begin_edit`].
+/// editable, [`DataTableState::begin_edit`];
+/// [`DropdownOption`](Self::DropdownOption) → write that option into the
+/// cell and [`CellSelectState::close`].
+///
+/// An open [`CellField::Select`] panel floats **over** the rows beneath the
+/// field, so [`hit`](DataTable::hit) tests it **first**: a click inside the
+/// panel is a [`DropdownOption`](Self::DropdownOption), never the data row it
+/// happens to cover (the off-by-the-row-below bug this prevents).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataTableHit {
     /// The header cell of this column index (toggle its sort).
@@ -425,6 +432,19 @@ pub enum DataTableHit {
         source: usize,
         /// Column index.
         column: usize,
+    },
+    /// A click landed on the open dropdown panel of the
+    /// [`CellField::Select`] cell being edited: choose option `index` for
+    /// cell `(source, column)`. Resolved against the same panel geometry
+    /// the overlay renders, so the option clicked is the option chosen.
+    DropdownOption {
+        /// Index into the caller's source `[DataRow]` (the edited cell).
+        source: usize,
+        /// The edited cell's column.
+        column: usize,
+        /// The chosen option's index into the column's
+        /// [`CellField::Select`] options.
+        index: usize,
     },
 }
 
@@ -777,7 +797,7 @@ fn group_key(row: &DataRow, col: usize) -> String {
 /// [`Table`](crate::Table) and top-level layout use. Styling cascades base →
 /// header/group/row → cell-line → span, with the selection
 /// [`highlight_style`](Self::highlight_style) patched **last** across the full
-/// width (the [`List`](crate::List)/[`Table`](crate::Table) bar idiom). An
+/// width (the [`List`]/[`Table`](crate::Table) bar idiom). An
 /// edited cell is drawn by reusing [`Input`] (one caret implementation).
 ///
 /// # Example
@@ -991,6 +1011,21 @@ impl<'a> DataTable<'a> {
         if area.is_empty() {
             return None;
         }
+        // The open dropdown panel is the top-most overlay (drawn last over
+        // the rows below), so it is hit-tested FIRST — a click inside it is
+        // the option it visually covers, never the data row underneath.
+        if let Some(es) = self.editing_select(area) {
+            let panel = self.dropdown_panel(area, es.field, es.options.len());
+            if !panel.is_empty() && panel.contains(pos) {
+                let row = (pos.y - panel.y) as usize;
+                let index = es.state.offset().saturating_add(row);
+                return (index < es.options.len()).then_some(DataTableHit::DropdownOption {
+                    source: es.source,
+                    column: es.column,
+                    index,
+                });
+            }
+        }
         let (inner, header, body, columns) = self.geometry(area);
         if !inner.contains(pos) {
             return None;
@@ -1055,27 +1090,80 @@ impl<'a> DataTable<'a> {
         }
         None
     }
+
+    /// The on-screen field rect of the [`CellField::Select`] cell being
+    /// edited with an **open** dropdown, plus its options / source /
+    /// column / state — `None` unless one is open and that cell is
+    /// currently visible. Reuses [`cell_rect`](Self::cell_rect) for the
+    /// field, so the rendered panel and [`hit`](Self::hit) cannot
+    /// disagree on where it is.
+    fn editing_select(&self, area: Rect) -> Option<EditingSelect<'_>> {
+        let st = self.cell_select.filter(|s| s.is_open())?;
+        let (src, col) = self.state.editing()?;
+        let CellField::Select(opts) = self.columns.get(col)?.cell_field() else {
+            return None;
+        };
+        let field = self.cell_rect(area, src, col)?;
+        Some(EditingSelect {
+            field,
+            source: src,
+            column: col,
+            options: opts.as_slice(),
+            state: st,
+        })
+    }
+
+    /// The open dropdown's panel rect: anchored directly **below** the
+    /// `field`, flipped **above** (or clamped) when the space below within
+    /// the framed `inner` is short — the same rule a standalone
+    /// [`Select`](crate::Select) applies, but a pure function of `area` so
+    /// the overlay render and [`hit`](Self::hit) place it identically
+    /// (the [`ScrollView`](crate::ScrollView) "computed one way" precedent).
+    /// Empty when there are no options.
+    fn dropdown_panel(&self, area: Rect, field: Rect, opts_len: usize) -> Rect {
+        let inner = self.geometry(area).0;
+        let rows =
+            u16::try_from(opts_len.min(DROPDOWN_MAX_ROWS as usize)).unwrap_or(DROPDOWN_MAX_ROWS);
+        if rows == 0 {
+            return Rect::ZERO;
+        }
+        let below = inner.bottom().saturating_sub(field.bottom());
+        let above = field.top().saturating_sub(inner.top());
+        if rows <= below {
+            Rect::new(field.x, field.bottom(), field.width, rows)
+        } else if rows <= above {
+            Rect::new(field.x, field.top().saturating_sub(rows), field.width, rows)
+        } else if below >= above {
+            Rect::new(field.x, field.bottom(), field.width, below)
+        } else {
+            Rect::new(
+                field.x,
+                field.top().saturating_sub(above),
+                field.width,
+                above,
+            )
+        }
+    }
 }
 
-/// The single open [`CellField::Select`] cell, captured during the row loop
-/// and rendered as one overlay *after* the body so its panel floats over
-/// the rows below instead of being overwritten by them. Private — an
-/// internal render detail, not public API.
-struct OpenDropdown<'a> {
-    /// The field cell's left column.
-    x: u16,
-    /// The field cell's row.
-    y: u16,
-    /// The field cell's width.
-    width: u16,
-    /// The cell's base style (selection bar already patched in).
-    base: Style,
-    /// The committed option index (the current cell value), if any.
-    selected: Option<usize>,
+/// The dropdown panel's option-row cap (mirrors [`Select`](crate::Select)'s default
+/// `open_height` so the in-cell dropdown matches a standalone one).
+const DROPDOWN_MAX_ROWS: u16 = 8;
+
+/// The open [`CellField::Select`] cell being edited, located on screen —
+/// shared by the overlay render and [`DataTable::hit`] so they resolve the
+/// exact same panel. A private render/hit detail, not public API.
+struct EditingSelect<'a> {
+    /// The cell's on-screen field rect (one row).
+    field: Rect,
+    /// Source-row index of the edited cell.
+    source: usize,
+    /// Column index of the edited cell.
+    column: usize,
+    /// The column's dropdown options.
+    options: &'a [Cow<'a, str>],
     /// The caller-owned open/highlight state.
     state: &'a CellSelectState,
-    /// The column's options.
-    options: &'a [Cow<'a, str>],
 }
 
 impl Widget for DataTable<'_> {
@@ -1123,11 +1211,10 @@ impl Widget for DataTable<'_> {
 
         // ---- virtualized body: only the visible window is touched ----
         let offset = self.first_visible(body.height);
-        // An open Select cell is NOT drawn in the row loop — its panel must
-        // drop *over* the rows below, so it is deferred to a single overlay
-        // rendered after the body (only one cell can be editing at a time).
-        // Carries: (field_x, field_y, field_w, base, selected, state, opts).
-        let mut open_dropdown: Option<OpenDropdown<'_>> = None;
+        // The row loop draws every Select cell's *closed* look (value + ▾).
+        // An open dropdown's panel is a single overlay rendered after the
+        // body (so it floats over the rows below) via `editing_select` —
+        // the SAME geometry `hit` resolves clicks against.
         for (row_i, (vi, vrow)) in self
             .visual
             .iter()
@@ -1213,11 +1300,12 @@ impl Widget for DataTable<'_> {
                                     .style(base)
                                     .render(cell_area, buf);
                             }
-                            Some(CellField::Select(options)) => {
+                            Some(CellField::Select(_)) => {
                                 // Always draw the closed look in-loop (value +
-                                // ▾). The open panel is deferred so it can
-                                // drop *over* the rows below instead of being
-                                // clipped to this one cell row.
+                                // ▾). An open dropdown's panel is deferred to
+                                // a single overlay after the body so it floats
+                                // over the rows below (and `hit` resolves
+                                // clicks against that same panel geometry).
                                 if let Some(cell) = row.cell(ci) {
                                     stamp_cell(buf, cell, rect, inner.right(), y, row_base, hl);
                                 }
@@ -1226,26 +1314,6 @@ impl Widget for DataTable<'_> {
                                     .saturating_add(rect.width.saturating_sub(1))
                                     .min(inner.right().saturating_sub(1));
                                 buf.set_cell(Position::new(mx, y), '▾', base);
-
-                                // The dropdown is open only while *this* cell
-                                // is edited and the caller-owned state says so.
-                                let open_state = if editing_here {
-                                    self.cell_select.filter(|s| s.is_open())
-                                } else {
-                                    None
-                                };
-                                if let Some(st) = open_state {
-                                    let selected = options.iter().position(|o| o.as_ref() == text);
-                                    open_dropdown = Some(OpenDropdown {
-                                        x: rect.x,
-                                        y,
-                                        width: cell_w,
-                                        base,
-                                        selected,
-                                        state: st,
-                                        options: options.as_slice(),
-                                    });
-                                }
                             }
                             // CellField::Text (or no column): the original
                             // text behaviour, byte-for-byte unchanged.
@@ -1272,23 +1340,22 @@ impl Widget for DataTable<'_> {
         }
 
         // ---- the open Select cell's dropdown, as a single overlay ----
-        // Drawn AFTER every row so the panel floats over the rows below
-        // instead of being overwritten by the next loop iterations (the
-        // bug). `Select` is given the **one-row field rect**: it anchors
-        // there and drops its opaque panel into the gap below it within
-        // `buf.area()` (flipping above near the screen edge), exactly the
-        // float a standalone `Select` does — so the area must stay 1 row
-        // high (a tall area would push the field to the screen bottom and
-        // leave no gap, collapsing the panel).
-        if let Some(d) = open_dropdown {
-            if d.width > 0 {
-                Select::new(d.options.iter().cloned())
-                    .open(true)
-                    .selected(d.selected)
-                    .highlight(d.state.highlight())
-                    .offset(d.state.offset())
-                    .style(d.base)
-                    .render(Rect::new(d.x, d.y, d.width, 1), buf);
+        // Drawn AFTER every row so the panel floats *over* the rows below
+        // (the next loop iterations cannot overwrite it). The panel rect is
+        // the one `editing_select`/`dropdown_panel` compute — the very same
+        // geometry `hit` resolves a click against, so the option clicked is
+        // the option chosen (no off-by-the-row-below). Opaque via
+        // `clear_region`, then the options are a reused `List` (exactly the
+        // technique `Select` uses internally).
+        if let Some(es) = self.editing_select(area) {
+            let panel = self.dropdown_panel(area, es.field, es.options.len());
+            if !panel.is_empty() {
+                buf.clear_region(panel);
+                List::new(es.options.iter().map(|c| Line::from(c.as_ref())))
+                    .selected(Some(es.state.highlight()))
+                    .offset(es.state.offset())
+                    .highlight_style(self.highlight_style)
+                    .render(panel, buf);
             }
         }
     }
@@ -1746,6 +1813,68 @@ mod tests {
         assert!(
             !out.contains("ZZZZ") && !out.contains("YYYY"),
             "rows under the panel are covered (opaque, drawn last):\n{out}"
+        );
+    }
+
+    #[test]
+    fn clicking_an_open_dropdown_option_hits_that_option_not_the_row_below() {
+        // The reported bug: clicking the shown option selected the data row
+        // the panel floats over (or nothing). `hit` must resolve a click
+        // inside the panel to *that option*, tested before the rows.
+        let c = vec![
+            DataColumn::new("k")
+                .width(Constraint::Length(6))
+                .field(CellField::select(["A", "B", "C"])),
+        ];
+        let r = [
+            DataRow::new(["A"]),
+            DataRow::new(["zzz"]),
+            DataRow::new(["yyy"]),
+        ];
+        let mut st = DataTableState::new();
+        st.begin_edit(0, 0);
+        let mut cs = CellSelectState::new();
+        cs.open(Some(0));
+        let v = project(&c, &r, &st);
+        let dt = DataTable::new(&c, &r, &v, &st)
+            .cell_select(&cs)
+            .show_header(false);
+        let area = Rect::new(0, 0, 6, 6);
+        // field at y=0; the panel drops below: option A=y1, B=y2, C=y3.
+        for (y, index) in [(1, 0), (2, 1), (3, 2)] {
+            assert_eq!(
+                dt.hit(area, Position::new(2, y)),
+                Some(DataTableHit::DropdownOption {
+                    source: 0,
+                    column: 0,
+                    index,
+                }),
+                "click at y={y} is option {index}, not the row it covers"
+            );
+        }
+        // The field row itself stays the cell (so clicking it can re-handle
+        // the dropdown), not an option.
+        assert_eq!(
+            dt.hit(area, Position::new(2, 0)),
+            Some(DataTableHit::Cell {
+                visual: 0,
+                source: 0,
+                column: 0,
+            })
+        );
+        // With the dropdown CLOSED there is no panel, so the same y maps to
+        // the data row again (the only time that is correct).
+        let cs_closed = CellSelectState::new();
+        let dt2 = DataTable::new(&c, &r, &v, &st)
+            .cell_select(&cs_closed)
+            .show_header(false);
+        assert_eq!(
+            dt2.hit(area, Position::new(2, 1)),
+            Some(DataTableHit::Cell {
+                visual: 1,
+                source: 1,
+                column: 0,
+            })
         );
     }
 

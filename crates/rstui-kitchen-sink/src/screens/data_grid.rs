@@ -209,6 +209,27 @@ impl State {
         ScreenOutcome::consumed()
     }
 
+    /// A click chose option `index` directly (the mouse dual of
+    /// `commit_choice` — `DataTable::hit` already mapped the panel click to
+    /// the exact option, so there is no off-by-the-row-below).
+    fn pick_option(&mut self, index: usize) -> ScreenOutcome {
+        let Some((src, col)) = self.grid.editing() else {
+            return ScreenOutcome::ignored();
+        };
+        let opts = self.options(col).unwrap_or_default();
+        self.choice.close();
+        self.grid.commit_edit();
+        if let Some(v) = opts.get(index).cloned() {
+            self.set_cell(src, col, v.clone());
+            return ScreenOutcome::with_toast(
+                rstui_widgets::ToastLevel::Success,
+                format!("role = {v}"),
+            );
+        }
+        self.reproject();
+        ScreenOutcome::consumed()
+    }
+
     /// Commit the in-progress text edit.
     fn commit_edit(&mut self) -> ScreenOutcome {
         let Some((src, col)) = self.grid.editing() else {
@@ -354,7 +375,11 @@ impl State {
     /// (toggle a checkbox, open a dropdown, edit text).
     pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
         let [grid, ..] = Self::layout(content);
+        // Build it EXACTLY as `view` does (incl. `.cell_select`) so `hit`
+        // resolves clicks against the same geometry — including the open
+        // dropdown panel overlay.
         let hit = DataTable::new(&self.columns, &self.rows, &self.visual, &self.grid)
+            .cell_select(&self.choice)
             .block(Block::bordered().border_type(BorderType::Rounded))
             .hit(grid, pos);
         match hit {
@@ -373,6 +398,7 @@ impl State {
                 }
                 ScreenOutcome::consumed()
             }
+            Some(DataTableHit::DropdownOption { index, .. }) => self.pick_option(index),
             Some(DataTableHit::Cell { visual, column, .. }) => {
                 self.grid.select(Some(visual));
                 self.active_col = column;
