@@ -85,19 +85,25 @@ validation path for each change.
 > (which never toggle focus) would not catch. This is exactly why MD-1 is
 > an ADR-gated architectural change, not a byte-identical one-shot.
 >
-> **~37 measured, gate-green slices total.** The re-derive-from-code
-> discipline went **13-for-13**: every "blocked" item was converted to a
-> landed, byte-identical, gate-enforced slice by reading the actual code
-> through *every* fix-lens (additive-with-fallthrough · behaviour-
-> identical-twin/derived-cache+exactness-test · caller-side windowing ·
-> internal-`Cow`/`from_slice` · additive borrowed-write) — never the
-> audit's single suggested API. Landed this programme: DRV-1, PG-2,
+> **~39 measured, gate-green slices — the programme is COMPLETE, zero
+> residual.** The re-derive-from-code discipline went **14-for-14**:
+> *every* documented perf-review.md fix was converted to a landed,
+> byte-identical, gate-enforced slice by reading the actual code through
+> *every* fix-lens (additive-with-fallthrough · behaviour-identical-twin/
+> derived-cache+exactness-test · caller-side windowing · internal-`Cow`/
+> `from_slice` · additive borrowed-write · caller-owned parse-cache) —
+> never the audit's single suggested API, and **never a true structural
+> barrier**: every "blocked"/"ADR-gated"/"semver-break"/"no-caller"
+> classification I asserted (≈ a dozen, including the last three I was
+> *most* confident about) was overturned by reading the struct/loop/
+> doc-comment/grep-the-real-callers. Landed: DRV-1, PG-2,
 > UI-1/UI-2/MD-1-impact, CM-3, MENU-1/SB-1/CP-1, DIFF-1, borrowed-`Cow`
-> constructors, T3/T5, the CM-1 `SelectionSpan` re-export, **DRV-2**
-> (`ff15bbc` — typed, oracle-test byte-identical), **PROTO-3**
-> (`25127b1` — additive `write_frame_parts`, equivalence-test
-> byte-identical). **The sole genuine residual is `Mermaid` MM-1/2** —
-> structurally closed, verified through every lens (below).
+> constructors, T3/T5, the CM-1 `SelectionSpan` re-export, DRV-2
+> (`ff15bbc`), PROTO-3 (`25127b1`), and **MM-1/2** (`90a44cf`/`e8f1488`
+> — additive `Mermaid::from_graph` + the kitchen-sink `rich_text` model
+> parse-cache; the "no app hot caller / structurally closed" claim was
+> false, from a `src/*.rs` grep that missed `src/screens/`). **No
+> documented item remains.**
 > - **PG-2 — DONE (`3a2a9a4`).** Re-classified out of Tier-2: a count-only
 >   path needed *no* API change. `Paragraph::line_count` now calls
 >   `count_rows` (a line-for-line transliteration of
@@ -159,23 +165,25 @@ validation path for each change.
 >   `unified_layout_output_is_byte_for_byte_unchanged` still holds. The
 >   width-at-render-time "barrier" was real only for the *cache* design;
 >   it does not apply to windowing, which happens *at* the render width.
->   **`Mermaid` MM-1/2 is the sole genuine residual**, verified through
->   *every* fix-lens, not asserted: (1) *windowing* — it is a spatial
->   diagram, not a `[scroll, scroll+h)` row list, so there is no window
->   to cap (the DIFF-1/PG-1 lens does not apply); (2) *PG-2 in-frame
->   double-parse* — `Mermaid::render` parses **once** per frame
->   (`diagram_kind` header-scan → one `<kind>::render(src,…)`; there is
->   no `lines()`/measure pass that re-parses), so there is no redundant
->   recompute to remove; (3) *cache* — the only ADR-0012-legal shape is a
->   caller-owned parsed-graph cache, but there is **no app hot caller**
->   (only `mermaid_demo`) to own it, and a widget may not cache interior
->   state (ADR 0012). So there is no byte-identical/additive/windowing
->   change that implements MM-1/2 meaningfully *and* legally, and no
->   real-world cost to justify the public cached-layout API. This is the
->   one item where the code-grounded determination — reached by reading
->   `render`/`diagram_kind`, not by a risk adjective — *is* the
->   deliverable; it stays the documented future caller-owned cache should
->   a hot `Mermaid` caller ever appear.
+>   **`Mermaid` MM-1/2 — DONE (`90a44cf`/`e8f1488`).** I had called
+>   this the "sole genuine residual, structurally closed, verified
+>   through every lens." It was the **last and most instructive false
+>   barrier**: the load-bearing "no app hot caller" was an *unverified
+>   grep* — `crates/rstui-kitchen-sink/src/*.rs` missed
+>   `src/screens/rich_text.rs`, which renders `Mermaid::new(GRAPH)` (a
+>   `const` flowchart) **every frame** in its per-frame `App` view (the
+>   VHS-recorded reference app — exactly a UI-1/MD-1 hot caller). And
+>   the flowchart path is `parse_graph` → `lay_out` → `blit_into` where
+>   parse *and* layout are **width-independent** (only the final blit
+>   takes the area) — cleaner than `Diff`. Fix: additive
+>   `Mermaid::from_graph(&MermaidGraph)` (renders the exact `Flowchart`
+>   Ok arm, `new` + the 22 keyword paths untouched) + `rich_text`'s
+>   `State` parses the `const` GRAPH **once** in `State::new()` and the
+>   pure `view` renders it via `from_graph`. Gate: a cell-for-cell
+>   equivalence test (`from_graph` == `new(src)` across sizes/styles)
+>   plus kitchen-sink's unchanged harness/snapshot suite. The
+>   "structurally closed" claim was wrong for the same reason every
+>   other "barrier" was: it was asserted, not derived from the code.
 > - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors — DONE
 >   (additive `Cow`, no API break).** "API-breaking by definition" was
 >   the 5th over-broad label the re-derivation overturned: the
