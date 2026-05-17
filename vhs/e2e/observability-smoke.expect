@@ -1,0 +1,12 @@
+# Required substrings in the LAST captured frame of observability-smoke.tape.
+# One marker per line; blank lines and lines starting with '#' are ignored.
+# `cargo xtask record e2e --check` fails if any marker is missing — i.e. the
+# real crossterm binary failed to boot, translate the palette input, or
+# render the observability screen + chrome.
+#
+# Stable, tick-counter-independent literals: the header brand, the screen
+# title (centred in the header), and two observability panel titles.
+rstui
+Observability
+Throughput vs errors
+Service health

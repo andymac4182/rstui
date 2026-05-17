@@ -57,6 +57,11 @@ use rstui_widgets::{
     Table, Tabs, Toast, ToastLevel, ToastMessage, Tooltip, Tree, TreeGuides, TreeItem,
     VerticalAlignment, Wrap,
 };
+use rstui_widgets::{
+    AxisBounds, FlameFrame, FlameGraph, Heatmap, Histogram, HistogramBucket, LineChart, LogLevel,
+    LogPalette, LogRecord, LogStream, Percentile, Series, StatPanel, TraceSpan, TraceWaterfall,
+    Trend,
+};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -75,8 +80,8 @@ const INPUT_RING: [FocusId; 8] = [
     F_NAME, F_SECRET, F_DOC, F_VOLUME, F_AGREE, F_QUALITY, F_WIFI, F_SUBMIT,
 ];
 
-/// The five widget categories, in `Tabs` / digit-key order.
-const SECTIONS: [&str; 5] = ["Inputs", "Select", "Data", "Feedback", "Layout"];
+/// The six widget categories, in `Tabs` / digit-key order.
+const SECTIONS: [&str; 6] = ["Inputs", "Select", "Data", "Feedback", "Layout", "Observe"];
 
 /// Commands offered by the palette; the reducer filters these by the query
 /// (the palette widget is a pure projection — it never filters).
@@ -333,7 +338,7 @@ impl App for Gallery {
             KeyCode::Backspace => Some(Msg::Backspace),
             KeyCode::Enter => Some(Msg::Enter),
             // Digits jump sections — unless text is being captured.
-            KeyCode::Char(d @ '1'..='5') if !self.capturing_text() => {
+            KeyCode::Char(d @ '1'..='6') if !self.capturing_text() => {
                 Some(Msg::Section(d as usize - '1' as usize))
             }
             KeyCode::Char(' ') if !self.capturing_text() => Some(Msg::Space),
@@ -520,7 +525,8 @@ impl App for Gallery {
             1 => self.view_selection(frame, content),
             2 => self.view_data(frame, content),
             3 => self.view_feedback(frame, content),
-            _ => self.view_layout(frame, content),
+            4 => self.view_layout(frame, content),
+            _ => self.view_observe(frame, content),
         }
 
         self.view_status(frame, status);
@@ -918,6 +924,185 @@ impl Gallery {
 }
 
 // ---------------------------------------------------------------------------
+// Section: Observe — the observability widget family (metrics / traces / logs)
+// ---------------------------------------------------------------------------
+impl Gallery {
+    fn view_observe(&self, frame: &mut Frame<'_>, area: Rect) {
+        let block = Block::bordered().title("Observe · metrics · traces · logs");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width < 16 || inner.height < 10 {
+            return;
+        }
+        let t = self.tick;
+
+        let [tiles, mid, low] = Layout::vertical([
+            Constraint::Length(5),
+            Constraint::Length(9),
+            Constraint::Fill(1),
+        ])
+        .areas(inner);
+
+        // Golden-signal stat tiles.
+        let tcols = Layout::horizontal([Constraint::Fill(1); 3]).split(tiles);
+        let stats: [(&str, String, Trend); 3] = [
+            (
+                "req/s",
+                format!("{:.1}k", 11.0 + (t % 30) as f64 / 10.0),
+                Trend::Up,
+            ),
+            (
+                "err %",
+                format!("{:.2}", 0.3 + (t % 17) as f64 / 100.0),
+                Trend::Down,
+            ),
+            ("p99 ms", format!("{}", 150 + t % 40), Trend::Up),
+        ];
+        for ((cap, val, trend), cell) in stats.iter().zip(tcols.iter()) {
+            let spark: Vec<u64> = (0..cell.width.max(1))
+                .map(|x| ((f64::from(x) * 0.5 + t as f64 * 0.2).sin() * 7.0 + 9.0) as u64)
+                .collect();
+            frame.render_widget(
+                StatPanel::new(val.clone())
+                    .caption(*cap)
+                    .delta("vs 1h")
+                    .trend(*trend)
+                    .trend_style(Style::new().fg(Color::Cyan))
+                    .sparkline(&spark)
+                    .spark_style(Style::new().fg(Color::DarkGray))
+                    .block(Block::bordered()),
+                *cell,
+            );
+        }
+
+        // Latency line chart + distribution histogram.
+        let [chart, dist] =
+            Layout::horizontal([Constraint::Percentage(56), Constraint::Fill(1)]).areas(mid);
+        let p50: Vec<(f64, f64)> = (0..60)
+            .map(|x| {
+                (
+                    f64::from(x),
+                    (f64::from(x) * 0.2 + t as f64 * 0.1).sin() * 12.0 + 40.0,
+                )
+            })
+            .collect();
+        let p99: Vec<(f64, f64)> = (0..60)
+            .map(|x| {
+                (
+                    f64::from(x),
+                    (f64::from(x) * 0.2 + t as f64 * 0.1).sin() * 20.0 + 90.0,
+                )
+            })
+            .collect();
+        let series = [
+            Series::new("p50", &p50).style(Style::new().fg(Color::Green)),
+            Series::new("p99", &p99).style(Style::new().fg(Color::Red)),
+        ];
+        frame.render_widget(
+            LineChart::new(&series)
+                .x_bounds(AxisBounds::new(0.0, 60.0))
+                .y_bounds(AxisBounds::new(0.0, 130.0))
+                .block(Block::bordered().title("Latency")),
+            chart,
+        );
+        let buckets: Vec<HistogramBucket> = ["10", "25", "50", "75", "100", "250"]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let bell = 1.0 - ((i as f64 - 2.5) / 3.0).powi(2);
+                HistogramBucket::new(
+                    (bell.max(0.05) * 80.0) as u64 + (t % 5) as u64,
+                    format!("≤{b}"),
+                )
+            })
+            .collect();
+        let pcts = [
+            Percentile::new(0.5, "p50").style(Style::new().fg(Color::Green)),
+            Percentile::new(0.95, "p95").style(Style::new().fg(Color::Yellow)),
+        ];
+        frame.render_widget(
+            Histogram::new(&buckets)
+                .bar_width(3)
+                .bar_gap(1)
+                .percentiles(&pcts)
+                .bar_style(Style::new().fg(Color::Magenta))
+                .block(Block::bordered().title("Distribution")),
+            dist,
+        );
+
+        // Trace waterfall ⇄ flame graph + a heatmap + a log stream.
+        let [trace, rest] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Fill(1)]).areas(low);
+        let [flame_a, hl] =
+            Layout::vertical([Constraint::Percentage(50), Constraint::Fill(1)]).areas(rest);
+        let spans = [
+            TraceSpan::new(0, 0, 100, "GET /checkout").style(Style::new().fg(Color::Cyan)),
+            TraceSpan::new(1, 8, 34, "auth.verify").style(Style::new().fg(Color::Blue)),
+            TraceSpan::new(1, 44, 48, "db.query").style(Style::new().fg(Color::Green)),
+            TraceSpan::new(2, 50, 30, "pg.scan").style(Style::new().fg(Color::Yellow)),
+        ];
+        frame.render_widget(
+            TraceWaterfall::new(&spans)
+                .total(Some(100))
+                .name_width(12)
+                .selected(Some((t / 4) % 4))
+                .block(Block::bordered().title("Trace")),
+            trace,
+        );
+        let frames = [
+            FlameFrame::new(0, 0, 100, "main").style(Style::new().fg(Color::Black).bg(Color::Blue)),
+            FlameFrame::new(1, 0, 58, "parse").style(Style::new().fg(Color::Black).bg(Color::Cyan)),
+            FlameFrame::new(1, 58, 42, "eval")
+                .style(Style::new().fg(Color::Black).bg(Color::Green)),
+            FlameFrame::new(2, 0, 30, "lex").style(Style::new().fg(Color::Black).bg(Color::Yellow)),
+        ];
+        let [flame, heat] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Fill(1)]).areas(flame_a);
+        frame.render_widget(
+            FlameGraph::new(&frames)
+                .total(Some(100))
+                .block(Block::bordered().title("Flame")),
+            flame,
+        );
+        let cells: Vec<f64> = (0..5 * 14)
+            .map(|n| {
+                let r = (n / 14) as f64;
+                let c = (n % 14) as f64;
+                ((c * 0.5 + r + t as f64 * 0.15).sin() * 0.5 + 0.5).clamp(0.0, 1.0)
+            })
+            .collect();
+        frame.render_widget(
+            Heatmap::new(&cells, 14)
+                .min(Some(0.0))
+                .max(Some(1.0))
+                .glyph_ramp(true)
+                .block(Block::bordered().title("Heat")),
+            heat,
+        );
+        let recs = [
+            LogRecord::new(LogLevel::Info, "request accepted")
+                .timestamp("12:00:01")
+                .target("edge"),
+            LogRecord::new(LogLevel::Warn, "retry budget 60% consumed")
+                .timestamp("12:00:02")
+                .target("checkout"),
+            LogRecord::new(LogLevel::Error, "payment gateway timeout")
+                .timestamp("12:00:03")
+                .target("payment"),
+            LogRecord::new(LogLevel::Debug, "circuit breaker half-open")
+                .timestamp("12:00:04")
+                .target("inventory"),
+        ];
+        frame.render_widget(
+            LogStream::new(&recs)
+                .palette(LogPalette::default())
+                .block(Block::bordered().title("Logs")),
+            hl,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Section: Feedback — animated / status widgets driven by the model tick
 // ---------------------------------------------------------------------------
 impl Gallery {
@@ -1307,6 +1492,16 @@ fn main() {
     );
     h.handle(code(KeyCode::Esc)); // close modal
 
+    // The observability section: metrics, traces, and logs together.
+    h.handle(key('6'));
+    for _ in 0..6 {
+        h.tick();
+    }
+    println!(
+        "Observe section — line chart / histogram / trace / flame / heatmap / logs:\n{}",
+        h.snapshot()
+    );
+
     // Resilience: shrink to a sliver, then quit.
     h.resize(3, 2);
     println!("resized 3x2 (clipped, no panic):\n{}", h.snapshot());
@@ -1362,6 +1557,12 @@ mod tests {
         h.handle(key('5'));
         assert_eq!(h.app().section, 4);
         assert!(h.snapshot().contains("Accordion"));
+        h.handle(key('6'));
+        assert_eq!(h.app().section, 5);
+        assert!(
+            h.snapshot().contains("Latency"),
+            "the Observe section renders the metrics line chart"
+        );
     }
 
     #[test]

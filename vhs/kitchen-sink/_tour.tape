@@ -33,6 +33,28 @@ Sleep 1400ms
 Type "8"
 Sleep 1400ms
 
+# The observability suite (palette-reached: they sit past the digit hotkeys).
+Type ":"
+Sleep 400ms
+Type "observability"
+Sleep 700ms
+Enter
+Sleep 1600ms
+Type ":"
+Sleep 400ms
+Type "metrics"
+Sleep 700ms
+Enter
+Sleep 1600ms
+Type ":"
+Sleep 400ms
+Type "traces"
+Sleep 700ms
+Enter
+Sleep 1400ms
+Type "f"
+Sleep 1200ms
+
 # Command palette: jump back to Forms by name.
 Type ":"
 Sleep 500ms
