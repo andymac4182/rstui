@@ -117,7 +117,14 @@ impl<'a> Span<'a> {
     /// single-`char`-cell model).
     #[must_use]
     pub fn width(&self) -> usize {
-        self.content.chars().count()
+        // For ASCII (the overwhelmingly common case for labels, numbers, and
+        // box-free text), every byte is exactly one `char`, so the byte length
+        // is the char count without a decoding scan.
+        if self.content.is_ascii() {
+            self.content.len()
+        } else {
+            self.content.chars().count()
+        }
     }
 }
 
@@ -270,17 +277,29 @@ impl Widget for Line<'_> {
         }
         let row = area.top();
         // Fill just this row with the line style so a background/selection
-        // highlight covers the full width, including alignment padding.
-        buf.set_style(Rect::new(area.x, row, area.width, 1), self.style);
+        // highlight covers the full width, including alignment padding. An
+        // empty style would patch every cell with all-`None`/all-`EMPTY` — a
+        // per-cell no-op — so the whole row scan is skippable when unstyled.
+        if self.style != Style::new() {
+            buf.set_style(Rect::new(area.x, row, area.width, 1), self.style);
+        }
 
-        let avail = area.width as usize;
-        let drawn = self.width().min(avail) as u16;
+        // The drawn width is only needed to offset Right/Center; a Left line
+        // starts at the area's left edge, so skip the extra char pre-scan
+        // (`width()` walks every span's content) entirely in that case.
         let start = match self.alignment.unwrap_or_default() {
             Alignment::Left => area.left(),
-            Alignment::Right => area.right().saturating_sub(drawn),
-            Alignment::Center => area
-                .left()
-                .saturating_add((area.width.saturating_sub(drawn)) / 2),
+            align => {
+                let avail = area.width as usize;
+                let drawn = self.width().min(avail) as u16;
+                match align {
+                    Alignment::Right => area.right().saturating_sub(drawn),
+                    // Center; Left is handled above.
+                    _ => area
+                        .left()
+                        .saturating_add((area.width.saturating_sub(drawn)) / 2),
+                }
+            }
         };
 
         let right = area.right();
@@ -485,6 +504,44 @@ mod tests {
         // 'é' is two UTF-8 bytes but one cell in the single-`char` model.
         assert_eq!(Span::raw("café").width(), 4);
         assert_eq!(Span::raw("").width(), 0);
+    }
+
+    #[test]
+    fn span_width_ascii_fast_path_matches_the_char_count() {
+        // The `is_ascii()` byte-length shortcut must agree with the general
+        // `chars().count()` for every input shape: pure ASCII, multi-byte,
+        // and a mix where one non-ASCII char alone makes the string non-ASCII.
+        for s in ["", "plain ascii 123!", "café", "→", "a→b", "naïve x"] {
+            assert_eq!(Span::raw(s).width(), s.chars().count(), "width({s:?})");
+        }
+    }
+
+    #[test]
+    fn unstyled_line_does_not_alter_pre_existing_cell_styles() {
+        // P2-1: a line with the empty (inherit-everything) style must not
+        // touch the row's existing background — the skipped full-row
+        // set_style is a no-op only if it truly changes nothing.
+        let mut blue = crate::buffer::Cell::new(' ');
+        blue.bg = Color::Blue;
+        let mut buf = Buffer::filled(Rect::new(0, 0, 4, 1), blue);
+        Line::raw("hi").render(buf.area(), &mut buf);
+        // Glyphs land; the inherited background is preserved on every cell,
+        // including the alignment padding the old set_style used to repaint.
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 'h');
+        for x in 0..4 {
+            assert_eq!(buf.get(Position::new(x, 0)).unwrap().bg, Color::Blue);
+        }
+    }
+
+    #[test]
+    fn left_alignment_is_unchanged_when_content_overflows() {
+        // P0-2: Left skips the width() pre-scan; it must still start at the
+        // left edge and clip at the right exactly as before, regardless of
+        // whether content is shorter or wider than the area.
+        assert_eq!(lines(Line::raw("hi").left_aligned(), 6, 1), "hi    \n");
+        assert_eq!(lines(Line::raw("toolong").left_aligned(), 4, 1), "tool\n");
+        // Default alignment (None) is Left and takes the same fast path.
+        assert_eq!(lines(Line::raw("abcde"), 3, 1), "abc\n");
     }
 
     #[test]
