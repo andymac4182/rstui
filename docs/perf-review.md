@@ -129,22 +129,30 @@ validation path for each change.
 >   focused_link/theme wrinkle is moot where (as here) the call site
 >   never varies them. A public `MarkdownDoc` is now an *ergonomics*
 >   question (ADR), not an unimplemented performance fix.
-> - **`Diff`/`Mermaid` re-parse — genuinely Tier-2 (verified by code,
->   not asserted).** The UI-1/MD-1 pattern (parse cached in the reducer,
->   read by the pure view) worked *only* because the acp-client parses
->   markdown at a constant width (80) the reducer knows. The one real
->   hot `Diff` caller — git-review `app.rs:928`
->   `Diff::new(self.diff).syntax(true).side_by_side(self.diff_split)` —
->   parses at the **render-area width**, which the reducer does not know;
->   the key is `(diff, diff_split, width)`, width known only at render
->   time. An ADR-0012-compliant width-keyed cache therefore *cannot* be a
->   reducer-populated field — it requires the audit's caller-owned
->   **cached layout model** (`DiffModel`), a genuine public-API addition
->   (semver, ADR-noted). `Mermaid` has **no app hot caller at all**
->   (only `mermaid_demo`), so its re-parse is not a real-world cost. The
->   plan's Tier-2 classification holds *here* — a concrete code-grounded
->   barrier (render-time-only width; no constant-width hot caller), not
->   the over-broad labelling that hid DRV-1/PG-2/UI-1/CM-3.
+> - **DIFF-1 — DONE (caller-free row-cap windowing, no API change).**
+>   The "needs a public width-keyed `DiffModel`" label was the *cache*
+>   lens; the **windowing lens** (the landed Paragraph PG-1 / `tree.rs`
+>   pattern) needs no API. `Diff::render` did `self.lines(w)` — parse +
+>   lay out the *whole* patch — then `.skip(scroll).take(height)`.
+>   `layout_rows`/`layout_rows_split` now take a `row_cap`; the global
+>   `number_width`/`sign_width`/`intra_line_marks` pre-scans stay over
+>   *all* rows (so the gutter never scroll-jitters and every produced row
+>   is byte-identical), only the heavy per-row `render_row`
+>   wrap+syntax+alloc stops once `scroll + height` output rows exist.
+>   Public `Diff::lines` passes `usize::MAX` (its documented "measure the
+>   true total" contract is unchanged). A 10k-line patch lays out
+>   ~viewport rows/frame, not all 10k. Gate: a new prefix-invariant test
+>   pins `laid_out(w, cap)` to an exact prefix of the uncapped `lines(w)`
+>   across both layouts × widths × caps (so the `skip/take` window is
+>   provably identical for every scroll), and the pre-existing
+>   `unified_layout_output_is_byte_for_byte_unchanged` still holds. The
+>   width-at-render-time "barrier" was real only for the *cache* design;
+>   it does not apply to windowing, which happens *at* the render width.
+>   `Mermaid` is a non-scrolled diagram (no `[scroll, scroll+h)` window
+>   to cap) **and** has no app hot caller (only `mermaid_demo`), so its
+>   re-parse is neither windowing-shaped nor a real-world cost — the only
+>   genuinely cache-class, no-hot-caller item; left as the documented
+>   future caller-owned-cache should a hot caller ever appear.
 > - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors + plugin-host
 >   PROTO-3 `Cow` payload**: public-API changes *by definition* (the fix
 >   *is* a new/changed signature) — semver surface, sequence behind an

@@ -332,14 +332,26 @@ impl<'a> Diff<'a> {
     /// docs), so the row count reflects whichever layout was actually used.
     #[must_use]
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        // The public contract is "every row" (a host measures `.len()` for
+        // scroll math), so never cap here.
+        self.laid_out(width, usize::MAX)
+    }
+
+    /// The composed rows, building at most `row_cap` of them (DIFF-1).
+    /// `lines` passes `usize::MAX` (the documented full count); `render`
+    /// passes `scroll + height` so off-screen rows skip the heavy layout —
+    /// `out[..row_cap]` is a byte-identical prefix of the uncapped result
+    /// (the gutter/marks pre-scans stay over all rows), so the visible
+    /// window `render` paints is unchanged.
+    fn laid_out(&self, width: u16, row_cap: usize) -> Vec<Line<'static>> {
         if width == 0 {
             return Vec::new();
         }
         let rows = parse_rows(self.source.as_ref());
         let width = width as usize;
         match self.layout {
-            DiffLayout::Unified => layout_rows(&rows, width, &self.theme, self.syntax),
-            DiffLayout::Split => layout_rows_split(&rows, width, &self.theme, self.syntax),
+            DiffLayout::Unified => layout_rows(&rows, width, &self.theme, self.syntax, row_cap),
+            DiffLayout::Split => layout_rows_split(&rows, width, &self.theme, self.syntax, row_cap),
         }
     }
 }
@@ -361,7 +373,12 @@ impl Widget for Diff<'_> {
         }
         buf.set_style(inner, self.style);
 
-        let rows = self.lines(inner.width);
+        // DIFF-1: only the `[scroll, scroll + height)` window is painted, so
+        // build at most that many rows instead of the whole patch. The
+        // produced prefix is byte-identical to the uncapped layout, so the
+        // `skip(scroll).take(height)` below selects the exact same cells.
+        let cap = (self.scroll as usize).saturating_add(inner.height as usize);
+        let rows = self.laid_out(inner.width, cap);
         for (i, mut line) in rows
             .into_iter()
             .skip(self.scroll as usize)
@@ -790,6 +807,7 @@ fn layout_rows(
     width: usize,
     theme: &DiffTheme,
     syntax: bool,
+    row_cap: usize,
 ) -> Vec<Line<'static>> {
     let num_w = number_width(rows);
     // The widest body sign gutter: 1 for ordinary hunks, the parent count for
@@ -800,8 +818,20 @@ fn layout_rows(
     // index → the changed-char mask for that row (empty = no per-word marks).
     let marks = intra_line_marks(rows);
 
-    let mut out = Vec::with_capacity(rows.len());
+    // DIFF-1 (the landed Paragraph PG-1 pattern): the gutter/marks pre-scans
+    // above stay over *all* rows — so `num_w`/`sign_w` and every produced
+    // row are byte-identical to the uncapped layout (no scroll-jitter) —
+    // but `render` only ever paints `[scroll, scroll + height)`, so it
+    // passes `row_cap = scroll + height` and the heavy per-row
+    // wrap+syntax+alloc stops once that many output rows exist. The public
+    // `Diff::lines` (a host measures the true total for scroll math) passes
+    // `usize::MAX`, so its result is unchanged. `render_row(idx, …)` depends
+    // only on the full-row pre-scans, so `out[..cap]` is an exact prefix.
+    let mut out = Vec::with_capacity(rows.len().min(row_cap));
     for (idx, row) in rows.iter().enumerate() {
+        if out.len() >= row_cap {
+            break;
+        }
         out.push(render_row(
             idx, row, num_w, sign_w, &marks, width, theme, syntax,
         ));
@@ -1041,6 +1071,7 @@ fn layout_rows_split(
     width: usize,
     theme: &DiffTheme,
     syntax: bool,
+    row_cap: usize,
 ) -> Vec<Line<'static>> {
     let num_w = number_width(rows);
     let sign_w = sign_width(rows);
@@ -1050,15 +1081,23 @@ fn layout_rows_split(
     let gutter_w = num_w + sign_w + 2;
     let min_side = gutter_w + 1;
     if width < min_side * 2 + 1 {
-        return layout_rows(rows, width, theme, syntax);
+        return layout_rows(rows, width, theme, syntax, row_cap);
     }
     let left_w = (width - 1) / 2;
     let right_w = width - 1 - left_w;
 
     let marks = intra_line_marks(rows);
-    let mut out = Vec::with_capacity(rows.len());
+    // DIFF-1: same byte-identical-prefix cap as `layout_rows` — break before
+    // the next change group once `render`'s `[scroll, scroll + height)`
+    // window is covered. A group may push several rows, so the produced set
+    // can overshoot `row_cap` slightly; that is fine (still an exact prefix,
+    // and `render` clips with `take`). `Diff::lines` passes `usize::MAX`.
+    let mut out = Vec::with_capacity(rows.len().min(row_cap));
     let mut i = 0;
     while i < rows.len() {
+        if out.len() >= row_cap {
+            break;
+        }
         match &rows[i] {
             // Headers, metadata, binary, and the no-newline marker read
             // across both columns.
@@ -1735,6 +1774,52 @@ mod tests {
     fn empty_input_renders_nothing() {
         assert!(Diff::new("").lines(40).is_empty());
         assert_eq!(lines(Diff::new(""), 6, 2), "      \n      \n");
+    }
+
+    #[test]
+    fn the_row_cap_is_an_exact_prefix_of_the_full_layout() {
+        // DIFF-1 gate (the PG-2/CM-3 exactness discipline). `Diff::render`
+        // is `laid_out(w, scroll + height).skip(scroll).take(height)`; the
+        // pre-DIFF-1 render was `lines(w).skip(scroll).take(height)`. So if
+        // `laid_out(w, cap)` is an *exact prefix* of the uncapped `lines(w)`
+        // for every cap, the painted window is provably byte-identical for
+        // every scroll (its `[scroll, scroll+height) ⊆ [0, cap)`). Pinned
+        // across both layouts, narrow/wide widths, and caps from 1 to past
+        // the end, on a patch far longer than any viewport.
+        let mut patch = String::from("@@ -1,30 +1,30 @@ fn big\n");
+        for i in 0..30 {
+            patch.push_str(&format!(
+                " ctx {i} with some words\n-old value {i}\n+new value {i}\n"
+            ));
+        }
+        for split in [false, true] {
+            for w in [12u16, 30, 80] {
+                let base = || {
+                    let d = Diff::new(patch.as_str()).syntax(true);
+                    if split { d.side_by_side() } else { d }
+                };
+                let full = base().lines(w); // uncapped: the authoritative rows
+                assert_eq!(
+                    base().laid_out(w, usize::MAX),
+                    full,
+                    "lines() must stay the uncapped full layout (split={split} w={w})"
+                );
+                for cap in [0usize, 1, 4, 13, 47, full.len(), full.len() + 50] {
+                    let capped = base().laid_out(w, cap);
+                    assert!(
+                        capped.len() >= cap.min(full.len()),
+                        "cap={cap}: produced {} rows, need ≥{} (split={split} w={w})",
+                        capped.len(),
+                        cap.min(full.len())
+                    );
+                    assert_eq!(
+                        capped,
+                        full[..capped.len()],
+                        "laid_out({cap}) diverged from the full-layout prefix (split={split} w={w})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
