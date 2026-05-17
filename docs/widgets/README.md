@@ -29,7 +29,7 @@ caller-owned state it projects — this is the part that matters most), the
 
 | Family | Widgets | Reference |
 |--------|---------|-----------|
-| **Core set** | Block, Paragraph, List, Tabs, Gauge, Scrollbar, Spinner, Table, Checkbox, Button, Radio, Input, Modal, StatusBar, Toast, Tree, Select, Editor | [core-set.md](core-set.md) |
+| **Core set** | Block, Paragraph, List, Tabs, Gauge, Scrollbar, Spinner, FpsCounter, Table, Checkbox, Button, Radio, Input, Modal, StatusBar, Toast, Tree, Select, Editor | [core-set.md](core-set.md) |
 | **Rich rendering** | Markdown, Link, Diff, Mermaid, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
 | **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider, DataTable | [forms-and-data.md](forms-and-data.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
@@ -105,6 +105,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Slider](forms-and-data.md#slider) | forms/data | `slider_demo` |
 | [Sparkline](forms-and-data.md#sparkline) | forms/data | `sparkline_demo` |
 | [Spinner](core-set.md#spinner) | core | `spinner_demo` |
+| [FpsCounter](core-set.md#fpscounter) | core | `fps_counter_demo` |
 | [SplitPane](navigation-and-layout.md#splitpane) | nav/layout | `split_pane_demo` |
 | [StackedBarChart](charts.md#stackedbarchart) | charts | `stacked_bar_chart_demo` |
 | [StatPanel](observability.md#statpanel) | observability | `stat_panel_demo` |

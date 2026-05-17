@@ -35,6 +35,9 @@
 //! - [`spinner`]: [`Spinner`] — a one-cell animated busy indicator, a pure
 //!   projection of a caller-owned animation `tick`; the first consumer of the
 //!   `Frame::count()` animation clock.
+//! - [`fps`]: [`FpsCounter`] — a live render-rate readout, a pure projection
+//!   of a caller-owned [`FpsMeter`]; one line to make any app's frame
+//!   performance visible (deterministic under the test harness).
 //! - [`table`]: [`Table`] — a column-aligned grid of [`Row`]s with an optional
 //!   fixed header and single-row selection, the 2D generalization of [`List`]
 //!   that reuses the [`Constraint`](rstui_core::Constraint) layout divider for
@@ -322,6 +325,7 @@ pub mod extmark;
 pub mod flame_graph;
 pub mod flow;
 pub mod form;
+pub mod fps;
 pub mod funnel;
 pub mod gantt;
 pub mod gauge;
@@ -393,6 +397,7 @@ pub use divider::{Divider, DividerOrientation};
 pub use editor::Editor;
 pub use extmark::Extmark;
 pub use form::{Form, FormField};
+pub use fps::{FpsCounter, FpsMeter};
 pub use gauge::Gauge;
 pub use input::Input;
 pub use line_number_gutter::LineNumberGutter;

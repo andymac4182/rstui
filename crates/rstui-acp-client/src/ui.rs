@@ -112,6 +112,16 @@ fn render_header(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         &clamp(&title, area.width),
         style,
     );
+    // Live render rate, right-aligned on the bar (when there is room).
+    let fps = app.fps_label();
+    let fw = fps.chars().count() as u16;
+    if area.width > fw + 2 {
+        frame.buffer_mut().set_str(
+            Position::new(area.x + area.width - fw - 1, area.y),
+            &fps,
+            style,
+        );
+    }
 }
 
 fn render_footer(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {

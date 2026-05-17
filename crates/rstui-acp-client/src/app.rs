@@ -290,6 +290,10 @@ pub struct ChatApp {
     show_help: bool,
     last_size: Size,
     quitting: bool,
+    /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
+    /// sampled once per frame in `view` and shown in the header so the
+    /// client's performance is always visible.
+    fps: rstui_widgets::FpsMeter,
 }
 
 impl ChatApp {
@@ -336,6 +340,7 @@ impl ChatApp {
             show_help: false,
             last_size: Size::new(80, 24),
             quitting: false,
+            fps: rstui_widgets::FpsMeter::new(),
         }
     }
 
@@ -365,6 +370,12 @@ impl ChatApp {
     #[must_use]
     pub fn status_line(&self) -> &str {
         &self.status_line
+    }
+    /// The live render-rate label (`"NNN fps"`, or `"--- fps"` before the
+    /// first usable sample / under the synchronous test harness).
+    #[must_use]
+    pub fn fps_label(&self) -> String {
+        self.fps.label()
     }
     /// The composer document.
     #[must_use]
@@ -1386,6 +1397,8 @@ impl App for ChatApp {
     }
 
     fn view(&self, frame: &mut Frame<'_>) {
+        // One sample per painted frame — the header reads it back.
+        self.fps.record();
         ui::render(self, frame);
     }
 }

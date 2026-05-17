@@ -145,6 +145,33 @@ Spinner::default()
 
 ---
 
+## FpsCounter
+
+![FpsCounter demo](media/fps_counter_demo.gif)
+
+A live render-rate readout — one line to make any app's frame performance
+visible. A pure projection of a caller-owned `FpsMeter`; the widget samples
+the borrowed meter as it renders, so a drop-in `FpsCounter::new(&self.fps)`
+per frame is the whole feature.
+
+- **State model:** pure projection of a caller-owned `FpsMeter` (the §P1
+  interior-mutable caller-owned-state pattern, like `ScrollState`).
+- **Deterministic under test:** sub-4ms gaps (the synchronous `Harness`
+  loop) report a stable `--- fps` placeholder, never a nondeterministic
+  number — so the demo doubles as a snapshot test, and live shows the real
+  rate.
+
+```rust
+FpsMeter::new()              // own one on your model
+FpsCounter::new(&meter)
+.style(Style) .prefix(&str)
+// meter.fps() -> Option<f32> ; meter.label() -> String
+```
+
+**Demo:** `cargo run -p rstui-widgets --example fps_counter_demo`
+
+---
+
 ## Table
 
 ![Table demo](media/table_demo.gif)

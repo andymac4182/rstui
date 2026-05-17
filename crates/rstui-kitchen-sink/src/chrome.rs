@@ -60,7 +60,12 @@ pub(crate) fn view_header(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     let cx = area.x + area.width.saturating_sub(title.len() as u16) / 2;
     buffer.set_str(Position::new(cx, area.y), title, bar);
 
-    let right = format!("{} · ◴ {:04}", theme.mode.label(), ks.tick() % 10_000);
+    let right = format!(
+        "{} · {} · ◴ {:04}",
+        ks.fps_label(),
+        theme.mode.label(),
+        ks.tick() % 10_000
+    );
     let rx = area.right().saturating_sub(right.len() as u16 + 1);
     buffer.set_str(
         Position::new(rx, area.y),

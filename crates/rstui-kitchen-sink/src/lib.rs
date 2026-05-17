@@ -200,6 +200,10 @@ pub struct KitchenSink {
     /// `Some(action)` while the drawer is capturing a key to rebind it to —
     /// the next key press becomes that action's new binding.
     rebind: Option<keymap::Action>,
+    /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
+    /// sampled once per frame in `view` and shown in the header so the app's
+    /// performance is always visible.
+    fps: rstui_widgets::FpsMeter,
 }
 
 impl KitchenSink {
@@ -231,6 +235,7 @@ impl KitchenSink {
             keymaps: keymap::Keymaps::new(),
             drawer_sel: 0,
             rebind: None,
+            fps: rstui_widgets::FpsMeter::new(),
         }
     }
 
@@ -771,6 +776,8 @@ impl App for KitchenSink {
     }
 
     fn view(&self, frame: &mut Frame<'_>) {
+        // One sample per painted frame — the header reads it back.
+        self.fps.record();
         let area = frame.area();
         // Record exactly what this frame lays out so the click/scroll
         // reducer hit-tests the real geometry, not a guessed size.
@@ -863,6 +870,9 @@ impl KitchenSink {
     }
     pub(crate) fn theme_name(&self) -> &str {
         &self.theme_name
+    }
+    pub(crate) fn fps_label(&self) -> String {
+        self.fps.label()
     }
     pub(crate) fn screen(&self) -> Screen {
         self.screen
