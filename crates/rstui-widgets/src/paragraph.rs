@@ -147,17 +147,16 @@ impl<'a> Paragraph<'a> {
     /// a framing [`block`](Self::block)'s rows are the caller's to add.
     #[must_use]
     pub fn line_count(&self, width: u16) -> usize {
-        compose_rows(
-            &self.text,
-            self.style,
-            self.wrap,
-            self.alignment,
-            width as usize,
-            // The true total — `line_count` callers (e.g. Toast sizing its
-            // box) need every row, so never early-exit here.
-            usize::MAX,
-        )
-        .len()
+        // PG-2: count the rows the *same* wrap path produces without
+        // materializing them. `compose_rows` allocates a `Vec<(char,Style)>`
+        // per source line and another per wrapped row; `Toast`/
+        // `DescriptionList` call this every frame purely for the `.len()`,
+        // composing the whole document a second time just to discard it.
+        // `count_rows` is a transliteration of that exact control flow with
+        // the per-row cell `Vec` replaced by a `usize` length — so the count
+        // is identical by construction (the `paragraph_line_count_*` tests
+        // gate-enforce `line_count == compose_rows(..).len()` exactly).
+        count_rows(&self.text, self.wrap, width as usize)
     }
 }
 
@@ -284,6 +283,91 @@ fn compose_rows(
         }
     }
     rows
+}
+
+/// Counts the rows [`compose_rows`] would produce, without allocating them.
+///
+/// A line-for-line transliteration of [`compose_rows`] + [`wrap_cells`] +
+/// [`flush_row`] with the per-row `Vec<(char, Style)>` replaced by a `usize`
+/// running length and the row sink replaced by a counter. Every place
+/// `compose_rows` would emit a row, this increments `count` by exactly one;
+/// every wrap decision uses the identical `cur_len`/`token.len()`/`width`
+/// arithmetic. Styles never affect wrapping (each `char` is one cell), so
+/// only the char sequence is walked. `flush_row`'s trailing-whitespace trim
+/// is intentionally omitted: it mutates a finished row's cells but never
+/// whether a row is emitted (the sink push is unconditional) and the running
+/// buffer is reset after every flush, so it cannot change the count. There is
+/// no `row_cap`: `line_count` is the only caller and always needs the true
+/// total (it passed `usize::MAX` before). Exactness vs. `compose_rows().len()`
+/// is gate-enforced by the `paragraph_line_count_*` tests.
+fn count_rows(text: &Text, wrap: Option<Wrap>, width: usize) -> usize {
+    let mut count = 0usize;
+    for line in &text.lines {
+        match wrap {
+            Some(w) => {
+                let chars: Vec<char> = line
+                    .spans
+                    .iter()
+                    .flat_map(|span| span.content.chars())
+                    .collect();
+                wrap_count(&chars, width, w.trim, &mut count);
+            }
+            None => count += 1,
+        }
+    }
+    count
+}
+
+/// The row-count of [`wrap_cells`] for one source line — same control flow,
+/// `cur` length tracked as a `usize`, `flush_row` as `count += 1`.
+fn wrap_count(chars: &[char], width: usize, trim: bool, count: &mut usize) {
+    if width == 0 {
+        *count += 1;
+        return;
+    }
+    let mut cur_len = 0usize;
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        let ws = chars[i].is_whitespace();
+        let mut j = i;
+        while j < n && chars[j].is_whitespace() == ws {
+            j += 1;
+        }
+        let token_len = j - i;
+        i = j;
+        if ws {
+            if trim && cur_len == 0 {
+                // Drop leading whitespace at the start of a row.
+            } else if cur_len + token_len <= width {
+                cur_len += token_len;
+            } else {
+                // Whitespace would overflow: end the row, drop the spaces.
+                *count += 1;
+                cur_len = 0;
+            }
+        } else if token_len <= width {
+            if cur_len + token_len > width {
+                *count += 1;
+                cur_len = 0;
+            }
+            cur_len += token_len;
+        } else {
+            // A single word wider than the whole row: hard split it.
+            let mut k = 0;
+            while k < token_len {
+                if cur_len == width {
+                    *count += 1;
+                    cur_len = 0;
+                }
+                let take = (width - cur_len).min(token_len - k);
+                cur_len += take;
+                k += take;
+            }
+        }
+    }
+    // Final `flush_row`.
+    *count += 1;
 }
 
 impl Widget for Paragraph<'_> {
@@ -525,5 +609,67 @@ mod tests {
             .wrap(Wrap { trim: true })
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    /// PG-2 exactness gate: `line_count` (the allocation-free `count_rows`)
+    /// must equal the authoritative `compose_rows(.., usize::MAX).len()` for
+    /// *every* combination — that equality is the entire correctness contract
+    /// of the count-only path. Exhaustive over a matrix that hits every
+    /// `wrap_cells` branch (leading/trailing/interior whitespace, blank and
+    /// empty lines, words exactly at / over the width, multi-byte chars,
+    /// width 0/1) and proves styling/multi-span splitting can't shift it.
+    #[test]
+    fn line_count_exactly_matches_compose_rows() {
+        let texts: Vec<Text> = vec![
+            Text::from(""),
+            Text::from("a"),
+            Text::from("hello world"),
+            Text::from("the quick brown fox"),
+            Text::from("  leading and trailing   "),
+            Text::from("a\nbb\nccc"),
+            Text::from("\n\n\n"),
+            Text::from("supercalifragilistic"),
+            Text::from("a verylongunbreakableword b"),
+            Text::from("line one\n\n  indented two  \nthree"),
+            Text::from("café résumé naïve"),
+            Text::from("tab\tseparated\twords"),
+            Text::from("trailing spaces   \nnext"),
+            // Multi-span styled line: the same glyphs split across spans with
+            // different styles must count identically (styles never wrap).
+            Text::from(Line::from(vec![
+                Span::styled("the qui", Style::default().fg(Color::Red)),
+                Span::raw("ck br"),
+                Span::styled("own", Style::default().add_modifier(Modifier::BOLD)),
+            ])),
+        ];
+        let wraps = [None, Some(Wrap { trim: false }), Some(Wrap { trim: true })];
+        for text in &texts {
+            for &wrap in &wraps {
+                for width in [0u16, 1, 2, 3, 4, 5, 7, 11, 20, 80] {
+                    let p = {
+                        let mut p = Paragraph::new(text.clone());
+                        if let Some(w) = wrap {
+                            p = p.wrap(w);
+                        }
+                        p
+                    };
+                    let authoritative = compose_rows(
+                        &p.text,
+                        p.style,
+                        p.wrap,
+                        p.alignment,
+                        width as usize,
+                        usize::MAX,
+                    )
+                    .len();
+                    assert_eq!(
+                        p.line_count(width),
+                        authoritative,
+                        "count_rows diverged from compose_rows: text={text:?} \
+                         wrap={wrap:?} width={width}"
+                    );
+                }
+            }
+        }
     }
 }
