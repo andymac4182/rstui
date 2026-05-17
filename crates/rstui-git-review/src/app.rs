@@ -455,8 +455,8 @@ impl GitReview {
                     Orient::Top => Orient::Left,
                 };
             }
-            SHRINK => self.split_pct = self.split_pct.saturating_sub(4).max(15),
-            GROW => self.split_pct = (self.split_pct + 4).min(75),
+            SHRINK => self.split_pct = self.split_pct.saturating_sub(4).max(6),
+            GROW => self.split_pct = (self.split_pct + 4).min(94),
             GRAPH => {
                 self.graph = !self.graph;
                 self.status = if self.graph {
@@ -857,7 +857,7 @@ impl GitReview {
                 } else {
                     u32::from(pos.x.saturating_sub(g.body.x)) * 100 / u32::from(g.body.width.max(1))
                 };
-                self.split_pct = (pct as u16).clamp(15, 75);
+                self.split_pct = (pct as u16).clamp(6, 94);
             }
             MouseEventKind::Up(MouseButton::Left) => self.resizing = false,
             MouseEventKind::ScrollDown => {
@@ -1073,11 +1073,17 @@ impl App for GitReview {
         let pct = u32::from(self.split_pct);
         let [list_a, detail_a] = match self.orient {
             Orient::Left => {
-                let w = ((u32::from(body.width) * pct / 100) as u16).clamp(8, 90);
+                // Body-relative bounds (not fixed 8..90): the divider can go
+                // nearly full-width either way, always leaving ≥3 cells for
+                // the other pane. `max(3)` keeps the clamp lo ≤ hi at any
+                // size, so it is still total.
+                let hi = body.width.saturating_sub(3).max(3);
+                let w = ((u32::from(body.width) * pct / 100) as u16).clamp(3, hi);
                 Layout::horizontal([Constraint::Length(w), Constraint::Fill(1)]).areas(body)
             }
             Orient::Top => {
-                let h = ((u32::from(body.height) * pct / 100) as u16).clamp(3, 40);
+                let hi = body.height.saturating_sub(2).max(2);
+                let h = ((u32::from(body.height) * pct / 100) as u16).clamp(2, hi);
                 Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body)
             }
         };

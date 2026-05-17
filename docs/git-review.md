@@ -52,8 +52,10 @@ caller-owned state the pure `view` reads:
   between unified (`≡`) and split (`◫`).
 - **Re-orientable split** — `t` moves the history pane between the left
   (a tall commit column) and the top (a wide commit strip).
-- **Resizable split** — `-` / `=` grow/shrink the history pane against the
-  diff (15–75 % of the body; `Layout` clamps it total at any size).
+- **Resizable split** — `-` / `=` (or drag the divider) grow/shrink the
+  history pane against the diff: 6–94 % of the body, so it goes from a
+  thin sliver to nearly full-width either way (always ≥3 cells for the
+  other pane; `Layout` clamps it total at any size).
 - **Mouse** — **drag the pane border** to resize (the same divider-drag the
   kitchen-sink uses), **click** a commit to select it, and the **wheel**
   scrolls the patch or steps the history depending on which pane the pointer
