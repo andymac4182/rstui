@@ -340,8 +340,15 @@ impl<'a> Block<'a> {
     }
 }
 
-impl Widget for Block<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl Block<'_> {
+    /// Draws the block (fill, borders, titles) reading `&self`.
+    ///
+    /// The clone-free path container widgets render their frame through
+    /// every frame: a `Block` owns a title `Line` (`Vec<Span>` + `Cow`s), so
+    /// `self.block.clone()` purely to satisfy the `self`-by-value
+    /// `Widget::render` was a per-frame deep clone in every framed widget.
+    /// `Widget for Block` now just delegates here.
+    pub fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
             return;
         }
@@ -390,7 +397,7 @@ impl Widget for Block<'_> {
             buf.set_cell(Position::new(right - 1, bottom - 1), set.bottom_right, bs);
         }
 
-        if let Some(title) = self.title {
+        if let Some(title) = &self.title {
             // The title lives on the top row, inside whatever vertical
             // borders are present so it never overwrites a corner.
             let start = left + u16::from(borders.contains(Borders::LEFT));
@@ -411,7 +418,7 @@ impl Widget for Block<'_> {
                 // around a short title.
                 let base = self.title_style.patch(title.style);
                 let mut x = x0;
-                'title: for span in title.spans {
+                'title: for span in &title.spans {
                     let style = base.patch(span.style);
                     for ch in span.content.chars() {
                         if x >= end {
@@ -424,7 +431,7 @@ impl Widget for Block<'_> {
             }
         }
 
-        if let Some(title) = self.bottom_title {
+        if let Some(title) = &self.bottom_title {
             // The mirror of the top title, on the bottom edge row, inside
             // whatever vertical borders are present so it never clobbers a
             // corner — the opencode compaction-divider / footer-label use.
@@ -444,7 +451,7 @@ impl Widget for Block<'_> {
                 // bottom title leaves the border showing around it.
                 let base = self.title_style.patch(title.style);
                 let mut x = x0;
-                'bottom_title: for span in title.spans {
+                'bottom_title: for span in &title.spans {
                     let style = base.patch(span.style);
                     for ch in span.content.chars() {
                         if x >= end {
@@ -456,6 +463,12 @@ impl Widget for Block<'_> {
                 }
             }
         }
+    }
+}
+
+impl Widget for Block<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
     }
 }
 
