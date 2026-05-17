@@ -92,6 +92,12 @@ pub struct TextEdit {
     value: String,
     /// Character index in `0..=value.chars().count()`.
     cursor: usize,
+    /// Cached `value.chars().count()`, kept exact by every mutator so
+    /// [`len`](Self::len) is O(1) instead of an O(n) UTF-8 re-scan on the
+    /// per-frame projection path *and* inside per-keystroke bounds checks
+    /// (CM-2). It is a pure function of `value`, so the derived
+    /// `PartialEq`/`Eq`/`Default` stay correct (equal `value` ⇒ equal cache).
+    char_len: usize,
 }
 
 impl TextEdit {
@@ -112,7 +118,11 @@ impl TextEdit {
     pub fn from_value(value: impl Into<String>) -> Self {
         let value = value.into();
         let cursor = value.chars().count();
-        Self { value, cursor }
+        Self {
+            value,
+            cursor,
+            char_len: cursor,
+        }
     }
 
     /// The current text.
@@ -133,7 +143,7 @@ impl TextEdit {
     /// cursor index.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.value.chars().count()
+        self.char_len
     }
 
     /// Whether the text is empty.
@@ -146,13 +156,15 @@ impl TextEdit {
     /// with [`from_value`](Self::from_value)).
     pub fn set_value(&mut self, value: impl Into<String>) {
         self.value = value.into();
-        self.cursor = self.len();
+        self.char_len = self.value.chars().count();
+        self.cursor = self.char_len;
     }
 
     /// Empties the text and returns the cursor to the start.
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
+        self.char_len = 0;
     }
 
     /// Moves the cursor to character index `char_index`, clamped to
@@ -200,6 +212,7 @@ impl TextEdit {
         let at = self.byte_at(self.cursor);
         self.value.insert(at, c);
         self.cursor += 1;
+        self.char_len += 1;
     }
 
     /// Inserts `s` at the cursor and advances the cursor past all of it.
@@ -211,7 +224,9 @@ impl TextEdit {
     pub fn insert_str(&mut self, s: &str) {
         let at = self.byte_at(self.cursor);
         self.value.insert_str(at, s);
-        self.cursor += s.chars().count();
+        let added = s.chars().count();
+        self.cursor += added;
+        self.char_len += added;
     }
 
     /// Deletes the character before the cursor (Backspace) and moves the
@@ -222,9 +237,17 @@ impl TextEdit {
             return false;
         }
         let end = self.byte_at(self.cursor);
-        let start = self.byte_at(self.cursor - 1);
+        // CM-4: the previous character boundary is one O(1) backward UTF-8
+        // step from `end`, not a second full `char_indices` walk from the
+        // start. `end` is a valid boundary and `cursor > 0` here, so the
+        // prefix is non-empty.
+        let start = self.value[..end]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(byte, _)| byte);
         self.value.replace_range(start..end, "");
         self.cursor -= 1;
+        self.char_len -= 1;
         true
     }
 
@@ -237,6 +260,7 @@ impl TextEdit {
         let start = self.byte_at(self.cursor);
         let end = self.byte_at(self.cursor + 1);
         self.value.replace_range(start..end, "");
+        self.char_len -= 1;
         true
     }
 
@@ -431,6 +455,13 @@ mod tests {
                     _ => te.set_value("reset 値"),
                 }
 
+                // Invariant 0 (CM-2): the cached char count never diverges
+                // from the ground truth across any operation sequence.
+                assert_eq!(
+                    te.len(),
+                    te.value().chars().count(),
+                    "char_len cache diverged from value"
+                );
                 // Invariant 1: cursor is a valid character index.
                 assert!(te.cursor() <= te.len(), "cursor escaped 0..=len");
                 // Invariant 2: that index maps to a real UTF-8 boundary, so
