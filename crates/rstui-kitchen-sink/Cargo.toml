@@ -1,0 +1,26 @@
+[package]
+name = "rstui-kitchen-sink"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "The rstui kitchen-sink: one fully interactive, multi-screen, full-colour terminal app that exercises every widget with live keyboard + mouse, and doubles as a deterministic Harness-driven snapshot test of the whole stack."
+
+[lints]
+workspace = true
+
+# Same shape as `rstui-smoke`: a demo/app crate that spans every stream by
+# depending on the public API of core + widgets + runtime together, so a
+# cross-crate regression fails `cargo test` here. It is `publish = false`
+# (an application, not a library), so path deps need no `version` and it is
+# excluded from `cargo xtask publish-check`.
+[dependencies]
+rstui-core = { path = "../rstui-core" }
+rstui-widgets = { path = "../rstui-widgets" }
+rstui-runtime = { path = "../rstui-runtime" }
+# The full-screen entry point (`run_app`) lives here; it owns the alternate
+# screen, raw mode, mouse + paste + focus capture, and panic-safe restore.
+rstui-crossterm = { path = "../rstui-crossterm" }
