@@ -7,10 +7,12 @@
 //! the caret (no stored offsets, no interior mutability) — only the diff's
 //! vertical scroll is genuine independent user state.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use rstui_core::{
-    Constraint, Event, Frame, KeyCode, KeyModifiers, Layout, Line, Rect, Span, Style, TextArea,
+    Constraint, Event, Frame, KeyCode, KeyModifiers, Layout, Line, MouseButton, MouseEventKind,
+    Position, Rect, Span, Style, TextArea,
 };
 use rstui_runtime::{App, Cmd};
 use rstui_widgets::{
@@ -47,6 +49,22 @@ enum Orient {
     Top,
 }
 
+/// The rects the last frame laid out, captured by `view` so the mouse
+/// reducer hit-tests *what was rendered* (a real terminal does not always
+/// send an initial resize, so a guessed size mis-places every click — the
+/// same `Cell<Geom>` discipline the kitchen-sink uses).
+#[derive(Debug, Clone, Copy)]
+struct Geom {
+    /// The body (everything above the status row).
+    body: Rect,
+    /// The history pane (outer, including its border).
+    list: Rect,
+    /// The detail pane (outer, including its border).
+    detail: Rect,
+    /// `true` when the split is vertical (history on top).
+    vertical: bool,
+}
+
 /// The full-screen git history review + code editing application.
 ///
 /// All state is owned here and mutated only in [`update`](App::update);
@@ -77,6 +95,11 @@ pub struct GitReview {
     orient: Orient,
     /// History pane size as a percent of the body (resizable, clamped).
     split_pct: u16,
+    /// A divider drag is in progress (mouse held on the split boundary).
+    resizing: bool,
+    /// The geometry the last frame drew, for mouse hit-testing. `None`
+    /// until the first frame (no mouse can arrive before then).
+    geom: Cell<Option<Geom>>,
     /// Case-insensitive commit filter (empty = show everything).
     filter: String,
     /// The filter input row currently owns the keyboard.
@@ -124,6 +147,9 @@ pub enum Msg {
     /// A translated key press (interpreted in [`update`](App::update), the
     /// only mutator, since what a key means depends on mode/focus).
     Key(KeyCode, KeyModifiers),
+    /// A mouse event (kind + cell position), hit-tested in
+    /// [`update`](App::update) against the geometry `view` recorded.
+    Mouse(MouseEventKind, Position),
 }
 
 impl GitReview {
@@ -147,6 +173,8 @@ impl GitReview {
             diff_split: false,
             orient: Orient::Left,
             split_pct: 34,
+            resizing: false,
+            geom: Cell::new(None),
             filter: String::new(),
             filtering: false,
             editor: TextArea::new(),
@@ -456,53 +484,70 @@ impl GitReview {
 
     /// The history pane: the `git log --graph` DAG (or a plain/filtered
     /// list), the selected commit highlighted.
-    fn view_history(&self, frame: &mut Frame<'_>, area: Rect) {
+    /// The history as `(commit-ordinal, line)` display rows + the selected
+    /// display index + the visible-commit count. The single source both
+    /// `view_history` (to render) and the mouse reducer (to map a click row
+    /// back to a commit) read, so they can never disagree.
+    fn history_lines(&self) -> (Vec<(Option<usize>, Line<'static>)>, usize, usize) {
         let vis = self.visible();
-        let graph_mode = self.graph && self.filter.is_empty();
-
-        let (lines, sel_disp): (Vec<Line>, usize) = if graph_mode {
-            // Every physical row, art included; selection maps to the
-            // display row of the sel-th visible commit.
+        if self.graph && self.filter.is_empty() {
+            // Every physical row, art included; a connector row maps to no
+            // commit (`None`) so a click on it selects nothing.
             let mut out = Vec::with_capacity(self.rows.len());
             let mut ord = 0usize;
-            let mut disp = 0usize;
+            let mut sel_disp = 0usize;
             for (i, row) in self.rows.iter().enumerate() {
                 match &row.commit {
                     Some(c) => {
                         if ord == self.sel {
-                            disp = i;
+                            sel_disp = i;
                         }
+                        let this = ord;
                         ord += 1;
                         let subj: String = c.subject.chars().take(64).collect();
-                        out.push(Line::from(vec![
-                            Span::styled(format!("{} ", row.art), palette::graph()),
-                            Span::styled(format!("{} ", c.short), palette::accent()),
-                            Span::raw(subj),
-                        ]));
+                        out.push((
+                            Some(this),
+                            Line::from(vec![
+                                Span::styled(format!("{} ", row.art), palette::graph()),
+                                Span::styled(format!("{} ", c.short), palette::accent()),
+                                Span::raw(subj),
+                            ]),
+                        ));
                     }
-                    None => out.push(Line::styled(row.art.clone(), palette::graph())),
+                    None => {
+                        out.push((None, Line::styled(row.art.clone(), palette::graph())));
+                    }
                 }
             }
-            (out, disp)
+            (out, sel_disp, vis.len())
         } else {
             // Plain (graph off, or a filter is narrowing): one row per
-            // visible commit, no art.
-            let out: Vec<Line> = vis
+            // visible commit, no art; display index == commit ordinal.
+            let out: Vec<(Option<usize>, Line<'static>)> = vis
                 .iter()
-                .map(|&i| {
+                .enumerate()
+                .map(|(ord, &i)| {
                     let c = self.rows[i].commit.as_ref().expect("visible ⇒ commit");
                     let subj: String = c.subject.chars().take(64).collect();
-                    Line::from(vec![
-                        Span::styled(format!("{} ", c.short), palette::accent()),
-                        Span::styled(format!("{} ", c.date), palette::dim()),
-                        Span::raw(subj),
-                    ])
+                    (
+                        Some(ord),
+                        Line::from(vec![
+                            Span::styled(format!("{} ", c.short), palette::accent()),
+                            Span::styled(format!("{} ", c.date), palette::dim()),
+                            Span::raw(subj),
+                        ]),
+                    )
                 })
                 .collect();
-            (out, self.sel.min(vis.len().saturating_sub(1)))
-        };
+            let sel_disp = self.sel.min(out.len().saturating_sub(1));
+            (out, sel_disp, vis.len())
+        }
+    }
 
-        let mut title = format!(" Commits {} · {}", vis.len(), self.branch);
+    fn view_history(&self, frame: &mut Frame<'_>, area: Rect) {
+        let (rows, sel_disp, vis_len) = self.history_lines();
+        let lines: Vec<Line> = rows.into_iter().map(|(_, l)| l).collect();
+        let mut title = format!(" Commits {vis_len} · {}", self.branch);
         if !self.filter.is_empty() {
             title.push_str(&format!(" · /{}", self.filter));
         } else if self.graph {
@@ -517,6 +562,81 @@ impl GitReview {
                 .block(self.pane(title, self.focus == Focus::History && !self.filtering)),
             area,
         );
+    }
+
+    /// Map a clicked cell to a visible-commit ordinal, using the same
+    /// display rows + offset `view_history` rendered (the list pane's inner
+    /// area is its rect inset by the 1-cell border).
+    fn commit_at(&self, list: Rect, pos: Position) -> Option<usize> {
+        let inner_top = list.y + 1;
+        if pos.x <= list.x
+            || pos.x >= list.right().saturating_sub(1)
+            || pos.y < inner_top
+            || pos.y >= list.bottom().saturating_sub(1)
+        {
+            return None;
+        }
+        let (rows, sel_disp, _) = self.history_lines();
+        let offset = sel_disp.saturating_sub(3);
+        let disp = offset + usize::from(pos.y - inner_top);
+        rows.get(disp).and_then(|&(ord, _)| ord)
+    }
+
+    /// Handle one mouse event against the geometry `view` recorded.
+    fn on_mouse(&mut self, kind: MouseEventKind, pos: Position) -> Cmd<Msg> {
+        let Some(g) = self.geom.get() else {
+            return Cmd::none();
+        };
+        // The split boundary: a 3-cell-wide hot zone straddling the seam
+        // between the two panes (forgiving to grab).
+        let on_divider = if g.vertical {
+            pos.x >= g.body.x && pos.x < g.body.right() && g.list.bottom().abs_diff(pos.y) <= 1
+        } else {
+            pos.y >= g.body.y && pos.y < g.body.bottom() && g.list.right().abs_diff(pos.x) <= 1
+        };
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if on_divider {
+                    self.resizing = true;
+                } else if g.list.contains(pos) {
+                    self.focus = Focus::History;
+                    if let Some(ord) = self.commit_at(g.list, pos) {
+                        if ord != self.sel {
+                            self.sel = ord;
+                            return self.reload_detail();
+                        }
+                    }
+                } else if g.detail.contains(pos) {
+                    self.focus = Focus::Detail;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.resizing => {
+                let pct = if g.vertical {
+                    u32::from(pos.y.saturating_sub(g.body.y)) * 100
+                        / u32::from(g.body.height.max(1))
+                } else {
+                    u32::from(pos.x.saturating_sub(g.body.x)) * 100 / u32::from(g.body.width.max(1))
+                };
+                self.split_pct = (pct as u16).clamp(15, 75);
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.resizing = false,
+            MouseEventKind::ScrollDown => {
+                if g.detail.contains(pos) {
+                    self.diff_scroll = self.diff_scroll.saturating_add(3);
+                } else if g.list.contains(pos) {
+                    return self.select(1);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if g.detail.contains(pos) {
+                    self.diff_scroll = self.diff_scroll.saturating_sub(3);
+                } else if g.list.contains(pos) {
+                    return self.select(-1);
+                }
+            }
+            _ => {}
+        }
+        Cmd::none()
     }
 
     /// The detail pane: the patch (Review) or the editor (Edit).
@@ -617,6 +737,9 @@ impl App for GitReview {
     }
 
     fn on_event(&self, event: Event) -> Option<Msg> {
+        if let Some(m) = event.as_mouse() {
+            return Some(Msg::Mouse(m.kind, m.position));
+        }
         let key = event.as_key_press()?;
         Some(Msg::Key(key.code, key.modifiers))
     }
@@ -672,6 +795,7 @@ impl App for GitReview {
                 Cmd::none()
             }
             Msg::Key(code, mods) => self.on_key(code, mods),
+            Msg::Mouse(kind, pos) => self.on_mouse(kind, pos),
         }
     }
 
@@ -714,6 +838,14 @@ impl App for GitReview {
                 Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body)
             }
         };
+        // Record exactly what this frame laid out so the mouse reducer
+        // hit-tests the real geometry, not a guessed size.
+        self.geom.set(Some(Geom {
+            body,
+            list: list_a,
+            detail: detail_a,
+            vertical: self.orient == Orient::Top,
+        }));
         self.view_history(frame, list_a);
         self.view_detail(frame, detail_a);
         self.view_status(frame, status);
@@ -731,6 +863,10 @@ impl App for GitReview {
                 HelpEntry::new(["/"], "Filter commits (Enter keep · Esc clear)"),
                 HelpEntry::new(["e"], "Edit the commit's first changed file"),
                 HelpEntry::new(["Ctrl", "S"], "Save the edited file (Edit mode)"),
+                HelpEntry::new(
+                    ["Mouse"],
+                    "Click a commit · drag the pane border to resize · wheel scrolls",
+                ),
                 HelpEntry::new(["Esc"], "Leave Edit / close this help"),
                 HelpEntry::new(["q"], "Quit"),
             ];

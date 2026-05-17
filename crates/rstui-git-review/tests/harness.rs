@@ -6,9 +6,20 @@
 
 use std::path::PathBuf;
 
-use rstui_core::{Event, KeyCode, KeyEvent};
+use rstui_core::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind, Position,
+};
 use rstui_git_review::{Config, GitReview};
 use rstui_runtime::Harness;
+
+/// A left-button mouse event of `kind` at `(x, y)`.
+fn mouse(kind: MouseEventKind, x: u16, y: u16) -> Event {
+    Event::from(MouseEvent::new(
+        kind,
+        Position::new(x, y),
+        KeyModifiers::NONE,
+    ))
+}
 
 /// A config pointing at this crate (inside the repo worktree), so `git`
 /// discovers the real repository regardless of the test's CWD.
@@ -319,5 +330,73 @@ fn orientation_resize_and_graph_toggle_never_panic() {
         "still renders the history after every toggle:\n{}",
         h.snapshot()
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// Each fixture commit adds a distinct `f{i}.txt`, so the *patch* of commit i
+// uniquely contains `f{i}.txt` — a robust discriminator for which commit the
+// detail pane loaded (the subject text alone also appears in the list).
+
+#[test]
+fn mouse_click_in_history_selects_that_commit() {
+    let dir = fixture(&["alpha apple", "beta banana", "gamma grape"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    // First frame sets the geometry the mouse reducer hit-tests.
+    let s = h.snapshot();
+    assert!(
+        s.contains("f2.txt") && !s.contains("f1.txt"),
+        "newest commit (gamma → f2.txt) is selected on boot:\n{s}"
+    );
+    // Click the 2nd visible row (display row 1) inside the history pane.
+    h.handle(mouse(MouseEventKind::Down(MouseButton::Left), 5, 2));
+    let s = h.snapshot();
+    assert!(
+        s.contains("f1.txt"),
+        "clicking row 2 selected the 2nd commit (beta → f1.txt):\n{s}"
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mouse_wheel_over_history_advances_selection() {
+    let dir = fixture(&["alpha apple", "beta banana", "gamma grape"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    assert!(h.snapshot().contains("f2.txt"), "boots on gamma");
+    h.handle(mouse(MouseEventKind::ScrollDown, 5, 3));
+    assert!(
+        h.snapshot().contains("f1.txt"),
+        "wheel-down over the history advances to the next commit (beta)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mouse_divider_drag_resizes_without_panic() {
+    let dir = fixture(&["c1", "c2"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    let _ = h.snapshot(); // lay out → record geometry
+    // Default Orient::Left, split 34 % of width 120 ⇒ divider near x = 40.
+    h.handle(mouse(MouseEventKind::Down(MouseButton::Left), 40, 10));
+    for x in [20u16, 110, 1, 60] {
+        h.handle(mouse(MouseEventKind::Drag(MouseButton::Left), x, 10));
+        assert!(h.is_running(), "a divider drag must never panic or quit");
+        assert!(
+            h.snapshot().contains("Commits 2"),
+            "the history still renders mid-resize (x={x})"
+        );
+    }
+    h.handle(mouse(MouseEventKind::Up(MouseButton::Left), 60, 10));
+    assert!(h.is_running());
+    assert!(h.snapshot().contains("Commits 2"), "renders after the drag");
     let _ = std::fs::remove_dir_all(&dir);
 }

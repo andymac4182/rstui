@@ -54,6 +54,12 @@ caller-owned state the pure `view` reads:
   (a tall commit column) and the top (a wide commit strip).
 - **Resizable split** — `-` / `=` grow/shrink the history pane against the
   diff (15–75 % of the body; `Layout` clamps it total at any size).
+- **Mouse** — **drag the pane border** to resize (the same divider-drag the
+  kitchen-sink uses), **click** a commit to select it, and the **wheel**
+  scrolls the patch or steps the history depending on which pane the pointer
+  is over. The reducer hit-tests the geometry `view` recorded into a
+  `Cell<Geom>` — the canonical rstui mouse pattern (a real terminal does not
+  always send an initial resize, so a guessed size mis-places every click).
 - **Filter** — `/` narrows the history to commits whose
   sha/subject/author/date match (case-insensitive); `Enter` keeps it, `Esc`
   clears. While filtered the list is flat (the DAG of a subset is
