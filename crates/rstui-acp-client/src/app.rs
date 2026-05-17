@@ -533,6 +533,25 @@ impl ChatApp {
     pub fn log(&self) -> &[String] {
         &self.log
     }
+
+    /// Appends a diagnostic line, capping retained history (APP-3).
+    ///
+    /// `log` is fed by every plugin `Log`, status change, and **agent stderr
+    /// line** (npx agents are chatty), so an unbounded `Vec<String>` grew
+    /// forever over a long session — wasted memory, and it amplified the
+    /// per-frame work while the `/log` overlay is open. Stays a `Vec<String>`
+    /// (so the `log()` `&[String]` accessor and its slice consumer are
+    /// unchanged); when it exceeds the cap, the oldest quarter is dropped in
+    /// one shift so trimming is amortized O(1) per line, never an O(n)
+    /// memmove on every push at the cap.
+    fn push_log(&mut self, line: String) {
+        const LOG_CAP: usize = 2000;
+        self.log.push(line);
+        if self.log.len() > LOG_CAP {
+            let drop = self.log.len() - LOG_CAP * 3 / 4;
+            self.log.drain(0..drop);
+        }
+    }
     /// The spinner frame index.
     #[must_use]
     pub fn spinner_frame(&self) -> usize {
@@ -958,7 +977,7 @@ impl ChatApp {
                 self.push_system(format!("[{plugin}] {text}"));
             }
             PluginAction::Log { text } => {
-                self.log.push(format!("[{plugin}] {text}"));
+                self.push_log(format!("[{plugin}] {text}"));
             }
         }
     }
@@ -1421,7 +1440,7 @@ impl ChatApp {
                     self.screen = Screen::Chat;
                 }
                 self.status_line = s.clone();
-                self.log.push(format!("status: {s}"));
+                self.push_log(format!("status: {s}"));
             }
             AcpEvent::AgentText(t) => self.append_agent(Role::Agent, &t),
             AcpEvent::Thought(t) => self.append_agent(Role::Thought, &t),
@@ -1518,7 +1537,7 @@ impl ChatApp {
                     selected: 0,
                 });
             }
-            AcpEvent::Stderr(line) => self.log.push(format!("agent: {line}")),
+            AcpEvent::Stderr(line) => self.push_log(format!("agent: {line}")),
             AcpEvent::Error(e) => {
                 self.streaming = false;
                 self.push_system(format!("error: {e}"));
