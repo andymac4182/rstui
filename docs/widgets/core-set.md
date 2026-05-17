@@ -120,7 +120,14 @@ A track-and-thumb scroll indicator along one edge; the visible companion to
 Scrollbar::default()
 .content_length(usize) .viewport_length(usize) .position(usize)
 .orientation(ScrollbarOrientation)
+// draggable-thumb mouse seam (pure; the reducer owns the scroll position):
+.thumb_rect(area: Rect) -> Rect                 // exactly the painted thumb
+.position_at(area: Rect, pos: Position) -> usize // clamped, total
 ```
+
+The thumb is mouse-draggable in a 3-line reducer — see the widget
+mouse-friendliness review in
+[composition.md](../composition.md#widget-review-what-is-mouse-friendly-and-how).
 
 **Demo:** `cargo run -p rstui-widgets --example scrollbar_demo`
 

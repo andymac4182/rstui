@@ -293,6 +293,106 @@ impl Scrollbar {
             ScrollbarOrientation::HorizontalTop => Rect::new(area.x, area.y, area.width, 1),
         }
     }
+
+    /// The thumb + track geometry for `area`, or `None` when there is
+    /// nothing to scroll/draw. The single source [`thumb_rect`](Self::thumb_rect)
+    /// and [`position_at`](Self::position_at) share — the very metric
+    /// [`render`](Widget::render) stamps (a consistency test pins them equal).
+    fn thumb_geom(&self, area: Rect) -> Option<ThumbGeom> {
+        if area.is_empty() || self.content_length == 0 {
+            return None;
+        }
+        let strip = self.strip(area);
+        let vertical = self.orientation.is_vertical();
+        let axis_len = if vertical { strip.height } else { strip.width } as usize;
+        let begin = usize::from(self.begin_symbol.is_some());
+        let end = usize::from(self.end_symbol.is_some());
+        let track_length = axis_len.saturating_sub(begin + end);
+        if track_length == 0 {
+            return None;
+        }
+        let viewport = if self.viewport_length == 0 {
+            axis_len
+        } else {
+            self.viewport_length
+        };
+        let max_position = self.content_length - 1;
+        let start_position = self.position.min(max_position);
+        let max_viewport_position = max_position.saturating_add(viewport);
+        let (thumb_start, thumb_length) = if max_viewport_position == 0 {
+            (0, track_length)
+        } else {
+            let len = rounding_divide(viewport * track_length, max_viewport_position)
+                .clamp(1, track_length);
+            let start = rounding_divide(start_position * track_length, max_viewport_position)
+                .clamp(0, track_length - 1);
+            (start, len)
+        };
+        let off = (begin + thumb_start) as u16;
+        let len = thumb_length as u16;
+        let thumb = if vertical {
+            Rect::new(strip.x, strip.y.saturating_add(off), 1, len)
+        } else {
+            Rect::new(strip.x.saturating_add(off), strip.y, len, 1)
+        };
+        Some(ThumbGeom {
+            thumb,
+            strip,
+            vertical,
+            begin,
+            track_length,
+            max_viewport_position,
+        })
+    }
+
+    /// The rect the draggable **thumb** occupies in `area` (empty when there
+    /// is nothing to scroll).
+    ///
+    /// Hit-test this on mouse-down to begin a thumb drag; it is exactly the
+    /// cells [`render`](Widget::render) paints the thumb glyph into, so what
+    /// the user grabs is what they see.
+    #[must_use]
+    pub fn thumb_rect(&self, area: Rect) -> Rect {
+        self.thumb_geom(area).map_or(Rect::ZERO, |g| g.thumb)
+    }
+
+    /// The scroll [`position`](Self::position) that places the thumb under
+    /// `pos` — feed this back as the new position while dragging the thumb,
+    /// or on a click anywhere along the track to page there.
+    ///
+    /// Pure and **total**: the pointer is clamped onto the track and the
+    /// result into `0..content_length`; a degenerate scrollbar returns the
+    /// current [`position`](Self::position) unchanged.
+    #[must_use]
+    pub fn position_at(&self, area: Rect, pos: Position) -> usize {
+        let Some(g) = self.thumb_geom(area) else {
+            return self.position.min(self.content_length.saturating_sub(1));
+        };
+        let axis = usize::from(if g.vertical {
+            pos.y.saturating_sub(g.strip.y)
+        } else {
+            pos.x.saturating_sub(g.strip.x)
+        });
+        let i = axis
+            .saturating_sub(g.begin)
+            .min(g.track_length.saturating_sub(1));
+        let max_position = self.content_length - 1;
+        if g.max_viewport_position == 0 {
+            0
+        } else {
+            rounding_divide(i * g.max_viewport_position, g.track_length).min(max_position)
+        }
+    }
+}
+
+/// Shared thumb/track geometry — see [`Scrollbar::thumb_geom`].
+struct ThumbGeom {
+    thumb: Rect,
+    strip: Rect,
+    vertical: bool,
+    begin: usize,
+    track_length: usize,
+    max_viewport_position: usize,
 }
 
 /// Round-to-nearest integer division (ties round up), the ratatui-proven thumb
@@ -704,5 +804,52 @@ mod tests {
         assert_eq!(s.end_symbol, Some('►'));
         assert!(s.orientation.is_horizontal());
         assert!(!s.orientation.is_vertical());
+    }
+
+    #[test]
+    fn thumb_rect_is_exactly_the_rendered_thumb() {
+        let area = Rect::new(0, 0, 1, 12);
+        let sb = Scrollbar::default()
+            .content_length(40)
+            .viewport_length(8)
+            .position(12);
+        // Where the seam says the thumb is…
+        let claimed = sb.thumb_rect(area);
+        // …must be exactly where `render` paints the thumb glyph.
+        let mut buf = Buffer::empty(area);
+        sb.clone().render(area, &mut buf);
+        let mut cells: Vec<Position> = Vec::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if buf.get(Position::new(x, y)).unwrap().symbol == '█' {
+                    cells.push(Position::new(x, y));
+                }
+            }
+        }
+        assert!(!cells.is_empty(), "the thumb is drawn");
+        let min_y = cells.iter().map(|p| p.y).min().unwrap();
+        let max_y = cells.iter().map(|p| p.y).max().unwrap();
+        let drawn = Rect::new(0, min_y, 1, max_y - min_y + 1);
+        assert_eq!(claimed, drawn, "thumb_rect must match the painted thumb");
+    }
+
+    #[test]
+    fn position_at_inverts_the_track_and_is_total() {
+        let area = Rect::new(0, 0, 1, 12);
+        let sb = Scrollbar::default().content_length(40).viewport_length(8);
+        // Top of the track ⇒ scrolled to the very start.
+        assert_eq!(sb.position_at(area, Position::new(0, 0)), 0);
+        // Bottom (and far past it) ⇒ clamped to the last index, no panic.
+        assert_eq!(sb.position_at(area, Position::new(0, 11)), 39);
+        assert_eq!(sb.position_at(area, Position::new(0, 9999)), 39);
+        // Monotonic: a lower cell never scrolls less than a higher one.
+        let mid = sb.position_at(area, Position::new(0, 6));
+        assert!((0..=39).contains(&mid));
+        assert!(sb.position_at(area, Position::new(0, 5)) <= mid);
+        // Degenerate scrollbar ⇒ the current position, never a panic.
+        assert_eq!(
+            Scrollbar::default().position_at(area, Position::new(0, 4)),
+            0
+        );
     }
 }

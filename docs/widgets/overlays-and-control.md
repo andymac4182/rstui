@@ -18,7 +18,10 @@ project a window of it.
 ```rust
 ScrollView::new(content: &Buffer)
 .offset(col: u16, row: u16) .vertical_scrollbar(bool) .horizontal_scrollbar(bool)
-.viewport(area: Rect) -> Rect       // the visible content rect
+.viewport(area: Rect) -> Rect                       // the visible content rect
+// mouse seam — hit-test, then Scrollbar::position_at for the new offset:
+.vertical_scrollbar_rect(area: Rect) -> Option<Rect>
+.horizontal_scrollbar_rect(area: Rect) -> Option<Rect>
 ```
 
 **Demo:** `cargo run -p rstui-widgets --example scroll_view_demo`

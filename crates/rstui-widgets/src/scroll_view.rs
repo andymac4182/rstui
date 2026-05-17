@@ -286,6 +286,53 @@ impl<'a> ScrollView<'a> {
             window.height.min(content.height.saturating_sub(row)),
         )
     }
+
+    /// The rect the **vertical** scrollbar occupies for `area`, or `None`
+    /// when it is not shown (content fits, or it is disabled).
+    ///
+    /// The pure mouse seam, exactly the strip [`render`](Widget::render)
+    /// draws into: on a press inside it, build a
+    /// [`Scrollbar`] with the content/viewport lengths the
+    /// app owns (the content buffer's height and
+    /// [`viewport`](Self::viewport)`(area).height`) and call
+    /// [`Scrollbar::position_at`] to get the
+    /// new row offset — the same composition the kitchen-sink uses.
+    #[must_use]
+    pub fn vertical_scrollbar_rect(&self, area: Rect) -> Option<Rect> {
+        if area.is_empty() {
+            return None;
+        }
+        let (inner, window, show_v, _) = self.geometry(area);
+        if !show_v || inner.is_empty() {
+            return None;
+        }
+        Some(Rect::new(
+            inner.right().saturating_sub(1),
+            inner.y,
+            1,
+            window.height,
+        ))
+    }
+
+    /// The rect the **horizontal** scrollbar occupies for `area`, or `None`
+    /// when it is not shown. The pure mouse seam (see
+    /// [`vertical_scrollbar_rect`](Self::vertical_scrollbar_rect)).
+    #[must_use]
+    pub fn horizontal_scrollbar_rect(&self, area: Rect) -> Option<Rect> {
+        if area.is_empty() {
+            return None;
+        }
+        let (inner, window, _, show_h) = self.geometry(area);
+        if !show_h || inner.is_empty() {
+            return None;
+        }
+        Some(Rect::new(
+            inner.x,
+            inner.bottom().saturating_sub(1),
+            window.width,
+            1,
+        ))
+    }
 }
 
 impl Widget for ScrollView<'_> {
@@ -631,5 +678,34 @@ mod tests {
                 .iter()
                 .all(|cell| cell.symbol == ' ' && cell.bg == Color::Reset)
         );
+    }
+
+    #[test]
+    fn scrollbar_rects_expose_the_drawn_bars_for_mouse_hit_testing() {
+        let area = Rect::new(0, 0, 12, 10);
+
+        // Tall content ⇒ a vertical bar in the rightmost column.
+        let tall = Buffer::empty(Rect::new(0, 0, 8, 60));
+        let sv = ScrollView::new(&tall);
+        let v = sv
+            .vertical_scrollbar_rect(area)
+            .expect("overflowing content shows a vertical bar");
+        assert_eq!(v.x, area.right() - 1);
+        assert_eq!(v.width, 1);
+        assert!(v.height >= 1 && v.y == 0);
+        // And it is exactly where `render` paints it (drift guard).
+        let mut buf = Buffer::empty(area);
+        ScrollView::new(&tall).render(area, &mut buf);
+        assert_ne!(
+            buf.get(Position::new(v.x, v.y)).unwrap().symbol,
+            ' ',
+            "the reported vertical-bar column is actually painted"
+        );
+
+        // Content that fits ⇒ no bars, both accessors `None`.
+        let small = Buffer::empty(Rect::new(0, 0, 4, 3));
+        let fits = ScrollView::new(&small);
+        assert!(fits.vertical_scrollbar_rect(area).is_none());
+        assert!(fits.horizontal_scrollbar_rect(area).is_none());
     }
 }
