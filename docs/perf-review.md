@@ -149,23 +149,27 @@ validation path for each change.
 >   PROTO-3 `Cow` payload**: public-API changes *by definition* (the fix
 >   *is* a new/changed signature) — semver surface, sequence behind an
 >   ADR note. Not a hidden safe-by-construction slice.
-> - **`List`-API-coupled (verified by code, 3rd re-derivation)**:
->   **SB-1/MENU-1/CP-1** all funnel *every* item into
->   `List::new(iter)` which collects then clips — `Menu`/`Sidebar` via
->   `self.items.iter().map(row).collect()`, `CommandPalette` (which
->   *does* already borrow its `results: &'a [Line]` input — not an owned
->   `Vec`) via `List::new(self.results.iter().cloned())`. So the residual
->   cost is uniformly "`List` materializes all N then clips". The fix is
->   `List` itself only materialising the visible window — but `List::new`
->   takes `IntoIterator` and *must* collect to know length and clip, and
->   the widgets delegate scroll **and** selection-highlight indexing to
->   `List` over the full list; windowing in the widget breaks that index
->   math. This is a genuine public-API change to `List` (LIST-1, a
->   windowed/borrowed constructor), not a per-widget safe slice. The
->   per-row `" ".repeat(pad)`/`to_string()` micro-allocs in
->   `menu`/`sidebar` `row()` are a *different, smaller* item (overlay-only,
->   ~screen-height count) and lifetime-bound to owned `Cow` content like
->   the accepted GAUGE-1 case — not the documented MENU-1/SB-1.
+> - **MENU-1 / SB-1 / CP-1 — DONE (caller-side windowing, no API
+>   change).** The "List-API-coupled, needs LIST-1" label was wrong (the
+>   4th over-broad classification the re-derivation overturned). `List`
+>   is a *pure projection* of `(items, selected, offset)` — module docs:
+>   the caller owns scrolling, `List` never mutates offset and uses no
+>   `len()`-derived state; render is `items.iter().enumerate().
+>   skip(offset).take(inner.height)` highlighting absolute `idx ==
+>   selected`. So feeding it just `items[start, start+h)` with
+>   `offset(0)` and `selected − start` is **byte-identical by
+>   construction** (proved by hand, then gate-enforced): `Menu`/`Sidebar`
+>   now build only the windowed rows; `CommandPalette` clones only the
+>   windowed `results`. New `windowed_render_is_byte_identical_to_
+>   list_over_all_rows` equivalence tests (Menu, Sidebar) pin the output
+>   to `List`-over-all-rows across the full offset×selection×height
+>   off-by-one matrix (the PG-2/CM-3 exactness discipline); a focused CP
+>   test pins the offset>0 + in-window-highlight combo. A 10k-entry
+>   menu/sidebar/palette now builds only the ~screen-height visible rows
+>   per frame instead of all N. (The per-row `" ".repeat`/`to_string`
+>   micro-allocs in `row()` remain a separate, smaller, overlay-only
+>   item, lifetime-bound to owned `Cow` content like the accepted
+>   GAUGE-1 case — not part of the documented MENU-1/SB-1.)
 > - **Design decision the gate cannot adjudicate**: `table` T3/T5
 >   (col-count / proportional widths from the visible window vs all rows).
 >   Both scans are inherently "all rows" — any bound *is* an output

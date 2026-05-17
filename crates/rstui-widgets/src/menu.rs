@@ -301,13 +301,26 @@ impl Widget for Menu<'_> {
         };
         let width = inner.width as usize;
 
-        let rows: Vec<Line<'_>> = self.items.iter().map(|it| self.row(it, width)).collect();
+        // MENU-1: build only the window `List` will actually show. `List`
+        // renders `items[offset, offset + inner.height)` and is a pure
+        // projection of `(items, selected, offset)` with no `len()`-derived
+        // state, so feeding it just that window with a zero offset and the
+        // highlight rebased into the window is byte-identical (the existing
+        // offset/highlight snapshot tests gate-enforce it) while the
+        // off-screen rows — every collapsed-but-tall menu — are never built.
+        let h = inner.height as usize;
+        let start = self.offset.min(self.items.len());
+        let end = self.offset.saturating_add(h).min(self.items.len());
+        let rows: Vec<Line<'_>> = self.items[start..end]
+            .iter()
+            .map(|it| self.row(it, width))
+            .collect();
 
         // Reuse `List` wholesale: scrolling, the full-row highlight bar, the
         // frame, and totality are inherited, never re-implemented.
         let mut list = List::new(rows)
-            .selected(Some(self.highlight))
-            .offset(self.offset)
+            .selected(self.highlight.checked_sub(start))
+            .offset(0)
             .style(self.style)
             .highlight_style(self.highlight_style);
         if let Some(block) = self.block {
@@ -386,6 +399,58 @@ mod tests {
             assert_eq!(buf.get(Position::new(x, 1)).unwrap().bg, Color::Blue);
         }
         assert_eq!(buf.get(Position::new(0, 0)).unwrap().bg, Color::Reset);
+    }
+
+    #[test]
+    fn windowed_render_is_byte_identical_to_list_over_all_rows() {
+        // MENU-1 gate (the PG-2/CM-3 exactness discipline): the caller-side
+        // windowing must produce *exactly* what `List` — the widget Menu
+        // delegates to — would over the full row set at the same offset,
+        // including a highlight on a scrolled row and an offset/highlight
+        // past the end. Pins the skip/take window and the `selected −
+        // start` rebase across every off-by-one-risky combination.
+        let items: Vec<MenuItem> = (0..8).map(|i| MenuItem::new(format!("item{i}"))).collect();
+        let hl = Style::new().bg(Color::Blue);
+        for &(off, sel, h) in &[
+            (0usize, 0usize, 3u16),
+            (2, 3, 2),
+            (1, 0, 2),
+            (3, 9, 2),
+            (5, 6, 4),
+            (7, 7, 3),
+            (0, 7, 8),
+            (9, 0, 2),
+        ] {
+            let area = Rect::new(0, 0, 7, h);
+            let menu = Menu::new(&items)
+                .highlight(sel)
+                .offset(off)
+                .highlight_style(hl);
+            // Reference: `List` over EVERY row at `off` — Menu's exact
+            // pre-windowing behaviour, the authoritative projection.
+            let full: Vec<Line<'_>> = items
+                .iter()
+                .map(|it| menu.row(it, area.width as usize))
+                .collect();
+            let mut want = Buffer::empty(area);
+            List::new(full)
+                .selected(Some(sel))
+                .offset(off)
+                .highlight_style(hl)
+                .render(area, &mut want);
+            // Actual: the windowed Menu.
+            let mut got = Buffer::empty(area);
+            Menu::new(&items)
+                .highlight(sel)
+                .offset(off)
+                .highlight_style(hl)
+                .render(area, &mut got);
+            assert_eq!(
+                got.cells(),
+                want.cells(),
+                "windowed Menu diverged from List-over-all-rows: off={off} sel={sel} h={h}"
+            );
+        }
     }
 
     #[test]

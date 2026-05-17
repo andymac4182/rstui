@@ -302,9 +302,19 @@ impl Widget for CommandPalette<'_> {
             inner.width,
             inner.height.saturating_sub(1),
         );
-        List::new(self.results.iter().cloned())
-            .selected(Some(self.highlight))
-            .offset(self.offset)
+        // CP-1: feed `List` only the window it will show. It renders
+        // `results[offset, offset + results_rect.height)` as a pure
+        // projection of `(results, selected, offset)` (no `len()`-derived
+        // state and no block here, so its inner is exactly `results_rect`),
+        // so the windowed slice + zero offset + rebased highlight is
+        // byte-identical (the offset/highlight snapshot tests gate-enforce
+        // it) while a huge match set clones only the ~visible rows.
+        let h = results_rect.height as usize;
+        let start = self.offset.min(self.results.len());
+        let end = self.offset.saturating_add(h).min(self.results.len());
+        List::new(self.results[start..end].iter().cloned())
+            .selected(self.highlight.checked_sub(start))
+            .offset(0)
             .style(self.style)
             .highlight_style(self.highlight_style)
             .render(results_rect, buf);
@@ -449,6 +459,40 @@ mod tests {
             // (no room for the Input), then the offset results follow.
             "> \nr1\nr2\n"
         );
+    }
+
+    #[test]
+    fn a_scrolled_highlight_bars_the_correct_windowed_row() {
+        // CP-1 gate: offset > 0 *and* the highlight inside the scrolled
+        // window — the combo the windowing's `selected − start` rebase must
+        // get right (the other cases are covered by the scroll/out-of-range
+        // tests above). r0..r5, offset 2 ⇒ results show r2,r3,r4…;
+        // highlight 3 ⇒ r3, the 2nd visible result. Row 0 is the query, so
+        // results begin on row 1 and r3 lands on row 2.
+        let q = TextEdit::new();
+        let r = [
+            Line::raw("r0"),
+            Line::raw("r1"),
+            Line::raw("r2"),
+            Line::raw("r3"),
+            Line::raw("r4"),
+            Line::raw("r5"),
+        ];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
+        CommandPalette::new(&q, &r)
+            .offset(2)
+            .highlight(3)
+            .width(Constraint::Percentage(100))
+            .height(Constraint::Percentage(100))
+            .highlight_style(Style::new().bg(Color::Blue))
+            .render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(0, 1)).unwrap().symbol, 'r');
+        assert_eq!(buf.get(Position::new(1, 1)).unwrap().symbol, '2'); // r2, row 1
+        for x in 0..4 {
+            // r3 (highlight) is the 2nd visible result → row 2, full bar.
+            assert_eq!(buf.get(Position::new(x, 2)).unwrap().bg, Color::Blue);
+        }
+        assert_eq!(buf.get(Position::new(0, 1)).unwrap().bg, Color::Reset);
     }
 
     #[test]

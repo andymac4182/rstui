@@ -272,10 +272,28 @@ impl Widget for Sidebar<'_> {
         // the full-row selection bar, the frame, and totality are inherited,
         // never re-implemented (the Menu/Select precedent). Not opaque — a
         // sidebar is an in-layout pane, not a float.
-        let rows: Vec<Line<'_>> = self.items.iter().map(|it| self.row(it)).collect();
+        // SB-1: build only the window `List` will actually show — it
+        // renders `items[offset, offset + inner.height)` from a pure
+        // projection of `(items, selected, offset)` (no `len()`-derived
+        // state), so the windowed slice + zero offset + rebased selection
+        // is byte-identical (the offset/selection snapshot tests
+        // gate-enforce it) while a long collapsed nav tree never builds
+        // its off-screen rows. `inner` mirrors what `List::render` derives
+        // from the block it is hereafter given.
+        let h = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        }
+        .height as usize;
+        let start = self.offset.min(self.items.len());
+        let end = self.offset.saturating_add(h).min(self.items.len());
+        let rows: Vec<Line<'_>> = self.items[start..end]
+            .iter()
+            .map(|it| self.row(it))
+            .collect();
         let mut list = List::new(rows)
-            .selected(self.selected)
-            .offset(self.offset)
+            .selected(self.selected.and_then(|s| s.checked_sub(start)))
+            .offset(0)
             .style(self.style)
             .highlight_style(self.highlight_style);
         if let Some(block) = self.block {
@@ -372,6 +390,49 @@ mod tests {
             SidebarItem::new("i2"),
         ];
         assert_eq!(lines(Sidebar::new(&items).offset(1), 2, 2), "i1\ni2\n");
+    }
+
+    #[test]
+    fn windowed_render_is_byte_identical_to_list_over_all_rows() {
+        // SB-1 gate (PG-2/CM-3 exactness discipline): the caller-side
+        // windowing must equal `List` — which Sidebar delegates to — over
+        // the full row set at the same offset, including a selection on a
+        // scrolled row and offsets past the end.
+        let items: Vec<SidebarItem> = (0..8).map(|i| SidebarItem::new(format!("i{i}"))).collect();
+        let hl = Style::new().bg(Color::Blue);
+        for &(off, sel, h) in &[
+            (0usize, None::<usize>, 3u16),
+            (2, Some(3), 2),
+            (1, Some(0), 2),
+            (3, Some(9), 2),
+            (5, Some(6), 4),
+            (0, Some(7), 8),
+            (9, None, 2),
+        ] {
+            let area = Rect::new(0, 0, 6, h);
+            let sb = Sidebar::new(&items)
+                .selected(sel)
+                .offset(off)
+                .highlight_style(hl);
+            let full: Vec<Line<'_>> = items.iter().map(|it| sb.row(it)).collect();
+            let mut want = Buffer::empty(area);
+            List::new(full)
+                .selected(sel)
+                .offset(off)
+                .highlight_style(hl)
+                .render(area, &mut want);
+            let mut got = Buffer::empty(area);
+            Sidebar::new(&items)
+                .selected(sel)
+                .offset(off)
+                .highlight_style(hl)
+                .render(area, &mut got);
+            assert_eq!(
+                got.cells(),
+                want.cells(),
+                "windowed Sidebar diverged from List-over-all-rows: off={off} sel={sel:?} h={h}"
+            );
+        }
     }
 
     #[test]
