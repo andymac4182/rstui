@@ -654,7 +654,15 @@ impl PluginHost {
                     });
                 }
                 MessageType::Log => {
-                    logs.push(String::from_utf8_lossy(&frame.payload).into_owned());
+                    // Log lines are UTF-8 in the overwhelming common case;
+                    // `from_utf8` moves the payload `Vec` straight into the
+                    // `String` with no copy. Only a non-UTF-8 payload (a
+                    // misbehaving plugin) takes the lossy fallback, and even
+                    // that reuses the recovered bytes rather than re-cloning.
+                    logs.push(match String::from_utf8(frame.payload) {
+                        Ok(s) => s,
+                        Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
+                    });
                 }
                 // After the handshake, only CapabilityCall and Log are valid
                 // plugin→host frames in this slice; anything else (a second

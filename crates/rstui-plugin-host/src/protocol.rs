@@ -324,9 +324,10 @@ pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<(), ProtocolErr
 
 /// Reads exactly one frame from `r`.
 ///
-/// Reads the 4-byte length header, validates it, allocates a buffer of that
-/// size (only after the cap check), reads the body, then parses type, id, and
-/// payload.
+/// Reads the 4-byte length header and validates it (only after the cap check),
+/// reads the fixed 17-byte `type + correlation-id` header onto the stack, then
+/// allocates the payload buffer exactly once at its true length and reads it
+/// in place — no zero-fill of an oversized buffer and no second copy.
 ///
 /// **Any error returned here is terminal**: the caller must close the plugin
 /// connection (ADR 0007 §4, "no skip-and-continue").  The codec cannot
@@ -377,20 +378,27 @@ pub fn read_frame<R: Read>(r: &mut R) -> Result<Frame, ProtocolError> {
         return Err(ProtocolError::FrameTooSmall { len });
     }
 
-    // ── Step 2: allocate and fill the body buffer ───────────────────────────
-    let mut body = vec![0u8; len as usize];
-    read_exact_or_truncated(r, &mut body)?;
+    // ── Step 2: read the fixed 17-byte header (type + id) onto the stack ────
+    // The body is `type(1) + id(16) + payload`; `MIN_FRAME_LEN` (checked
+    // above) guarantees at least the 17 header bytes are present. Reading the
+    // header into a stack array — instead of a heap `vec![0u8; len]` that is
+    // first zero-filled and then re-copied — lets the payload `Vec` be
+    // allocated exactly once, at its true length, and read straight into.
+    let mut header = [0u8; 17];
+    read_exact_or_truncated(r, &mut header)?;
 
-    // ── Step 3: parse type, id, payload ────────────────────────────────────
-    // body[0] = type
-    let message_type = MessageType::from_byte(body[0])?;
+    // header[0] = type
+    let message_type = MessageType::from_byte(header[0])?;
 
-    // body[1..17] = correlation id
+    // header[1..17] = correlation id
     let mut correlation_id = [0u8; 16];
-    correlation_id.copy_from_slice(&body[1..17]);
+    correlation_id.copy_from_slice(&header[1..17]);
 
-    // body[17..] = payload
-    let payload = body[17..].to_vec();
+    // ── Step 3: allocate the payload exactly once and read it in place ──────
+    // `len >= MIN_FRAME_LEN` (17), so this subtraction cannot underflow.
+    let payload_len = len as usize - 17;
+    let mut payload = vec![0u8; payload_len];
+    read_exact_or_truncated(r, &mut payload)?;
 
     Ok(Frame {
         message_type,

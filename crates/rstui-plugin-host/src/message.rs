@@ -213,11 +213,25 @@ impl std::error::Error for MessageError {}
 /// [`Frame`](crate::protocol::Frame) with message type
 /// [`CapabilityCall`](crate::protocol::MessageType::CapabilityCall).
 ///
+/// The buffer is allocated once at the exact encoded length, so the encode is
+/// a single allocation with no growth-reallocations.
+///
 /// Encoding never fails — every `CapabilityRequest` has a well-defined wire
 /// representation.
 #[must_use]
 pub fn encode_request(req: &CapabilityRequest) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(request_encoded_len(req));
+    encode_request_into(&mut out, req);
+    out
+}
+
+/// Appends the encoding of `req` to `out` (see [`encode_request`]).
+///
+/// `out` is reserved to fit the encoded bytes up front (a single growth at
+/// most), then the frame is appended. Use this to reuse a scratch buffer
+/// across many encodes: `out.clear()` between calls keeps the allocation.
+pub fn encode_request_into(out: &mut Vec<u8>, req: &CapabilityRequest) {
+    out.reserve(request_encoded_len(req));
     match req {
         CapabilityRequest::Filesystem {
             mode,
@@ -225,26 +239,39 @@ pub fn encode_request(req: &CapabilityRequest) -> Vec<u8> {
             contents,
         } => {
             out.push(TAG_REQ_FILESYSTEM);
-            push_fsmode(&mut out, *mode);
-            push_str(&mut out, path.to_string_lossy().as_ref());
-            push_bytes(&mut out, contents);
+            push_fsmode(out, *mode);
+            push_str(out, path.to_string_lossy().as_ref());
+            push_bytes(out, contents);
         }
         CapabilityRequest::Network { host, port } => {
             out.push(TAG_REQ_NETWORK);
-            push_str(&mut out, host);
+            push_str(out, host);
             out.extend_from_slice(&port.to_be_bytes());
         }
         CapabilityRequest::Command { program, args } => {
             out.push(TAG_REQ_COMMAND);
-            push_str(&mut out, program);
-            push_string_vec(&mut out, args);
+            push_str(out, program);
+            push_string_vec(out, args);
         }
         CapabilityRequest::Env { key } => {
             out.push(TAG_REQ_ENV);
-            push_str(&mut out, key);
+            push_str(out, key);
         }
     }
-    out
+}
+
+/// Exact encoded length of `req` in bytes — drives the one-shot allocation in
+/// [`encode_request`] / [`encode_request_into`]. Mirrors the wire layout in
+/// the module docs: `1` tag byte plus the per-variant fields.
+fn request_encoded_len(req: &CapabilityRequest) -> usize {
+    match req {
+        CapabilityRequest::Filesystem { path, contents, .. } => {
+            1 + 1 + str_len(path.to_string_lossy().as_ref()) + bytes_len(contents)
+        }
+        CapabilityRequest::Network { host, .. } => 1 + str_len(host) + 2,
+        CapabilityRequest::Command { program, args } => 1 + str_len(program) + string_vec_len(args),
+        CapabilityRequest::Env { key } => 1 + str_len(key),
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -310,25 +337,47 @@ pub fn decode_request(bytes: &[u8]) -> Result<CapabilityRequest, MessageError> {
 /// [`Frame`](crate::protocol::Frame) with message type
 /// [`CapabilityResponse`](crate::protocol::MessageType::CapabilityResponse).
 ///
+/// The buffer is allocated once at the exact encoded length.
+///
 /// Encoding never fails.
 #[must_use]
 pub fn encode_response(resp: &CapabilityResponse) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(response_encoded_len(resp));
+    encode_response_into(&mut out, resp);
+    out
+}
+
+/// Appends the encoding of `resp` to `out` (see [`encode_response`]).
+///
+/// `out` is reserved to fit the encoded bytes up front. Reuse a scratch
+/// buffer across encodes by `clear()`-ing it (which keeps the allocation)
+/// between calls.
+pub fn encode_response_into(out: &mut Vec<u8>, resp: &CapabilityResponse) {
+    out.reserve(response_encoded_len(resp));
     match resp {
         CapabilityResponse::Ok { payload } => {
             out.push(TAG_RESP_OK);
-            push_bytes(&mut out, payload);
+            push_bytes(out, payload);
         }
         CapabilityResponse::Denied { reason } => {
             out.push(TAG_RESP_DENIED);
-            push_str(&mut out, reason);
+            push_str(out, reason);
         }
         CapabilityResponse::Failed { error } => {
             out.push(TAG_RESP_FAILED);
-            push_str(&mut out, error);
+            push_str(out, error);
         }
     }
-    out
+}
+
+/// Exact encoded length of `resp` in bytes — drives the one-shot allocation
+/// in [`encode_response`] / [`encode_response_into`].
+fn response_encoded_len(resp: &CapabilityResponse) -> usize {
+    match resp {
+        CapabilityResponse::Ok { payload } => 1 + bytes_len(payload),
+        CapabilityResponse::Denied { reason } => 1 + str_len(reason),
+        CapabilityResponse::Failed { error } => 1 + str_len(error),
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -410,14 +459,34 @@ pub fn decode_hook_dispatch(bytes: &[u8]) -> Result<(HookKind, Vec<u8>), Message
 
 /// Encode a `HookResult` payload: the outcome byte, plus the reason string
 /// when (and only when) the outcome is [`HookOutcome::Veto`].
+///
+/// The buffer is allocated once at the exact encoded length.
 #[must_use]
 pub fn encode_hook_result(outcome: &HookOutcome) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(hook_result_encoded_len(outcome));
+    encode_hook_result_into(&mut out, outcome);
+    out
+}
+
+/// Appends the encoding of `outcome` to `out` (see [`encode_hook_result`]).
+///
+/// `out` is reserved to fit the encoded bytes up front; `clear()` between
+/// calls reuses the scratch allocation.
+pub fn encode_hook_result_into(out: &mut Vec<u8>, outcome: &HookOutcome) {
+    out.reserve(hook_result_encoded_len(outcome));
     out.push(outcome.to_byte());
     if let HookOutcome::Veto { reason } = outcome {
-        push_str(&mut out, reason);
+        push_str(out, reason);
     }
-    out
+}
+
+/// Exact encoded length of a `HookResult` payload — `1` outcome byte, plus
+/// the framed reason string only for [`HookOutcome::Veto`].
+fn hook_result_encoded_len(outcome: &HookOutcome) -> usize {
+    match outcome {
+        HookOutcome::Veto { reason } => 1 + str_len(reason),
+        _ => 1,
+    }
 }
 
 /// Decode a `HookResult` payload.
@@ -454,11 +523,21 @@ fn push_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
+/// Encoded byte width of [`push_str`]: the 4-byte length prefix + UTF-8 bytes.
+fn str_len(s: &str) -> usize {
+    4 + s.len()
+}
+
 /// Appends a byte slice: `u32` byte-length then the bytes.
 fn push_bytes(out: &mut Vec<u8>, b: &[u8]) {
     let len = b.len() as u32;
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(b);
+}
+
+/// Encoded byte width of [`push_bytes`]: the 4-byte length prefix + the bytes.
+fn bytes_len(b: &[u8]) -> usize {
+    4 + b.len()
 }
 
 /// Appends `mode` as a single wire byte.
@@ -476,6 +555,12 @@ fn push_string_vec(out: &mut Vec<u8>, v: &[String]) {
     for s in v {
         push_str(out, s);
     }
+}
+
+/// Encoded byte width of [`push_string_vec`]: the 4-byte count prefix + the
+/// framed width of every element string.
+fn string_vec_len(v: &[String]) -> usize {
+    4 + v.iter().map(|s| str_len(s)).sum::<usize>()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
