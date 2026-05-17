@@ -230,7 +230,13 @@ impl<W: Write> Backend for CrosstermBackend<W> {
     }
 
     fn clear(&mut self) -> io::Result<()> {
-        queue!(self.writer, Clear(ClearType::All))
+        // Clear the screen, home the cursor, and **purge scrollback**
+        // (ED 3, `ESC[3J`) so a full redraw doesn't leave stale history
+        // scrollable above the frame — the PI/opentui full-redraw sequence.
+        // `ClearType::All` is `ESC[2J`; the raw `ESC[3J` is emitted directly
+        // so it is independent of the crossterm version's `ClearType` set.
+        queue!(self.writer, Clear(ClearType::All), MoveTo(0, 0))?;
+        self.writer.write_all(b"\x1b[3J")
     }
 
     fn size(&self) -> io::Result<Size> {
@@ -607,7 +613,18 @@ mod tests {
         backend.set_cursor_position(Position::new(7, 9)).unwrap();
         backend.clear().unwrap();
 
-        let expected = encoded(|w| queue!(w, Hide, Show, MoveTo(7, 9), Clear(ClearType::All)));
+        let mut expected = encoded(|w| {
+            queue!(
+                w,
+                Hide,
+                Show,
+                MoveTo(7, 9),
+                Clear(ClearType::All),
+                MoveTo(0, 0)
+            )
+        });
+        // clear() purges scrollback with a raw ED-3 after the queued commands.
+        expected.extend_from_slice(b"\x1b[3J");
         assert_eq!(backend.writer(), &expected);
     }
 
