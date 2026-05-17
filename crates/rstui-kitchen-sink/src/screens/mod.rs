@@ -528,6 +528,52 @@ impl ScreenState {
         }
     }
 
+    /// Pointer pressed in the content. A screen returns *handled* to claim
+    /// the whole press→drag→release gesture (the shell then routes
+    /// [`on_pointer_drag`](Self::on_pointer_drag) /
+    /// [`on_release`](Self::on_release) here instead of starting a text
+    /// selection). Only the drag-aware screens act; the rest defer to the
+    /// existing click/selection path by ignoring it.
+    pub(crate) fn on_press(
+        &mut self,
+        screen: Screen,
+        pos: Position,
+        content: Rect,
+    ) -> ScreenOutcome {
+        match screen {
+            Screen::Board => self.board.on_press(pos, content),
+            _ => ScreenOutcome::ignored(),
+        }
+    }
+
+    /// Pointer moved while a screen owns the gesture (see
+    /// [`on_press`](Self::on_press)).
+    pub(crate) fn on_pointer_drag(
+        &mut self,
+        screen: Screen,
+        pos: Position,
+        content: Rect,
+    ) -> ScreenOutcome {
+        match screen {
+            Screen::Board => self.board.on_pointer_drag(pos, content),
+            _ => ScreenOutcome::ignored(),
+        }
+    }
+
+    /// Pointer released, ending a screen-owned gesture (see
+    /// [`on_press`](Self::on_press)).
+    pub(crate) fn on_release(
+        &mut self,
+        screen: Screen,
+        pos: Position,
+        content: Rect,
+    ) -> ScreenOutcome {
+        match screen {
+            Screen::Board => self.board.on_release(pos, content),
+            _ => ScreenOutcome::ignored(),
+        }
+    }
+
     /// Route a wheel scroll to the active screen.
     pub(crate) fn on_scroll(&mut self, screen: Screen, up: bool) {
         match screen {

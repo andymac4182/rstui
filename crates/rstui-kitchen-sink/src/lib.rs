@@ -187,6 +187,10 @@ pub struct KitchenSink {
     /// Whether the pointer moved since [`press`](Self::press) (a drag, not a
     /// click) — decides copy-vs-click on release.
     drag_moved: bool,
+    /// The active screen claimed this press as a pointer gesture (e.g. the
+    /// board's card drag), so the drag/release route to it, not to the
+    /// text-selection machinery.
+    screen_drag: bool,
     /// The text the current selection covers, recomputed by `view` from the
     /// rendered cells (interior-mutable so the pure `view` can fill it; read
     /// by the copy path on release). The framework-pure analogue of a
@@ -240,6 +244,7 @@ impl KitchenSink {
             selection: Selection::new(),
             press: None,
             drag_moved: false,
+            screen_drag: false,
             selected: RefCell::new(String::new()),
             sel_region: Cell::new(None),
             clipboard: String::new(),
@@ -817,11 +822,21 @@ impl App for KitchenSink {
                 // deferred to release so a drag can preempt it.
                 self.clear_selection();
                 self.drag_moved = false;
+                self.screen_drag = false;
                 self.press = Some(pos);
                 if self.overlay == Overlay::None {
                     let content = self.content_rect();
                     if content.contains(pos) {
-                        if let Some(region) =
+                        // A drag-aware screen (the board) may claim the
+                        // gesture; only if it does not do we start a text
+                        // selection — every other screen is unchanged.
+                        let grab = self.screens.on_press(self.screen, pos, content);
+                        if grab.handled {
+                            self.screen_drag = true;
+                            if let Some((level, body)) = grab.toast {
+                                self.notify(level, body);
+                            }
+                        } else if let Some(region) =
                             self.screens.selection_region(self.screen, pos, content)
                         {
                             if !region.is_empty() && region.contains(pos) {
@@ -836,7 +851,11 @@ impl App for KitchenSink {
                 // A terminal only emits Drag on real movement; clamp to the
                 // *container* the press began in so the row-major stream can
                 // never spill into a neighbouring panel or the chrome.
-                if !self.selection.is_empty() {
+                if self.screen_drag {
+                    let content = self.content_rect();
+                    self.screens.on_pointer_drag(self.screen, pos, content);
+                    self.drag_moved = true;
+                } else if !self.selection.is_empty() {
                     if let Some(r) = self.sel_region.get() {
                         let clamped = Position::new(
                             pos.x.clamp(r.x, r.right().saturating_sub(1)),
@@ -849,7 +868,15 @@ impl App for KitchenSink {
             }
             Msg::MouseUp(pos) => {
                 let had_press = self.press.take().is_some();
-                if self.drag_moved && !self.selection.is_empty() {
+                if self.screen_drag {
+                    // End of a screen-owned gesture (the board's card drop).
+                    let content = self.content_rect();
+                    let out = self.screens.on_release(self.screen, pos, content);
+                    if let Some((level, body)) = out.toast {
+                        self.notify(level, body);
+                    }
+                    self.screen_drag = false;
+                } else if self.drag_moved && !self.selection.is_empty() {
                     // A real drag finished. `view` already extracted the
                     // covered text into `selected`.
                     let txt = self.selected.borrow().clone();

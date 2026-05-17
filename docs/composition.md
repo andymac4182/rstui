@@ -134,6 +134,58 @@ buffer at that offset plus scrollbars — it owns nothing. For very long
 transcripts, build only the visible item range into the content buffer
 (caller-side windowing) — the pure-projection answer to virtualization.
 
+## Mouse: clicks, drags, and reusable pointer gestures
+
+The framework delivers `Event::Mouse(MouseEvent { kind, position, .. })`;
+`kind` is `Down/Up/Drag(button)`, `Moved`, or `Scroll*`. Hit-testing is the
+reducer's job — and it must test **what was actually rendered**, because a
+real terminal does not always send an initial `Resize`, so a layout guessed
+from a seed size mis-places every click.
+
+**The geometry seam (always do this).** `view` already computes the `Rect`s
+of every region. Record them, in `view`, into an interior-mutable
+`Cell<Geom>` (a small `Copy` struct of the rects this frame laid out); the
+reducer reads `self.geom.get()` and hit-tests against it. `view` stays a pure
+projection (it only *writes its own* geometry cache); the reducer never
+guesses a size. This is the one rstui mouse rule.
+
+**Click vs. drag.** Defer the click to `Up`: on `Down` record the press
+cell, on `Drag` set a `moved` flag, on `Up` it is a *click* if `!moved`
+else a *drag* finished. (Drag-select → copy is the worked case;
+[ADR 0012 §P1](adr/0012-widget-composition-and-layout-model.md).)
+
+**The reusable drag-and-drop recipe.** A whole press→drag→release gesture
+(reorder a list, drag a card between columns, drag a pane divider) is plain
+caller-owned state and a three-call seam:
+
+1. Keep the in-flight gesture as `Option<Drag>` model state — `{ what was
+   grabbed, where the pointer is }` — mutated only in `update`.
+2. `on_press(pos)`: hit-test; if it grabs something, store the `Drag` and
+   **return "handled"** to *claim the gesture*; else return "ignored" so the
+   default behaviour (a click, or a text selection) still runs. Returning
+   ignored by default means a component opts in **purely additively** —
+   nothing else changes.
+3. While claimed, the host routes `on_pointer_drag(pos)` (update
+   `drag.at`) and `on_release(pos)` (commit the move, or cancel if it did
+   not cross a valid target) to that component instead of the
+   click/selection path.
+4. `view` *projects* the gesture: dim the lifted item in place, draw a
+   ghost following `drag.at`, highlight the drop target. The widget owns
+   nothing; clamp the ghost to the area so it stays total.
+
+Two worked, headless-tested references implement exactly this:
+
+- the kitchen-sink **Kanban board** — drag a card across columns
+  (`crates/rstui-kitchen-sink/src/screens/board.rs`, with the host seam in
+  `screens/mod.rs` + `lib.rs`: `on_press` returning *handled* diverts
+  `MouseDrag`/`MouseUp` from the selection machinery to the screen);
+- **`rstui-git-review`** — drag the history/diff divider to resize and
+  click a commit ([docs/git-review.md](git-review.md)), the same
+  `Cell<Geom>` discipline in a standalone `App`.
+
+Copy either: the seam is the same whether the host is the kitchen-sink
+shell routing to screens or an `App` handling `Event::Mouse` directly.
+
 ## Totality
 
 Every widget clips or no-ops on a tiny, zero, or oversized area and on

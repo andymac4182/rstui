@@ -105,7 +105,7 @@ experience screen.
 | `F2` | Cycle keymap: Default → Vim → opencode-style Leader |
 | `q` / `Esc` | Quit (opens a confirm modal; `y`/`Enter` confirms) |
 | typing | Into focused inputs; filters the palette |
-| mouse / scroll | Click hit-testing; wheel/PageUp-Down scrolling |
+| mouse / scroll | Click hit-testing; wheel/PageUp-Down scrolling; **drag-and-drop** on the Kanban board (press a card, drag it to another column — see the reusable pointer-gesture recipe in [composition.md](composition.md#mouse-clicks-drags-and-reusable-pointer-gestures)) |
 
 Every shell binding is a semantic `Action` resolved through the shared
 [`rstui-keymap`](keymaps.md) engine (ADR 0015) — so the bindings above are

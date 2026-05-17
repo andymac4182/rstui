@@ -550,3 +550,76 @@ fn ctrl_v_pastes_the_clipboard_into_a_focused_input() {
     );
     assert!(h.is_running());
 }
+
+#[test]
+fn kanban_card_drag_moves_it_to_the_target_column() {
+    let mut h = harness();
+    goto(&mut h, "Kanban Board");
+    assert!(h.snapshot().contains("Backlog"), "Kanban opened");
+    // Column headers locate the columns; `by` is the column-0 top row, so a
+    // press at `by + 4` lands on its first card (cards start 3 rows down).
+    let (bx, by) = cell_of(&h, "Backlog");
+    let (dx, _) = cell_of(&h, "Done");
+    let card_y = by + 4;
+    // Press the first Backlog card, drag it across to the Done column.
+    mouse(
+        &mut h,
+        MouseEventKind::Down(MouseButton::Left),
+        bx + 1,
+        card_y,
+    );
+    mouse(
+        &mut h,
+        MouseEventKind::Drag(MouseButton::Left),
+        (bx + dx) / 2,
+        card_y,
+    );
+    mouse(
+        &mut h,
+        MouseEventKind::Drag(MouseButton::Left),
+        dx + 1,
+        card_y,
+    );
+    mouse(
+        &mut h,
+        MouseEventKind::Up(MouseButton::Left),
+        dx + 1,
+        card_y,
+    );
+    assert!(
+        h.snapshot().contains("Moved to Done"),
+        "dragging a card to the Done column moved it there:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}
+
+#[test]
+fn kanban_press_drag_release_never_panics() {
+    let mut h = harness();
+    goto(&mut h, "Kanban Board");
+    let (bx, by) = cell_of(&h, "Backlog");
+    // Pick a card, then flail the pointer (including off the board) and
+    // release in the *same* column — a no-op move that must never panic.
+    mouse(
+        &mut h,
+        MouseEventKind::Down(MouseButton::Left),
+        bx + 1,
+        by + 4,
+    );
+    for (x, y) in [(0u16, 0u16), (119, 39), (bx + 1, by + 7), (bx + 2, by + 4)] {
+        mouse(&mut h, MouseEventKind::Drag(MouseButton::Left), x, y);
+        assert!(h.is_running(), "a card drag must never quit the app");
+    }
+    mouse(
+        &mut h,
+        MouseEventKind::Up(MouseButton::Left),
+        bx + 2,
+        by + 4,
+    );
+    assert!(h.is_running());
+    assert!(
+        h.snapshot().contains("Backlog"),
+        "the board still renders after a flailing drag"
+    );
+}
