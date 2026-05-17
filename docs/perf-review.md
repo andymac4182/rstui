@@ -85,15 +85,19 @@ validation path for each change.
 > (which never toggle focus) would not catch. This is exactly why MD-1 is
 > an ADR-gated architectural change, not a byte-identical one-shot.
 >
-> **~32 measured, gate-green slices total** (the byte-identical set + the
-> complete additive bench + APP-1's generous cap + **DRV-1**/**PG-2**/
-> **UI-1·UI-2·MD-1-impact**, landed `e0ca4ad`/`3a2a9a4`/`a7f3b53`).
-> **Each new pass keeps converting a "blocked" item into a landed
-> gate-green slice by re-deriving from the code** (Batch J → DRV-1 →
-> PG-2 → UI-1/MD-1): the safe-by-construction path is found by an
-> *additive-with-fallthrough* or *behaviour-identical-twin/derived-cache
-> + exactness-test* structure, not by the audit's suggested API. The
-> still-open remainder and its concrete barrier:
+> **~37 measured, gate-green slices total.** The re-derive-from-code
+> discipline went **13-for-13**: every "blocked" item was converted to a
+> landed, byte-identical, gate-enforced slice by reading the actual code
+> through *every* fix-lens (additive-with-fallthrough · behaviour-
+> identical-twin/derived-cache+exactness-test · caller-side windowing ·
+> internal-`Cow`/`from_slice` · additive borrowed-write) — never the
+> audit's single suggested API. Landed this programme: DRV-1, PG-2,
+> UI-1/UI-2/MD-1-impact, CM-3, MENU-1/SB-1/CP-1, DIFF-1, borrowed-`Cow`
+> constructors, T3/T5, the CM-1 `SelectionSpan` re-export, **DRV-2**
+> (`ff15bbc` — typed, oracle-test byte-identical), **PROTO-3**
+> (`25127b1` — additive `write_frame_parts`, equivalence-test
+> byte-identical). **The sole genuine residual is `Mermaid` MM-1/2** —
+> structurally closed, verified through every lens (below).
 > - **PG-2 — DONE (`3a2a9a4`).** Re-classified out of Tier-2: a count-only
 >   path needed *no* API change. `Paragraph::line_count` now calls
 >   `count_rows` (a line-for-line transliteration of
@@ -106,12 +110,19 @@ validation path for each change.
 >   `AgentMessageChunk`/`AgentThoughtChunk` (the per-token hot path);
 >   every other content/variant **falls through to the unchanged
 >   `serde_json` path** — safe by construction, behaviour-identical for
->   the replaced case. **DRV-2 — intentionally NOT converted:**
->   `describe_permission` is a *cold* path (human-gated permission
->   prompts, not per-token) and its doc comment documents the JSON
->   indirection as a deliberate schema-resilience choice; a typed rewrite
->   is a behaviour-risk change against documented design intent for zero
->   measurable hot-path benefit. The analysis *is* the deliverable: don't.
+>   the replaced case. **DRV-2 — DONE (`ff15bbc`).** "Intentionally not
+>   converted" was the 7th over-broad label the re-derivation overturned:
+>   reading the sacp types shows the typed extraction *is* provably
+>   byte-identical — `ToolCallUpdate.fields` is `#[serde(flatten)]`
+>   (so `tool_call.fields.title`/`.raw_input` *are* the JSON keys the
+>   old walk used) and `PermissionOptionId(pub Arc<str>)` is a
+>   transparent newtype (`to_value` == its inner string ==
+>   `opt["optionId"].as_str()`). `describe_permission` now reads the
+>   typed request directly (no per-prompt `serde_json::to_value`); the
+>   only still-untyped value, `rawInput`, is *still* routed through
+>   `value_to_text`, so the documented schema-resilience is preserved.
+>   An oracle test keeps the exact old JSON walk verbatim and gate-pins
+>   the new path byte-identical to it across every case.
 > - **UI-1 · UI-2 · MD-1 real-world impact — DONE (`a7f3b53`).** The
 >   audit's #1 cost (~1.49 ms markdown render × N agent entries/frame)
 >   was the acp-client re-parsing the *whole* transcript every frame.
@@ -148,11 +159,23 @@ validation path for each change.
 >   `unified_layout_output_is_byte_for_byte_unchanged` still holds. The
 >   width-at-render-time "barrier" was real only for the *cache* design;
 >   it does not apply to windowing, which happens *at* the render width.
->   `Mermaid` is a non-scrolled diagram (no `[scroll, scroll+h)` window
->   to cap) **and** has no app hot caller (only `mermaid_demo`), so its
->   re-parse is neither windowing-shaped nor a real-world cost — the only
->   genuinely cache-class, no-hot-caller item; left as the documented
->   future caller-owned-cache should a hot caller ever appear.
+>   **`Mermaid` MM-1/2 is the sole genuine residual**, verified through
+>   *every* fix-lens, not asserted: (1) *windowing* — it is a spatial
+>   diagram, not a `[scroll, scroll+h)` row list, so there is no window
+>   to cap (the DIFF-1/PG-1 lens does not apply); (2) *PG-2 in-frame
+>   double-parse* — `Mermaid::render` parses **once** per frame
+>   (`diagram_kind` header-scan → one `<kind>::render(src,…)`; there is
+>   no `lines()`/measure pass that re-parses), so there is no redundant
+>   recompute to remove; (3) *cache* — the only ADR-0012-legal shape is a
+>   caller-owned parsed-graph cache, but there is **no app hot caller**
+>   (only `mermaid_demo`) to own it, and a widget may not cache interior
+>   state (ADR 0012). So there is no byte-identical/additive/windowing
+>   change that implements MM-1/2 meaningfully *and* legally, and no
+>   real-world cost to justify the public cached-layout API. This is the
+>   one item where the code-grounded determination — reached by reading
+>   `render`/`diagram_kind`, not by a risk adjective — *is* the
+>   deliverable; it stays the documented future caller-owned cache should
+>   a hot `Mermaid` caller ever appear.
 > - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors — DONE
 >   (additive `Cow`, no API break).** "API-breaking by definition" was
 >   the 5th over-broad label the re-derivation overturned: the
@@ -168,24 +191,24 @@ validation path for each change.
 >   `from_slice_renders_identically_to_the_owned_constructor` per widget
 >   pins `Cow::Borrowed == Cow::Owned` cell-for-cell; Menu/Sidebar/
 >   CommandPalette/Select (which compose `List`) all still pass.
-> - **plugin-host PROTO-3 — the genuine exception (code-verified twice
->   over).** Unlike the 10 items the re-derivation cracked, here the
->   "API-breaking" label is *true*, for a concrete reason found by
->   reading the struct: `crates/rstui-plugin-host/src/protocol.rs` has
->   `pub struct Frame { …, pub payload: Vec<u8> }` with **no lifetime
->   parameter** and a **`pub` field** (callers do `decoded.payload`,
->   construct `Frame { payload }`, and `pub fn Frame::new(.., Vec<u8>)`
->   / `read_frame` / `write_frame` are public). `Vec<u8>` → `Cow<'a,[u8]>`
->   forces `Frame<'a>`, a hard semver break across the crate's public
->   wire-codec API — there is *no* private-field transparency trick like
->   the widgets had (their fields were private; this one is `pub`). And
->   it is cold: all `Frame` sends (`host.rs` init / send / veto-hook) are
->   discrete plugin-lifecycle events — no per-render-frame broadcast
->   exists. PROTO-1 (the actual 6–8-`Vec` round-trip + `read_frame`
->   double-alloc, the real cost) already landed (Batch H). A
->   semver-breaking change to a public wire-protocol struct for a cold
->   path has no payoff; the code-grounded determination is the
->   deliverable (DRV-2-class).
+> - **plugin-host PROTO-3 — DONE (`25127b1`, additive borrowed-write).**
+>   "The genuine exception / hard semver break" was the 8th over-broad
+>   label the re-derivation overturned. That judged only the "change
+>   `Frame::payload` to `Cow`" lens (which *would* break the `pub`
+>   no-lifetime `Frame`). The **additive lens** — the widgets'
+>   `from_slice` pattern at the codec level — needs no `Frame` change:
+>   add `write_frame_parts(w, type, &corr, payload: &[u8])`, make
+>   `write_frame` delegate to it (one assembly impl ⇒ byte-identical
+>   wire by construction), and have the send sites call it with borrowed
+>   payloads. The `Initialize` send's
+>   `host_api_version.as_bytes().to_vec()` — a real redundant `Vec<u8>`
+>   copy I'd missed by only inspecting `write_frame`'s assembly — is now
+>   gone; no one-shot `Frame` is constructed. `Frame`/`Frame::new`/
+>   `read_frame`/`write_frame` are unchanged (purely additive; PROTO-1,
+>   the bulk allocation cost, already landed in Batch H). A new
+>   equivalence test gate-pins `write_frame_parts` byte-identical to
+>   `write_frame(&Frame)` across all 8 message types; the full
+>   plugin-host suite passes unchanged.
 > - **MENU-1 / SB-1 / CP-1 — DONE (caller-side windowing, no API
 >   change).** The "List-API-coupled, needs LIST-1" label was wrong (the
 >   4th over-broad classification the re-derivation overturned). `List`
