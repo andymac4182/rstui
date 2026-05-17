@@ -33,6 +33,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Ok(name) = std::env::var("RSTUI_THEME") {
         app = app.with_theme(&name);
     }
+    // `RSTUI_KEYMAP="Vim"` picks a built-in map by name; a path to a
+    // keymap config file (`id = keys` lines, see docs/keymaps.md) remaps
+    // individual actions. Same typo-safe seam as RSTUI_THEME — no rebuild,
+    // no in-app UI needed.
+    if let Ok(km) = std::env::var("RSTUI_KEYMAP") {
+        app = app.with_keymap(&km);
+    }
     run_app(app)?;
     Ok(())
 }

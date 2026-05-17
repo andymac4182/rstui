@@ -270,6 +270,26 @@ impl KitchenSink {
         self
     }
 
+    /// Apply a user keymap choice: either the **name** of a built-in map
+    /// ([`keymap::Keymaps::map_names`] — `Default`/`Vim`/`Leader`,
+    /// case-insensitive) **or a path to a keymap config file** (`id = keys`
+    /// lines; see `docs/keymaps.md`). An unknown name or unreadable/invalid
+    /// file keeps the defaults — a typo never breaks your keys. This is the
+    /// one seam `RSTUI_KEYMAP` flows through, mirroring [`Self::with_theme`],
+    /// so users remap or switch keymaps without rebuilding and without the
+    /// in-app drawer.
+    #[must_use]
+    pub fn with_keymap(mut self, name_or_path: &str) -> Self {
+        if std::path::Path::new(name_or_path).is_file() {
+            if let Ok(text) = std::fs::read_to_string(name_or_path) {
+                self.keymaps.load_overrides(&text);
+            }
+        } else {
+            self.keymaps.set_active(name_or_path);
+        }
+        self
+    }
+
     /// Raise a toast that will live ~40 ticks.
     pub(crate) fn notify(&mut self, level: ToastLevel, body: impl Into<String>) {
         self.notices.push(Notice {
@@ -408,6 +428,9 @@ impl KitchenSink {
                 }
             }
             Action::Paste => self.paste_clipboard(),
+            // The kitchen sink defines no app-specific actions; the engine
+            // supports them (`rstui_keymap::Action::Custom`) for other apps.
+            Action::Custom(_) => {}
         }
         Cmd::none()
     }

@@ -18,6 +18,50 @@
 //! - **Customisation merged over defaults.** A user override (Textual's
 //!   `set_keymap`, opencode's merged `keybinds`) replaces one action's keys
 //!   by id; `"none"` disables it. Only what you change differs.
+//! - **End-user config, serde-free.** [`Keymaps::load_overrides`] parses a
+//!   trivial `id = keys` text file (hand-rolled, the same ethos as
+//!   [`Chord::parse`] — no serde, ADR 0002) and [`Keymaps::set_active`]
+//!   picks a map by name. A user customises keys by editing a file; no
+//!   bespoke app UI required (the kitchen sink wires both through
+//!   `RSTUI_KEYMAP`, mirroring `RSTUI_THEME`).
+//!
+//! # The user config file
+//!
+//! One `id = keys` per line; full-line `#` comments and blank lines are
+//! ignored; unknown ids are skipped (a typo never breaks your keys):
+//!
+//! ```text
+//! # ~/.config/myapp/keymap — edit and restart
+//! keymap      = Vim          # optionally pick the active map by name
+//! app.palette = ctrl+p, /    # remap (comma-separates alternatives)
+//! app.help    = none         # disable an action
+//! ```
+//!
+//! Keys are exactly what [`Chord::parse`] accepts; the `id`s are the
+//! stable [`Action::id`] strings ([`Action::from_id`] is the inverse).
+//!
+//! # Defining your own actions
+//!
+//! The built-in [`Action`]s are a starter set, not a closed one. An app
+//! adds its **own** actions with [`Action::Custom`] and registers them
+//! *on top of* every shipped map with [`Keymaps::bind`]:
+//!
+//! ```
+//! use rstui_keymap::{Action, Keymaps};
+//!
+//! const SAVE: Action = Action::Custom("myapp.save");
+//! const FIND: Action = Action::Custom("myapp.find");
+//!
+//! let mut keymaps = Keymaps::new();   // keeps Quit/Help/Palette/…
+//! keymaps.bind(SAVE, "ctrl+s");       // …and adds yours, in every map
+//! keymaps.bind(FIND, "ctrl+f, /");
+//! ```
+//!
+//! From here on app actions are indistinguishable from built-ins:
+//! `resolve` returns them, `keys_for(SAVE)` powers the help/footer, a
+//! user override or a `myapp.save = ctrl+k` config line remaps them. An
+//! app whose vocabulary is entirely its own can instead build complete
+//! maps with [`Keymap::new`]/[`Keymap::bound`] and [`Keymaps::from_maps`].
 
 use rstui_core::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -46,6 +90,14 @@ pub enum Action {
     Paste,
     /// Switch to the next keymap (Default → Vim → Leader → …).
     CycleKeymap,
+    /// An **application-defined** action, identified by its own stable
+    /// dotted id (`"myapp.save"`). Apps add their own actions *on top of*
+    /// these built-ins with [`Keymaps::bind`] (or build a whole map with
+    /// [`Keymap::bound`]); everything else — resolve, the help/footer
+    /// reverse-lookup, user overrides, config files — treats them exactly
+    /// like the built-ins. The id is a `&'static str` so [`Action`] stays
+    /// `Copy` and allocation-free.
+    Custom(&'static str),
 }
 
 impl Action {
@@ -62,7 +114,31 @@ impl Action {
             Action::Cut => "edit.cut",
             Action::Paste => "edit.paste",
             Action::CycleKeymap => "app.cycle_keymap",
+            Action::Custom(id) => id,
         }
+    }
+
+    /// The inverse of [`Action::id`] for the **built-ins** — resolves a
+    /// config-file id back to its action. `"app.goto"` returns `None` on
+    /// purpose: the nine screen-jump digits are conventional and multi-bound,
+    /// so a single file override of them is ill-defined (they stay `1`–`9`).
+    /// App-defined ids can't be reconstructed here (the `&'static str` isn't
+    /// known) — use [`Keymaps::action_for_id`], which also matches the
+    /// app's currently-bound [`Action::Custom`]s, so user config files
+    /// remap app actions too.
+    pub fn from_id(id: &str) -> Option<Action> {
+        Some(match id {
+            "app.quit" => Action::Quit,
+            "app.help" => Action::Help,
+            "app.palette" => Action::Palette,
+            "app.drawer" => Action::Drawer,
+            "app.focus_toggle" => Action::FocusToggle,
+            "edit.copy" => Action::Copy,
+            "edit.cut" => Action::Cut,
+            "edit.paste" => Action::Paste,
+            "app.cycle_keymap" => Action::CycleKeymap,
+            _ => return None,
+        })
     }
 
     /// One-line help text (shown in the help overlay / settings table).
@@ -78,6 +154,9 @@ impl Action {
             Action::Cut => "Cut selection",
             Action::Paste => "Paste clipboard",
             Action::CycleKeymap => "Next keymap",
+            // App actions carry their help in the app (it owns the copy);
+            // the engine only needs the binding + the reverse-lookup.
+            Action::Custom(_) => "",
         }
     }
 
@@ -343,13 +422,51 @@ pub struct Keymap {
 }
 
 impl Keymap {
+    /// An empty, leaderless keymap — the start of an app's own map.
+    /// Chain [`Keymap::bound`] / [`Keymap::with_leader`]:
+    ///
+    /// ```
+    /// # use rstui_keymap::{Action, Keymap};
+    /// const SAVE: Action = Action::Custom("myapp.save");
+    /// let km = Keymap::new("MyApp")
+    ///     .bound(Action::Quit, &["q", "ctrl+c"])
+    ///     .bound(SAVE, &["ctrl+s"]);
+    /// ```
+    pub fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            leader: None,
+            leader_timeout_ms: 0,
+            binds: Vec::new(),
+        }
+    }
+
+    /// Set an opencode-style leader chord + its timeout (ms) for
+    /// `<leader> x` chains in this map.
+    #[must_use]
+    pub fn with_leader(mut self, leader: Chord, timeout_ms: u64) -> Self {
+        self.leader = Some(leader);
+        self.leader_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Builder form of [`Keymap::bind`] (chainable).
+    #[must_use]
+    pub fn bound(mut self, action: Action, specs: &[&str]) -> Self {
+        self.bind(action, specs);
+        self
+    }
+
     /// A `Key` trigger equal to this keymap's leader is invalid — the
     /// prefix is reserved, it can never also fire a plain action.
     fn keeps(&self, t: &Trigger) -> bool {
         !matches!((t, self.leader), (Trigger::Key(c), Some(l)) if *c == l)
     }
 
-    fn bind(&mut self, action: Action, specs: &[&str]) {
+    /// Bind `action` to one or more trigger specs (`"ctrl+s"`, `"g s"`,
+    /// `"<leader> p"`). Per-keymap-leader-safe and de-duped; call once per
+    /// action when building a map.
+    pub fn bind(&mut self, action: Action, specs: &[&str]) {
         let mut triggers: Vec<Trigger> = Vec::new();
         for s in specs {
             if let Some(t) = Trigger::parse(s, self.leader) {
@@ -477,6 +594,25 @@ impl Keymaps {
         }
     }
 
+    /// A registry over the app's **own** keymaps (built with [`Keymap::new`]
+    /// / [`Keymap::bound`]) instead of the three batteries-included ones —
+    /// for an app whose action vocabulary is entirely its own. An empty
+    /// `maps` falls back to [`Keymaps::new`] so `effective`/`resolve` never
+    /// index out of bounds (a config typo can't blank the keymap).
+    pub fn from_maps(maps: Vec<Keymap>) -> Self {
+        let sets = if maps.is_empty() {
+            vec![default_map(), vim_map(), leader_map()]
+        } else {
+            maps
+        };
+        Self {
+            sets,
+            active: 0,
+            overrides: Vec::new(),
+            pending: None,
+        }
+    }
+
     /// The detected OS, for display.
     pub fn os_name() -> &'static str {
         if cfg!(target_os = "macos") {
@@ -510,6 +646,103 @@ impl Keymaps {
         let keys = keys.into();
         self.overrides.retain(|(a, _)| *a != action);
         self.overrides.push((action, keys));
+    }
+
+    /// Register an **app-defined** action *on top of* every shipped keymap,
+    /// so it works whichever map (Default/Vim/Leader, or your own) is
+    /// active — the "additional to ours" path. `keys` is comma-separated
+    /// trigger specs (exactly [`Chord::parse`] tokens / `<leader> x`
+    /// chains). Call once per app action at startup:
+    ///
+    /// ```
+    /// # use rstui_keymap::{Action, Keymaps};
+    /// const SAVE: Action = Action::Custom("myapp.save");
+    /// let mut keymaps = Keymaps::new();
+    /// keymaps.bind(SAVE, "ctrl+s");
+    /// // now `resolve` returns `SAVE`, and `keys_for(SAVE)` lights up the
+    /// // help/footer — same as any built-in, in every map.
+    /// ```
+    pub fn bind(&mut self, action: Action, keys: &str) {
+        let specs: Vec<&str> = keys
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        for km in &mut self.sets {
+            km.bind(action, &specs);
+        }
+    }
+
+    /// Resolve a config-file id to an action: a built-in via
+    /// [`Action::from_id`], else the app's currently-bound
+    /// [`Action::Custom`] with that id — so a user keymap file can remap
+    /// app-defined actions with no extra app code.
+    pub fn action_for_id(&self, id: &str) -> Option<Action> {
+        if let Some(a) = Action::from_id(id) {
+            return Some(a);
+        }
+        self.sets
+            .iter()
+            .flat_map(|km| km.binds.iter())
+            .map(|b| b.action)
+            .find(|a| matches!(a, Action::Custom(s) if *s == id))
+    }
+
+    /// The names of every shipped keymap (`Default` / `Vim` / `Leader`) —
+    /// the choices a user picks between (for a UI list or config docs).
+    pub fn map_names(&self) -> Vec<&'static str> {
+        self.sets.iter().map(|k| k.name).collect()
+    }
+
+    /// Pick the active keymap **by name** (case-insensitive), so a user can
+    /// jump straight to `"Vim"` instead of cycling. Clears any half-typed
+    /// sequence. Returns `false` (and changes nothing) for an unknown name,
+    /// so a typo just keeps the current map.
+    pub fn set_active(&mut self, name: &str) -> bool {
+        if let Some(i) = self
+            .sets
+            .iter()
+            .position(|k| k.name.eq_ignore_ascii_case(name.trim()))
+        {
+            self.active = i;
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Apply an end-user keymap config: one `id = keys` per line. Full-line
+    /// `#` comments and blank lines are ignored; the special `keymap = Name`
+    /// line picks the active map ([`Self::set_active`]); every other line is
+    /// `id = keys` fed to [`Self::set_override`] (so `keys` is exactly what
+    /// [`Chord::parse`] accepts, comma-separated, or `none` to disable).
+    /// Unknown ids and unparseable lines are skipped — a typo never errors
+    /// the app or breaks the other bindings. Returns how many lines were
+    /// applied. Serde-free by design (hand-parsed, ADR 0002); reading the
+    /// file is the app's one-liner (`fs::read_to_string`), mirroring how
+    /// `rstui-theme` is wired through `RSTUI_THEME`.
+    pub fn load_overrides(&mut self, text: &str) -> usize {
+        let mut applied = 0;
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, val)) = line.split_once('=') else {
+                continue;
+            };
+            let (key, val) = (key.trim().to_ascii_lowercase(), val.trim());
+            if key == "keymap" {
+                if self.set_active(val) {
+                    applied += 1;
+                }
+            } else if let Some(action) = self.action_for_id(&key) {
+                self.set_override(action, val);
+                applied += 1;
+            }
+        }
+        applied
     }
 
     /// Active keymap name and whether a sequence leader is currently armed
@@ -797,5 +1030,106 @@ mod tests {
         let km = k.effective();
         assert!(km.keys_for(Action::Quit).contains('Q'));
         assert!(km.keys_for(Action::Goto(1)).contains('1'));
+    }
+
+    #[test]
+    fn from_id_round_trips_every_shown_action() {
+        for a in Action::shown() {
+            // `Goto` is deliberately not file-rebindable (see below).
+            if matches!(a, Action::Goto(_)) {
+                continue;
+            }
+            assert_eq!(
+                Action::from_id(a.id()),
+                Some(a),
+                "id {} should round-trip",
+                a.id()
+            );
+        }
+        // `app.goto` is deliberately not user-rebindable from a file; an
+        // unknown id is `None`; `Custom` ids aren't reconstructible here.
+        assert_eq!(Action::from_id("app.goto"), None);
+        assert_eq!(Action::from_id("nope"), None);
+        assert_eq!(Action::from_id("myapp.save"), None);
+    }
+
+    #[test]
+    fn set_active_picks_a_map_by_name_case_insensitively() {
+        let mut k = Keymaps::new();
+        assert_eq!(k.map_names(), vec!["Default", "Vim", "Leader"]);
+        assert!(k.set_active("vim"));
+        assert_eq!(k.active_name(), "Vim");
+        // `/` opens the palette only in Vim — proves the map really switched.
+        assert_eq!(
+            k.resolve(&ev(KeyCode::Char('/'), KeyModifiers::NONE), 0),
+            Some(Action::Palette)
+        );
+        assert!(!k.set_active("does-not-exist"));
+        assert_eq!(k.active_name(), "Vim", "unknown name keeps current map");
+    }
+
+    #[test]
+    fn load_overrides_remaps_disables_and_selects_a_map() {
+        let mut k = Keymaps::new();
+        let n = k.load_overrides(
+            "# a user keymap file\n\
+             keymap = Vim\n\
+             app.palette = ctrl+p\n\
+             app.help = none\n\
+             bogus.id = whatever\n\
+             # trailing comment\n",
+        );
+        assert_eq!(n, 3, "keymap + palette + help applied; bogus skipped");
+        assert_eq!(k.active_name(), "Vim");
+        assert_eq!(
+            k.resolve(&ev(KeyCode::Char('p'), KeyModifiers::CONTROL), 0),
+            Some(Action::Palette)
+        );
+        // Textual semantics: the old palette key is gone unless re-listed.
+        assert_eq!(
+            k.resolve(&ev(KeyCode::Char(':'), KeyModifiers::NONE), 0),
+            None
+        );
+        assert_eq!(k.effective().keys_for(Action::Help), "—");
+    }
+
+    const SAVE: Action = Action::Custom("myapp.save");
+
+    #[test]
+    fn app_defined_action_works_like_a_builtin_in_every_map() {
+        let mut k = Keymaps::new();
+        k.bind(SAVE, "ctrl+s");
+        let press = ev(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        // Resolves under the Default map…
+        assert_eq!(k.resolve(&press, 0), Some(SAVE));
+        // …and still after switching maps (added on top of every one).
+        k.set_active("Leader");
+        assert_eq!(k.resolve(&press, 0), Some(SAVE));
+        // Powers the help/footer reverse-lookup like any built-in.
+        assert!(k.effective().keys_for(SAVE).contains('S'));
+        assert_eq!(SAVE.id(), "myapp.save");
+    }
+
+    #[test]
+    fn from_maps_builds_an_app_only_registry_and_config_remaps_custom() {
+        let mut k = Keymaps::from_maps(vec![
+            Keymap::new("App")
+                .bound(Action::Quit, &["q"])
+                .bound(SAVE, &["ctrl+s"]),
+        ]);
+        assert_eq!(k.map_names(), vec!["App"]);
+        assert_eq!(
+            k.resolve(&ev(KeyCode::Char('s'), KeyModifiers::CONTROL), 0),
+            Some(SAVE)
+        );
+        // A user keymap file can remap the app's own action by its id.
+        assert_eq!(k.action_for_id("myapp.save"), Some(SAVE));
+        assert_eq!(k.load_overrides("myapp.save = ctrl+k\n"), 1);
+        assert_eq!(
+            k.resolve(&ev(KeyCode::Char('k'), KeyModifiers::CONTROL), 0),
+            Some(SAVE)
+        );
+        // Empty map list never panics — falls back to the built-ins.
+        assert_eq!(Keymaps::from_maps(vec![]).map_names().len(), 3);
     }
 }

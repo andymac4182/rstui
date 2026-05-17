@@ -66,8 +66,10 @@ through to the screen while a half-typed sequence is swallowed.
 
 ## Multiple keymaps
 
-Three ship and `Keymaps::cycle()` rotates them (the kitchen sink binds
-this to `F2`):
+Three ship. `Keymaps::cycle()` rotates them (the kitchen sink binds this
+to `F2`); `Keymaps::set_active("Vim")` jumps **straight to one by name**
+(case-insensitive, unknown name is a no-op), and `Keymaps::map_names()`
+lists the choices for a UI or config doc:
 
 - **Default** — the app's normal bindings.
 - **Vim** — Vim muscle memory, including leaderless sequences (`g?`,
@@ -101,9 +103,60 @@ In the kitchen sink the settings drawer (`g`) is a live keymap manager:
 it shows the OS, the active keymap, the leader, and the full
 `action → id → keys` table (built from `keys_for`), and lets you
 **capture a key to rebind** an action or disable it — proving the
-override path end to end. A config-file loader is intentionally *not* in
-the crate (it stays serde-free); reading a `keymap.toml` and calling
-`set_override` is the app's job.
+override path end to end.
+
+## End user: a config file (no app UI, no rebuild)
+
+The user doesn't *need* an in-app rebind UI. `Keymaps::load_overrides`
+parses a trivial text file — one `id = keys` per line, full-line `#`
+comments and blanks ignored, unknown ids skipped (a typo never breaks the
+other keys), `keymap = Name` picks the active map:
+
+```text
+# ~/.config/myapp/keymap — edit and restart
+keymap      = Vim          # pick the active map by name
+app.palette = ctrl+p, /    # remap (comma-separates alternatives)
+app.help    = none         # disable an action
+myapp.save  = ctrl+k       # app-defined actions too (see below)
+```
+
+`keys` are exactly [`Chord::parse`](#the-model) tokens; `id`s are the
+stable `Action::id()` strings (`Keymaps::action_for_id` is the inverse and
+also resolves app actions). It is **serde-free by design** — hand-parsed,
+same ethos as `Chord::parse` (ADR 0002), no dependency added. The crate
+takes the text; reading the file is the app's one-liner.
+
+The kitchen sink wires this through **`RSTUI_KEYMAP`**, exactly mirroring
+`RSTUI_THEME`: set it to a built-in map name *or* a path to a keymap
+file — no rebuild, no UI:
+
+```sh
+RSTUI_KEYMAP=Vim                 cargo run -p rstui-kitchen-sink
+RSTUI_KEYMAP=~/.config/rstui/keymap  cargo run -p rstui-kitchen-sink
+```
+
+An unknown name or unreadable/invalid file keeps the defaults.
+
+## App-defined actions
+
+The built-in `Action`s are a starter set, not a closed one. An app adds
+its **own** actions with `Action::Custom("myapp.save")` and registers
+them *on top of* every shipped map with `Keymaps::bind` — one call, and
+they behave exactly like a built-in (resolve, help/footer reverse-lookup,
+user override, config file all just work):
+
+```rust
+const SAVE: Action = Action::Custom("myapp.save");
+
+let mut keymaps = Keymaps::new();   // keeps Quit/Help/Palette/…
+keymaps.bind(SAVE, "ctrl+s");       // …and adds yours, in every map
+// resolve → Some(SAVE); keys_for(SAVE) lights the footer; the
+// `myapp.save = …` config line above remaps it — no extra code.
+```
+
+An app whose vocabulary is entirely its own builds complete maps with
+`Keymap::new("MyApp").bound(SAVE, &["ctrl+s"])` and
+`Keymaps::from_maps(vec![…])` instead of the batteries-included three.
 
 ## How the consumers use it
 
