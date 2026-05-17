@@ -99,14 +99,23 @@ impl Widget for Avatar<'_> {
 
         // Up to three initials, clipped to the width, centred — odd leftover
         // biased toward the start (Alignment::Center), on the middle row.
-        let glyphs: Vec<char> = self.initials.chars().take(MAX_INITIALS).collect();
-        let take = (glyphs.len() as u16).min(area.width);
+        // Fixed stack array, not a per-frame `Vec<char>` (W1-03): the collect
+        // existed only to learn the count before centring. `MAX_INITIALS` is
+        // 3, so this never heap-allocates on a leaf widget that may be drawn
+        // once per row in a member list.
+        let mut glyphs = ['\0'; MAX_INITIALS];
+        let mut n = 0usize;
+        for c in self.initials.chars().take(MAX_INITIALS) {
+            glyphs[n] = c;
+            n += 1;
+        }
+        let take = (n as u16).min(area.width);
         if take == 0 {
             return;
         }
         let x0 = area.left() + (area.width - take) / 2;
         let y = area.top() + area.height / 2;
-        for (i, ch) in glyphs.into_iter().take(take as usize).enumerate() {
+        for (i, &ch) in glyphs.iter().take(take as usize).enumerate() {
             buf.set_cell(Position::new(x0 + i as u16, y), ch, self.style);
         }
     }
