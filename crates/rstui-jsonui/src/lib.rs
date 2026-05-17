@@ -28,7 +28,7 @@
 //!
 //! - [`value`]: the RFC-6901 JSON-Pointer data store (`get`/`set`/
 //!   `remove`, relative-scope resolution) both formats bind against.
-//! - [`tree`]: [`UiNode`](tree::UiNode), the projection target, plus the
+//! - [`tree`]: [`UiNode`], the projection target, plus the
 //!   `render` walker and the `hit` accessor.
 //! - [`capability`]: the descriptors each format advertises to an agent
 //!   (the A2UI `a2uiClientCapabilities`, the json-render catalog) so the
@@ -44,3 +44,17 @@ pub mod value;
 
 pub mod a2ui;
 pub mod jsonrender;
+
+// Crate-root re-exports of the entry points + the shared projection
+// vocabulary (the format engines' rich internals stay reached via
+// `a2ui::`/`jsonrender::`, the `mermaid::` precedent).
+pub use a2ui::{A2uiClientAction, A2uiServerMessage, A2uiSurface};
+pub use capability::{
+    A2UI_CATALOG_ID, A2UI_VERSION, JSON_RENDER_CATALOG_ID, client_capabilities,
+    render_capability_summary,
+};
+pub use jsonrender::{JsonRenderDoc, Spec};
+pub use tree::{
+    CrossAlign, HitMap, HitRect, Justify, KeyValueRow, NodeId, Severity, TextVariant, UiNode,
+};
+pub use value::DataModel;

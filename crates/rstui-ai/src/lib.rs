@@ -14,11 +14,11 @@
 //! public `Buffer` contract, headless snapshot-tested — so this crate
 //! doubles as the worked reference for building AI chrome on rstui.
 //!
-//! - [`model`]: the AI SDK message model — [`UiMessage`](model::UiMessage),
-//!   the [`UiPart`](model::UiPart) discriminated union, the
-//!   [`ToolUiPart`](model::ToolUiPart) call state machine,
-//!   [`Role`](model::Role), [`TokenUsage`](model::TokenUsage),
-//!   [`ChatStatus`](model::ChatStatus). The single core type the chat
+//! - [`model`]: the AI SDK message model — [`UiMessage`],
+//!   the [`UiPart`] discriminated union, the
+//!   [`ToolUiPart`] call state machine,
+//!   [`Role`], [`TokenUsage`],
+//!   [`ChatStatus`]. The single core type the chat
 //!   widgets and the agent-driven UI are a projection of; total,
 //!   serde-deserializable from the wire shape, tolerant of partial /
 //!   unknown parts (a streamed message is always renderable).
@@ -75,3 +75,42 @@ pub mod terminal_view;
 pub mod test_results;
 pub mod tool;
 pub mod web_console;
+
+// Crate-root re-exports of the public surface, the `rstui-widgets`
+// convention (the widget *type* is promoted; helper free functions stay
+// module-scoped, reached via `module::helper`).
+pub use model::{
+    ChatStatus, Role, StreamState, TokenUsage, ToolState, ToolUiPart, UiMessage, UiPart,
+};
+pub use stream_markdown::{
+    LinkMode, RemendHandler, RemendOptions, StreamCache, StreamMarkdown, StreamMarkdownState,
+};
+
+pub use agent_card::{AgentCard, AgentDef, AgentTool};
+pub use artifact::{Artifact, ArtifactAction, ArtifactIntent};
+pub use chain_of_thought::{ChainOfThought, ChainStep, ChainStepStatus};
+pub use checkpoint::Checkpoint;
+pub use commit::{Commit, CommitFile, CommitInfo, FileStatus};
+pub use confirmation::{Confirmation, ConfirmationIntent};
+pub use context_meter::ContextMeter;
+pub use conversation::Conversation;
+pub use env_vars::{EnvVars, EnvVarsIntent};
+pub use file_tree::{FileNode, FileTree};
+pub use inline_citation::{InlineCitation, InlineCitationCard};
+pub use message::{Message, MessageBranch, MessageBranchState};
+pub use model_selector::{Model, ModelSelector, ModelSelectorIntent};
+pub use package_info::{ChangeType, Package, PackageInfo};
+pub use plan::Plan;
+pub use prompt_input::{Attachment, PromptInput, PromptInputIntent};
+pub use reasoning::Reasoning;
+pub use schema_view::{SchemaNode, SchemaView};
+pub use shimmer::Shimmer;
+pub use snippet::{Snippet, SnippetIntent};
+pub use sources::Sources;
+pub use stack_trace::{ParsedStackTrace, StackFrame, StackTrace, StackTraceIntent};
+pub use suggestion::{SuggestionIntent, Suggestions};
+pub use task::{Task, TaskItem};
+pub use terminal_view::TerminalView;
+pub use test_results::{Summary, TestCase, TestResults, TestStatus, TestSuite};
+pub use tool::Tool;
+pub use web_console::{ConsoleLevel, ConsoleLog, WebConsole};
