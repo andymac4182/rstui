@@ -417,10 +417,15 @@ impl ChatApp {
     pub fn log_visible(&self) -> bool {
         self.show_log
     }
-    /// The merged plugin footer segments (in plugin-name order).
-    #[must_use]
-    pub fn footer_segments(&self) -> Vec<FooterSegment> {
-        self.footers.values().flatten().cloned().collect()
+    /// The merged plugin footer segments (in plugin-name order), borrowed.
+    ///
+    /// UI-3: returns an iterator of `&FooterSegment` rather than a freshly
+    /// `cloned().collect()`ed `Vec` — `render_footer` only reads them, and a
+    /// powerline-style plugin updates the footer continuously, so the old
+    /// deep clone of the whole `BTreeMap<_, Vec<FooterSegment>>` ran every
+    /// frame for nothing.
+    pub fn footer_segments(&self) -> impl Iterator<Item = &FooterSegment> + '_ {
+        self.footers.values().flatten()
     }
     /// Plugin status keys.
     #[must_use]

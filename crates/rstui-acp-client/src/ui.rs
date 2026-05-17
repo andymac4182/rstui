@@ -128,7 +128,7 @@ fn render_footer(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     fill(frame, area, Style::new().bg(Color::DarkGray));
     let mut x = area.x;
     for seg in app.footer_segments() {
-        x = draw_segment(frame, area, x, &seg);
+        x = draw_segment(frame, area, x, seg);
         if x >= area.x + area.width {
             return;
         }
