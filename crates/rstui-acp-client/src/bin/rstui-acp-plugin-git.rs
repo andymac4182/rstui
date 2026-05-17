@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use rstui_acp_client::plugin::protocol::{FooterSegment, HostEvent, PluginAction};
-use rstui_acp_client::plugin::serve;
+use rstui_acp_client::plugin::serve_auto;
 
 fn git(cwd: &PathBuf, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
@@ -80,7 +80,7 @@ fn emit_state(cwd: &PathBuf, emit: &mut dyn FnMut(PluginAction)) {
 
 fn main() {
     let mut cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    serve(move |event, emit| match event {
+    serve_auto(move |event, emit| match event {
         HostEvent::Init { cwd: dir, .. } => {
             cwd = PathBuf::from(dir);
             emit(PluginAction::RegisterCommand {

@@ -8,7 +8,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rstui_acp_client::plugin::protocol::{HostEvent, PluginAction};
-use rstui_acp_client::plugin::serve;
+use rstui_acp_client::plugin::serve_auto;
 
 fn stamp() -> String {
     let secs = SystemTime::now()
@@ -21,7 +21,7 @@ fn stamp() -> String {
 
 fn main() {
     let mut notes: Vec<String> = Vec::new();
-    serve(move |event, emit| match event {
+    serve_auto(move |event, emit| match event {
         HostEvent::Init { .. } => {
             emit(PluginAction::RegisterCommand {
                 name: "btw".to_owned(),

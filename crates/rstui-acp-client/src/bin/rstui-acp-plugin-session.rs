@@ -8,7 +8,7 @@
 use std::time::{Duration, SystemTime};
 
 use rstui_acp_client::plugin::protocol::{FooterSegment, HostEvent, PluginAction};
-use rstui_acp_client::plugin::serve;
+use rstui_acp_client::plugin::serve_auto;
 
 struct State {
     start: SystemTime,
@@ -67,7 +67,7 @@ fn main() {
         turns: 0,
     };
     let mut modal_id: u64 = 0;
-    serve(move |event, emit| match event {
+    serve_auto(move |event, emit| match event {
         HostEvent::Init { .. } => {
             emit(PluginAction::RegisterCommand {
                 name: "session".to_owned(),

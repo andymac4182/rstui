@@ -33,7 +33,9 @@ pub mod transport;
 pub mod ws;
 
 pub use jsonrpc::{Kind, Message, RpcError};
-pub use plugin::{Host, Plugin, serve, serve_over, serve_plugin, serve_plugin_ws, serve_ws};
+pub use plugin::{
+    Host, Plugin, serve, serve_auto, serve_over, serve_plugin, serve_plugin_ws, serve_ws,
+};
 pub use proto::{
     API_VERSION, FooterSegment, HostEvent, PluginAction, decode_action, decode_event,
     encode_action, encode_event,

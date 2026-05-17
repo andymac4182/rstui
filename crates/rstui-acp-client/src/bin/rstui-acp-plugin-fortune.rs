@@ -5,7 +5,7 @@
 //! draws one on demand. Deterministic rotation — offline, std-only.
 
 use rstui_acp_client::plugin::protocol::{HostEvent, PluginAction};
-use rstui_acp_client::plugin::serve;
+use rstui_acp_client::plugin::serve_auto;
 
 const FORTUNES: &[&str] = &[
     "Make it work, make it right, make it fast.",
@@ -24,7 +24,7 @@ const FORTUNES: &[&str] = &[
 
 fn main() {
     let mut idx: usize = 0;
-    serve(move |event, emit| match event {
+    serve_auto(move |event, emit| match event {
         HostEvent::Init { .. } => {
             emit(PluginAction::RegisterCommand {
                 name: "fortune".to_owned(),
