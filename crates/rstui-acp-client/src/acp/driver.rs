@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sacp::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, TextContent,
+    ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PromptRequest,
+    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
 };
 use sacp::{Agent, Client, ConnectionTo};
 use tokio::io::AsyncBufReadExt;
@@ -240,6 +240,27 @@ fn describe_permission(request: &RequestPermissionRequest) -> (String, Vec<Permi
 /// Turns one `session/update` notification into transcript events, extracting
 /// text from the JSON form so it is robust to schema variant renames.
 fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
+    // DRV-1: typed fast-path for the two highest-frequency streamed variants.
+    // Agent message/thought chunks arrive token-by-token throughout every
+    // turn, so they dominate notification volume; the generic arm below pays
+    // a full `serde_json::to_value(&update)` serialize + a `value_to_text`
+    // re-walk for each one. Matching the typed enum directly skips both. This
+    // is behaviour-identical to the generic arm for a text chunk (it extracts
+    // exactly `TextContent.text`) and only fires for `ContentBlock::Text`;
+    // any non-text content or any other variant falls through to the proven
+    // serde_json path unchanged.
+    match &notification.update {
+        SessionUpdate::AgentMessageChunk(ContentChunk {
+            content: ContentBlock::Text(TextContent { text, .. }),
+            ..
+        }) => return vec![AcpEvent::AgentText(text.clone())],
+        SessionUpdate::AgentThoughtChunk(ContentChunk {
+            content: ContentBlock::Text(TextContent { text, .. }),
+            ..
+        }) => return vec![AcpEvent::Thought(text.clone())],
+        _ => {}
+    }
+
     let Ok(value) = serde_json::to_value(&notification.update) else {
         return Vec::new();
     };
