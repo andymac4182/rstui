@@ -91,6 +91,120 @@ pub struct AskState {
     freeform_focused: bool,
 }
 
+/// An in-flight plugin modal dialog (title + body + buttons).
+#[derive(Debug, Clone)]
+pub struct ModalState {
+    plugin: String,
+    id: u64,
+    title: String,
+    body: Vec<String>,
+    buttons: Vec<String>,
+    selected: usize,
+}
+
+impl ModalState {
+    /// Originating plugin.
+    #[must_use]
+    pub fn plugin(&self) -> &str {
+        &self.plugin
+    }
+    /// Modal title.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    /// Body lines.
+    #[must_use]
+    pub fn body(&self) -> &[String] {
+        &self.body
+    }
+    /// Button labels.
+    #[must_use]
+    pub fn buttons(&self) -> &[String] {
+        &self.buttons
+    }
+    /// Highlighted button index.
+    #[must_use]
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+}
+
+/// Canonicalizes a key-chord string (`"Ctrl+ G"` → `"ctrl+g"`), ordering
+/// modifiers `ctrl, alt, shift, super` so plugin-declared and
+/// host-derived chords compare equal.
+#[must_use]
+pub fn normalize_chord(s: &str) -> String {
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    let mut sup = false;
+    let mut key = String::new();
+    for part in s.split('+') {
+        match part.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "alt" | "option" | "meta" => alt = true,
+            "shift" => shift = true,
+            "super" | "cmd" | "win" => sup = true,
+            "" => {}
+            other => key = other.to_owned(),
+        }
+    }
+    let mut out = String::new();
+    if ctrl {
+        out.push_str("ctrl+");
+    }
+    if alt {
+        out.push_str("alt+");
+    }
+    if shift {
+        out.push_str("shift+");
+    }
+    if sup {
+        out.push_str("super+");
+    }
+    out.push_str(&key);
+    out
+}
+
+/// The canonical chord for a key event, or `None` for a bare printable key
+/// (those type into the composer and must never be stolen as a shortcut).
+#[must_use]
+fn chord_of(key: &KeyEvent) -> Option<String> {
+    let m = key.modifiers;
+    let ctrl = m.contains(KeyModifiers::CONTROL);
+    let alt = m.contains(KeyModifiers::ALT);
+    let sup = m.contains(KeyModifiers::SUPER);
+    let name = match key.code {
+        KeyCode::Char(c) => c.to_ascii_lowercase().to_string(),
+        KeyCode::F(n) => format!("f{n}"),
+        KeyCode::Enter => "enter".to_owned(),
+        KeyCode::Tab => "tab".to_owned(),
+        KeyCode::Backspace => "backspace".to_owned(),
+        KeyCode::Delete => "delete".to_owned(),
+        KeyCode::Esc => "esc".to_owned(),
+        _ => return None,
+    };
+    // A shortcut must carry ctrl/alt/super, or be a function key — never a
+    // bare/Shift-only printable (that is composer input).
+    let is_fn = matches!(key.code, KeyCode::F(_));
+    if !(ctrl || alt || sup || is_fn) {
+        return None;
+    }
+    let mut chord = String::new();
+    if ctrl {
+        chord.push_str("ctrl+");
+    }
+    if alt {
+        chord.push_str("alt+");
+    }
+    if sup {
+        chord.push_str("super+");
+    }
+    chord.push_str(&name);
+    Some(chord)
+}
+
 /// A transient corner notification.
 #[derive(Debug, Clone)]
 pub struct Toast {
@@ -204,6 +318,9 @@ pub struct ChatApp {
     details: bool,
     panels: BTreeMap<String, (String, Vec<String>)>,
     show_plugins: bool,
+    /// Plugin keybindings: canonical chord → (plugin, command, description).
+    keybindings: BTreeMap<String, (String, String, String)>,
+    modal: Option<ModalState>,
     toasts: Vec<Toast>,
     log: Vec<String>,
     show_log: bool,
@@ -247,6 +364,8 @@ impl ChatApp {
             details: true,
             panels: BTreeMap::new(),
             show_plugins: false,
+            keybindings: BTreeMap::new(),
+            modal: None,
             toasts: Vec::new(),
             log: Vec::new(),
             show_log: false,
@@ -297,6 +416,16 @@ impl ChatApp {
     #[must_use]
     pub fn pending_permission(&self) -> Option<&PendingPermission> {
         self.pending_permission.as_ref()
+    }
+    /// The active plugin modal, if any.
+    #[must_use]
+    pub fn modal(&self) -> Option<&ModalState> {
+        self.modal.as_ref()
+    }
+    /// Plugin keybindings: chord → (plugin, command, description).
+    #[must_use]
+    pub fn keybindings(&self) -> &BTreeMap<String, (String, String, String)> {
+        &self.keybindings
     }
     /// The ask-user overlay, if any.
     #[must_use]
@@ -810,6 +939,33 @@ impl ChatApp {
                     freeform_focused: false,
                 });
             }
+            PluginAction::RegisterKeybinding {
+                keys,
+                command,
+                description,
+            } => {
+                let chord = normalize_chord(&keys);
+                self.keybindings
+                    .insert(chord, (plugin.to_owned(), command, description));
+            }
+            PluginAction::Modal {
+                id,
+                title,
+                body,
+                mut buttons,
+            } => {
+                if buttons.is_empty() {
+                    buttons.push("OK".to_owned());
+                }
+                self.modal = Some(ModalState {
+                    plugin: plugin.to_owned(),
+                    id,
+                    title,
+                    body,
+                    buttons,
+                    selected: 0,
+                });
+            }
             PluginAction::Panel { title, body } => {
                 if body.is_empty() {
                     self.panels.remove(plugin);
@@ -868,16 +1024,81 @@ impl ChatApp {
             self.show_plugins = false;
             return Cmd::none();
         }
+        if self.modal.is_some() {
+            return self.modal_key(key);
+        }
         if self.pending_permission.is_some() {
             return self.permission_key(key);
         }
         if self.ask.is_some() {
             return self.ask_key(key);
         }
+        // Plugin keybindings: a registered chord (modifier/Fn key) fires its
+        // command, unless the slash-autocomplete popup is capturing input.
+        if self.completion.is_none() {
+            if let Some(chord) = chord_of(&key) {
+                if let Some((plugin, command, _)) = self.keybindings.get(&chord).cloned() {
+                    if let Some(host) = &self.plugins {
+                        host.send_to(
+                            &plugin,
+                            &HostEvent::Command {
+                                name: command.clone(),
+                                args: String::new(),
+                            },
+                        );
+                    }
+                    self.push_system(format!("⌨ {chord} → /{command}"));
+                    return Cmd::none();
+                }
+            }
+        }
         match self.screen {
             Screen::Picker => self.picker_key(key),
             Screen::Connecting | Screen::Chat => self.chat_key(key),
         }
+    }
+
+    fn modal_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let Some(m) = self.modal.as_mut() else {
+            return Cmd::none();
+        };
+        match key.code {
+            KeyCode::Left | KeyCode::Up => {
+                m.selected = m.selected.saturating_sub(1);
+            }
+            KeyCode::Right | KeyCode::Down | KeyCode::Tab if !m.buttons.is_empty() => {
+                m.selected = (m.selected + 1).min(m.buttons.len() - 1);
+            }
+            KeyCode::Enter => {
+                let m = self.modal.take().expect("checked above");
+                let button = m.buttons.get(m.selected).cloned().unwrap_or_default();
+                if let Some(host) = &self.plugins {
+                    host.send_to(
+                        &m.plugin,
+                        &HostEvent::ModalResponse {
+                            id: m.id,
+                            button,
+                            cancelled: false,
+                        },
+                    );
+                }
+            }
+            KeyCode::Esc => {
+                let m = self.modal.take().expect("checked above");
+                if let Some(host) = &self.plugins {
+                    host.send_to(
+                        &m.plugin,
+                        &HostEvent::ModalResponse {
+                            id: m.id,
+                            button: String::new(),
+                            cancelled: true,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+        Cmd::none()
     }
 
     fn picker_key(&mut self, key: KeyEvent) -> Cmd<Msg> {

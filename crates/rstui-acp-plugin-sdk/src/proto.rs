@@ -50,6 +50,15 @@ pub enum HostEvent {
         /// Everything after the command name (may be empty).
         args: String,
     },
+    /// The user dismissed/answered a prior [`PluginAction::Modal`].
+    ModalResponse {
+        /// Correlation id from the request.
+        id: u64,
+        /// The chosen button label (empty if cancelled).
+        button: String,
+        /// `true` if dismissed without choosing a button.
+        cancelled: bool,
+    },
     /// The host's answer to a prior [`PluginAction::AskUser`].
     AskResponse {
         /// Correlation id from the request.
@@ -107,6 +116,34 @@ pub enum PluginAction {
         #[serde(default)]
         allow_freeform: bool,
     },
+    /// Bind a key chord to one of this plugin's registered commands
+    /// (opencode keymap-layer analogue). `keys` is a canonical chord like
+    /// `"ctrl+g"`, `"alt+s"`, `"f5"` (modifiers in `ctrl+alt+shift+super`
+    /// order, lowercase key). The host invokes `command` when it is pressed
+    /// and nothing else is consuming input.
+    RegisterKeybinding {
+        /// Canonical chord string.
+        keys: String,
+        /// A command name this plugin registered.
+        command: String,
+        /// One-line help (shown in `/help`).
+        description: String,
+    },
+    /// Show a modal dialog (opencode `Dialog`/`Confirm`/`Select`, pi
+    /// `ctx.ui.custom`): a title, body lines, and a row of buttons. The
+    /// choice returns as [`HostEvent::ModalResponse`].
+    Modal {
+        /// Correlation id echoed back in the response.
+        id: u64,
+        /// Modal title.
+        title: String,
+        /// Body lines (rendered wrapped).
+        #[serde(default)]
+        body: Vec<String>,
+        /// Button labels, left to right (defaults to `["OK"]` if empty).
+        #[serde(default)]
+        buttons: Vec<String>,
+    },
     /// Contribute a named panel to the TUI sidebar. Re-sending the same
     /// `title` replaces it; an empty `body` removes it.
     Panel {
@@ -152,6 +189,7 @@ pub fn host_method(event: &HostEvent) -> &'static str {
         HostEvent::UserPrompt { .. } => "session/prompt",
         HostEvent::TurnEnded { .. } => "session/turnEnded",
         HostEvent::Command { .. } => "command/invoke",
+        HostEvent::ModalResponse { .. } => "modal/response",
         HostEvent::AskResponse { .. } => "askUser/response",
         HostEvent::Refresh => "tick",
         HostEvent::Shutdown => "shutdown",
@@ -166,6 +204,8 @@ pub fn plugin_method(action: &PluginAction) -> &'static str {
         PluginAction::SetStatus { .. } => "ui/setStatus",
         PluginAction::Footer { .. } => "ui/footer",
         PluginAction::AskUser { .. } => "ui/askUser",
+        PluginAction::RegisterKeybinding { .. } => "ui/registerKeybinding",
+        PluginAction::Modal { .. } => "ui/modal",
         PluginAction::Panel { .. } => "ui/panel",
         PluginAction::Note { .. } => "ui/note",
         PluginAction::Log { .. } => "ui/log",

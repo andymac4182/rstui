@@ -99,6 +99,34 @@ impl Host<'_> {
             description: description.into(),
         });
     }
+    /// Bind a key chord (e.g. `"ctrl+g"`) to one of this plugin's commands.
+    pub fn register_keybinding(
+        &mut self,
+        keys: impl Into<String>,
+        command: impl Into<String>,
+        description: impl Into<String>,
+    ) {
+        (self.emit)(PluginAction::RegisterKeybinding {
+            keys: keys.into(),
+            command: command.into(),
+            description: description.into(),
+        });
+    }
+    /// Show a modal dialog; the choice returns via `on_modal_response`.
+    pub fn modal(
+        &mut self,
+        id: u64,
+        title: impl Into<String>,
+        body: Vec<String>,
+        buttons: Vec<String>,
+    ) {
+        (self.emit)(PluginAction::Modal {
+            id,
+            title: title.into(),
+            body,
+            buttons,
+        });
+    }
     /// Emit a raw action (escape hatch, e.g. `AskUser`).
     pub fn emit(&mut self, action: PluginAction) {
         (self.emit)(action);
@@ -119,6 +147,8 @@ pub trait Plugin {
     fn on_turn_ended(&mut self, stop_reason: &str, host: &mut Host<'_>) {}
     /// A registered slash command was invoked.
     fn on_command(&mut self, name: &str, args: &str, host: &mut Host<'_>) {}
+    /// The user answered a prior `Modal`.
+    fn on_modal_response(&mut self, id: u64, button: &str, cancelled: bool, host: &mut Host<'_>) {}
     /// The user answered a prior `AskUser`.
     fn on_ask_response(
         &mut self,
@@ -147,6 +177,11 @@ pub fn serve_plugin<P: Plugin>(mut plugin: P) {
                 plugin.on_turn_ended(&stop_reason, &mut host);
             }
             HostEvent::Command { name, args } => plugin.on_command(&name, &args, &mut host),
+            HostEvent::ModalResponse {
+                id,
+                button,
+                cancelled,
+            } => plugin.on_modal_response(id, &button, cancelled, &mut host),
             HostEvent::AskResponse {
                 id,
                 selections,

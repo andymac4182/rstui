@@ -10,7 +10,7 @@
 use rstui_acp_client::Config;
 use rstui_acp_client::app::{ChatApp, Msg, Screen};
 use rstui_acp_client::registry::Registry;
-use rstui_core::{Event, KeyCode, KeyEvent, Size};
+use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Size};
 use rstui_runtime::Harness;
 
 /// Builds a harness over a freshly constructed `ChatApp`. `Harness::new` runs
@@ -775,4 +775,94 @@ fn agent_markdown_links_render_with_styling() {
         agent_msg.text.contains("[example](https://example.com)"),
         "agent message should contain markdown link syntax"
     );
+}
+
+// ---- Plugin capabilities: keybindings + modals (opencode/pi parity) ----
+
+#[test]
+fn plugin_keybinding_registers_and_fires_its_command() {
+    let mut h = chatting(100, 40);
+    h.message(plug(
+        "fortune",
+        PluginAction::RegisterKeybinding {
+            keys: "Ctrl+Y".to_owned(),
+            command: "fortune".to_owned(),
+            description: "Draw a fortune".to_owned(),
+        },
+    ));
+    // Stored under the canonical chord, regardless of input casing.
+    let kb = h.app().keybindings();
+    let (plugin, command, _) = kb.get("ctrl+y").expect("chord registered");
+    assert_eq!((plugin.as_str(), command.as_str()), ("fortune", "fortune"));
+
+    // Pressing the chord routes the command (system breadcrumb is observable
+    // headlessly; the plugin send is a no-op without a live host).
+    h.message(Msg::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::CONTROL,
+    )));
+    let last = &h.app().transcript().last().expect("a system line").text;
+    assert!(
+        last.contains("⌨") && last.contains("/fortune"),
+        "the chord fired its command: {last:?}"
+    );
+}
+
+#[test]
+fn bare_letters_are_never_stolen_as_shortcuts() {
+    let mut h = chatting(100, 40);
+    h.message(plug(
+        "fortune",
+        PluginAction::RegisterKeybinding {
+            keys: "y".to_owned(), // no modifier ⇒ not a shortcut
+            command: "fortune".to_owned(),
+            description: "x".to_owned(),
+        },
+    ));
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Char('y'))));
+    // 'y' typed into the composer, not consumed as a shortcut.
+    assert_eq!(h.app().composer().lines(), &["y".to_owned()]);
+}
+
+#[test]
+fn plugin_modal_opens_navigates_and_answers() {
+    let mut h = chatting(100, 40);
+    h.message(plug(
+        "session",
+        PluginAction::Modal {
+            id: 7,
+            title: "Session".to_owned(),
+            body: vec!["elapsed 00:10".to_owned()],
+            buttons: vec!["Reset".to_owned(), "Close".to_owned()],
+        },
+    ));
+    let m = h.app().modal().expect("modal open");
+    assert_eq!(m.title(), "Session");
+    assert_eq!(m.buttons(), ["Reset".to_owned(), "Close".to_owned()]);
+    assert_eq!(m.selected(), 0);
+    assert!(h.snapshot().contains("Session"));
+
+    // Right moves to "Close"; Enter answers and dismisses.
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Right)));
+    assert_eq!(h.app().modal().unwrap().selected(), 1);
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(h.app().modal().is_none(), "Enter closes the modal");
+}
+
+#[test]
+fn plugin_modal_escape_cancels() {
+    let mut h = chatting(100, 40);
+    h.message(plug(
+        "session",
+        PluginAction::Modal {
+            id: 1,
+            title: "Confirm".to_owned(),
+            body: vec![],
+            buttons: vec!["OK".to_owned()],
+        },
+    ));
+    assert!(h.app().modal().is_some());
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Esc)));
+    assert!(h.app().modal().is_none(), "Esc cancels the modal");
+    assert!(h.is_running());
 }
