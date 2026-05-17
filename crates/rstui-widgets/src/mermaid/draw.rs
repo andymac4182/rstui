@@ -172,6 +172,13 @@ impl Surface {
 
     /// Draws a box and centres a single-line `label` on its middle row,
     /// filling the interior so a `bg` style covers the whole box.
+    ///
+    /// The arguments are the irreducible geometry of a labelled box (rect,
+    /// shape, text, two styles); a parameter struct would only move the same
+    /// fields behind a name every one of the ~20 call sites must still
+    /// populate, so the lint is allowed here rather than obscuring the
+    /// primitive.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn labeled_box(
         &mut self,
         x: i32,
@@ -213,36 +220,45 @@ impl Surface {
                 {
                     continue;
                 }
-                buf.set_cell(
-                    Position::new(px as u16, py as u16),
-                    ch,
-                    base.patch(style),
-                );
+                buf.set_cell(Position::new(px as u16, py as u16), ch, base.patch(style));
             }
         }
     }
+}
+
+/// The surface glyphs as one newline-terminated string per row — the shared
+/// snapshot helper this module's tests and every sibling diagram module's
+/// tests assert against (reached as `super::draw::dump`). Defined ahead of
+/// the test module so it is not an item after `mod tests`.
+#[cfg(test)]
+pub(crate) fn dump(s: &Surface) -> String {
+    let mut out = String::new();
+    for y in 0..s.h {
+        for x in 0..s.w {
+            out.push(s.glyph(x, y));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The surface glyphs as one newline-terminated string per row.
-    pub(crate) fn dump(s: &Surface) -> String {
-        let mut out = String::new();
-        for y in 0..s.h {
-            for x in 0..s.w {
-                out.push(s.glyph(x, y));
-            }
-            out.push('\n');
-        }
-        out
-    }
-
     #[test]
     fn rect_draws_corners_and_centered_label() {
         let mut s = Surface::new(7, 3);
-        s.labeled_box(0, 0, 7, 3, BoxStyle::Square, "hi", Style::new(), Style::new());
+        s.labeled_box(
+            0,
+            0,
+            7,
+            3,
+            BoxStyle::Square,
+            "hi",
+            Style::new(),
+            Style::new(),
+        );
         assert_eq!(dump(&s), "┌─────┐\n│ hi  │\n└─────┘\n");
     }
 
@@ -274,8 +290,3 @@ mod tests {
         assert_eq!(row, "  AB  ");
     }
 }
-
-/// Re-export for sibling diagram modules' snapshot tests: render a [`Surface`]
-/// to a `String` (one newline-terminated row per line).
-#[cfg(test)]
-pub(crate) use tests::dump;

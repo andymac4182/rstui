@@ -158,7 +158,11 @@ fn main() {
     for (label, src) in DIAGRAMS {
         let a = frame(src, 60, 16);
         let b = frame(src, 60, 16);
-        let det = if a == b { "deterministic" } else { "NON-DETERMINISTIC" };
+        let det = if a == b {
+            "deterministic"
+        } else {
+            "NON-DETERMINISTIC"
+        };
         let routed = if a.contains("missing graph header") {
             "UNROUTED"
         } else {

@@ -850,9 +850,7 @@ impl Widget for Mermaid<'_> {
             DiagramKind::Timeline => timeline::render(src, inner, buf, self.style, &self.theme),
             DiagramKind::Sankey => sankey::render(src, inner, buf, self.style, &self.theme),
             DiagramKind::XyChart => xychart::render(src, inner, buf, self.style, &self.theme),
-            DiagramKind::Block => {
-                block_diagram::render(src, inner, buf, self.style, &self.theme)
-            }
+            DiagramKind::Block => block_diagram::render(src, inner, buf, self.style, &self.theme),
             DiagramKind::Packet => packet::render(src, inner, buf, self.style, &self.theme),
             DiagramKind::Kanban => kanban::render(src, inner, buf, self.style, &self.theme),
             DiagramKind::Architecture => {
@@ -866,22 +864,20 @@ impl Widget for Mermaid<'_> {
             // else yields the long-standing `missing graph header`
             // placeholder. The legacy behaviour and its exact messages are
             // preserved unchanged for backward compatibility.
-            DiagramKind::Flowchart | DiagramKind::Unknown(_) => {
-                match parse_graph(src) {
-                    Ok(graph) => {
-                        let layout = lay_out(&graph);
-                        layout.blit_into(inner, buf, self.style, &self.theme);
-                    }
-                    Err(err) => {
-                        let msg = match err {
-                            MermaidError::MissingHeader => "[mermaid: missing graph header]",
-                            MermaidError::EmptyGraph => "[mermaid: empty graph]",
-                        };
-                        let style = self.style.patch(self.theme.placeholder);
-                        buf.set_str(Position::new(inner.x, inner.y), msg, style);
-                    }
+            DiagramKind::Flowchart | DiagramKind::Unknown(_) => match parse_graph(src) {
+                Ok(graph) => {
+                    let layout = lay_out(&graph);
+                    layout.blit_into(inner, buf, self.style, &self.theme);
                 }
-            }
+                Err(err) => {
+                    let msg = match err {
+                        MermaidError::MissingHeader => "[mermaid: missing graph header]",
+                        MermaidError::EmptyGraph => "[mermaid: empty graph]",
+                    };
+                    let style = self.style.patch(self.theme.placeholder);
+                    buf.set_str(Position::new(inner.x, inner.y), msg, style);
+                }
+            },
         }
     }
 }
@@ -900,7 +896,9 @@ pub(crate) fn diagram_placeholder(
     theme: &MermaidTheme,
 ) {
     let msg = format!("mermaid · {kind}: {note}");
-    let w = (msg.chars().count() as i32 + 4).min(area.width as i32).max(2);
+    let w = (msg.chars().count() as i32 + 4)
+        .min(area.width as i32)
+        .max(2);
     let h = 3.min(area.height as i32).max(1);
     let mut s = draw::Surface::new(w, h);
     let border = base.patch(theme.cluster);
