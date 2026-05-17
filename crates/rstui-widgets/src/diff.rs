@@ -1329,16 +1329,19 @@ fn intra_line_marks(rows: &[DiffRow]) -> Vec<Option<Vec<bool>>> {
             for k in 0..dels.min(adds) {
                 let di = del_start + k;
                 let ai = add_start + k;
+                // Nested `if` (not an `if let … && …` let-chain): let-chains
+                // only stabilized in Rust 1.88, but the workspace MSRV is 1.85
+                // (ADR 0003); the chain form was an msrv-gate regression.
                 if let (
                     Some(DiffRow::Body { content: d, .. }),
                     Some(DiffRow::Body { content: a, .. }),
                 ) = (rows.get(di), rows.get(ai))
-                    && d.len() <= INTRA_LINE_MAX
-                    && a.len() <= INTRA_LINE_MAX
                 {
-                    let (dm, am) = word_diff(d, a);
-                    marks[di] = Some(dm);
-                    marks[ai] = Some(am);
+                    if d.len() <= INTRA_LINE_MAX && a.len() <= INTRA_LINE_MAX {
+                        let (dm, am) = word_diff(d, a);
+                        marks[di] = Some(dm);
+                        marks[ai] = Some(am);
+                    }
                 }
             }
         }
