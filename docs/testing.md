@@ -109,6 +109,7 @@ gates (`vhs/e2e/*.tape` + `.expect`):
 |------|--------|-------------------|
 | `kitchen-sink-smoke` | the `rstui-kitchen-sink` binary | boots, key routing, chrome renders |
 | `text-input` | the `text_input_e2e` fixture | Left/Right/Backspace/Delete + `Ctrl+A`/`Ctrl+E` reach a `TextEdit` and assemble the exact final value/cursor |
+| `data-table` | the `data_table_e2e` fixture | keys drive sort → in-cell edit → commit → filter through `DataTableState` + the reducer `project()` pipeline + a borrowed `TextEdit` write-back to the exact final `STATE` |
 | `colour-lab` | the `rstui-kitchen-sink` binary | the Colour Lab paints and arrow keys move the 256-cube cursor |
 
 ### The deterministic E2E suites (layer 2, in the `test` gate)

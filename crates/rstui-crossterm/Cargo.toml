@@ -53,3 +53,13 @@ signal-hook = "0.3"
 # crossterm's `EventStream`. `default-features = false` keeps it to the
 # `Stream` adapters (no executor/io); the caller's tokio runtime drives it.
 futures-util = { version = "0.3", optional = true, default-features = false }
+
+[dev-dependencies]
+# Example-only (the `data_table_e2e` real-terminal VHS fixture). A
+# dev-dependency never enters this crate's *published* dependency graph, so
+# ADR 0001/0002 ("the backend crate's runtime deps stay minimal,
+# `rstui-core` stays dependency-free") is preserved — `text_input_e2e` is
+# still core-only. Acyclic: `rstui-widgets` depends only on `rstui-core`,
+# never on `rstui-crossterm`. `version` + `path` satisfy the
+# `crate_dep_versions_match_workspace` xtask guard.
+rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }

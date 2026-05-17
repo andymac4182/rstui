@@ -1,0 +1,12 @@
+# Required substrings in the final frame of data-table.tape.
+# `cargo xtask record e2e --check` fails if any is missing — i.e. a real
+# terminal failed to deliver the keys, or the sort/edit/commit/filter
+# pipeline (DataTableState + project() + the borrowed TextEdit write-back)
+# did not reach the rendered frame end to end.
+#
+# The exact assembled state after the scripted key sequence:
+STATE sort=0:asc filter=o group=none sel=1 edit=none commit=2,1=lead rows=2
+# The committed in-cell edit was written back into the data and rendered:
+lead
+# Sanity: the fixture's own title line rendered.
+rstui data-table e2e
