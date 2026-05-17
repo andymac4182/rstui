@@ -110,10 +110,12 @@ where
     Ok(())
 }
 
-/// The transport-selecting entry the reference plugins use: a `--ws <port>`
-/// CLI arg or `RSTUI_PLUGIN_WS=<port>` env var runs the WebSocket server;
-/// otherwise it serves over stdio. One binary, both transports — which is
-/// what the cross-runtime/transport profiling needs.
+/// The transport-selecting entry the reference plugins use. A
+/// `--shm <path>`, `--uds <path>`, or `--ws <port>` CLI arg (or the
+/// matching `RSTUI_PLUGIN_SHM`/`_UDS`/`_WS` env var) picks shared memory,
+/// a Unix socket, or a WebSocket; otherwise it serves over stdio. One
+/// binary, every transport — what the cross-runtime/transport profiling
+/// (and the latency-critical opt-in) needs.
 pub fn serve_auto<F>(handler: F)
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
@@ -125,6 +127,7 @@ where
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
+    let shm: Option<String> = arg_val("--shm").or_else(|| std::env::var("RSTUI_PLUGIN_SHM").ok());
     let uds: Option<String> = arg_val("--uds").or_else(|| std::env::var("RSTUI_PLUGIN_UDS").ok());
     let ws: Option<u16> = arg_val("--ws").and_then(|s| s.parse().ok()).or_else(|| {
         std::env::var("RSTUI_PLUGIN_WS")
@@ -134,10 +137,12 @@ where
     let lp = args.iter().any(|a| a == "--lp")
         || std::env::var("RSTUI_PLUGIN_LP").is_ok_and(|v| v != "0" && !v.is_empty());
 
-    // Precedence: Unix socket → websocket → stdio. `--lp` (length-prefixed
-    // binary framing) applies to the uds/stdio paths; websocket has its own
-    // RFC 6455 framing.
-    if let Some(path) = uds {
+    // Precedence: shared memory → Unix socket → websocket → stdio. `--lp`
+    // (length-prefixed binary framing) applies to the uds/stdio paths;
+    // websocket has its own RFC 6455 framing; shm frames via the ring.
+    if let Some(path) = shm {
+        let _ = serve_shm(&path, handler);
+    } else if let Some(path) = uds {
         let _ = serve_unix(&path, lp, handler);
     } else if let Some(port) = ws {
         let _ = serve_ws(("127.0.0.1", port), handler);
@@ -146,6 +151,41 @@ where
     } else {
         serve(handler);
     }
+}
+
+/// Runs a plugin over a **shared-memory** channel (ADR 0016): attaches to
+/// the segment at `path` (the host created it) and dispatches over a
+/// [`ShmTransport`](crate::transport::ShmTransport). The lowest-latency
+/// local transport — flat sub-µs RTT (scoped-spin/semaphore park) — but
+/// opt-in and **Rust-plugin-only** (no `mmap` from a Node addon-free SDK).
+///
+/// # Errors
+///
+/// Segment attach (`mmap` / semaphore) failure.
+pub fn serve_shm<F>(path: &str, handler: F) -> std::io::Result<()>
+where
+    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
+{
+    let chan = rstui_acp_shm::ShmChannel::open(path)?;
+    serve_over(crate::transport::ShmTransport::new(chan), handler);
+    Ok(())
+}
+
+/// [`serve_shm`] for a structured [`Plugin`].
+///
+/// # Errors
+///
+/// Segment attach failure.
+pub fn serve_plugin_shm<P: Plugin>(path: &str, mut plugin: P) -> std::io::Result<()> {
+    let chan = rstui_acp_shm::ShmChannel::open(path)?;
+    serve_over(
+        crate::transport::ShmTransport::new(chan),
+        move |event, emit| {
+            let mut host = Host { emit };
+            dispatch(&mut plugin, event, &mut host);
+        },
+    );
+    Ok(())
 }
 
 /// Runs a plugin as a WebSocket server: binds `addr`, accepts one client,

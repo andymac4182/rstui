@@ -176,3 +176,42 @@ impl Transport for StdioTransport {
         self.inner.send(msg)
     }
 }
+
+/// Shared-memory transport (ADR 0016): the same JSON-RPC [`Message`]
+/// carried over an [`rstui_acp_shm::ShmChannel`] (mmap SPSC ring,
+/// scoped-spin/semaphore park) instead of a pipe/socket. Framing is the
+/// ring itself, so each message is one `serde_json` encode/decode — no
+/// newline scan, no length prefix. All `unsafe` lives in `rstui-acp-shm`;
+/// this wrapper is `unsafe`-free.
+pub struct ShmTransport {
+    chan: rstui_acp_shm::ShmChannel,
+}
+
+impl ShmTransport {
+    /// Wraps an already-attached channel (plugin = [`ShmChannel::open`],
+    /// host = [`ShmChannel::create`]).
+    ///
+    /// [`ShmChannel::open`]: rstui_acp_shm::ShmChannel::open
+    /// [`ShmChannel::create`]: rstui_acp_shm::ShmChannel::create
+    #[must_use]
+    pub fn new(chan: rstui_acp_shm::ShmChannel) -> Self {
+        Self { chan }
+    }
+}
+
+impl Transport for ShmTransport {
+    fn recv(&mut self) -> io::Result<Option<Message>> {
+        match self.chan.recv()? {
+            None => Ok(None),
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+        }
+    }
+
+    fn send(&mut self, msg: &Message) -> io::Result<()> {
+        let body =
+            serde_json::to_vec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        self.chan.send(&body)
+    }
+}

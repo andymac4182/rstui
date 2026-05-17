@@ -740,6 +740,7 @@ dependencies = [
 name = "rstui-acp-plugin-sdk"
 version = "0.0.1"
 dependencies = [
+ "rstui-acp-shm",
  "serde",
  "serde_json",
 ]

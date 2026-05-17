@@ -28,9 +28,26 @@ const SHUTDOWN: &str = r#"{"jsonrpc":"2.0","method":"shutdown","params":{"type":
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("plugin") => run_plugin(args.next().as_deref() == Some("lp")),
+        Some("plugin") => match args.next().as_deref() {
+            Some("shm") => run_plugin_shm(&args.next().expect("shm path")),
+            Some("lp") => run_plugin(true),
+            _ => run_plugin(false),
+        },
         _ => run_host(),
     }
+}
+
+/// The plugin half over shared memory (ADR 0016) — the real SDK loop.
+fn run_plugin_shm(path: &str) {
+    use rstui_acp_plugin_sdk::{HostEvent, PluginAction};
+    let _ = rstui_acp_plugin_sdk::serve_shm(
+        path,
+        |ev: HostEvent, emit: &mut dyn FnMut(PluginAction)| {
+            if let HostEvent::Command { .. } = ev {
+                emit(PluginAction::Note { text: "x".into() });
+            }
+        },
+    );
 }
 
 /// The plugin half: the real SDK loop, answering each command with one note.
@@ -133,6 +150,46 @@ fn run_host() {
         );
 
         send(&mut win, lp, SHUTDOWN);
+        let _ = child.wait();
+    }
+
+    // Shared memory (ADR 0016): the host creates the segment and drives
+    // the channel directly — framing is the ring, the bytes are the
+    // JSON-RPC payload, no pipe in the path.
+    {
+        use rstui_acp_plugin_sdk::ShmChannel;
+        let path = format!("/tmp/rstui-rtt-shm-{}.bin", std::process::id());
+        let mut host = ShmChannel::create(&path).expect("shm create");
+        let mut child = Command::new(&exe)
+            .arg("plugin")
+            .arg("shm")
+            .arg(&path)
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn shm plugin");
+
+        host.send(INIT.as_bytes()).expect("send init");
+        host.recv().expect("recv").expect("ack");
+        for _ in 0..WARM {
+            host.send(CMD.as_bytes()).expect("send");
+            host.recv().expect("recv").expect("note");
+        }
+        let mut lat = Vec::with_capacity(ITERS);
+        for _ in 0..ITERS {
+            let t0 = Instant::now();
+            host.send(CMD.as_bytes()).expect("send");
+            host.recv().expect("recv").expect("note");
+            lat.push(t0.elapsed().as_nanos() as u64);
+        }
+        lat.sort_unstable();
+        println!(
+            "{:<10} {:>9.2} {:>9.2} {:>9.2}",
+            "shm",
+            lat[0] as f64 / 1000.0,
+            pct(&lat, 50),
+            pct(&lat, 95),
+        );
+        drop(host); // closes the segment → plugin recv → None → exits
         let _ = child.wait();
     }
 }

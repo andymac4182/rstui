@@ -25,3 +25,8 @@ serde = { version = "1", default-features = false, features = [
     "derive",
 ] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
+# Shared-memory transport (ADR 0016). All `unsafe` is contained in that
+# crate; the SDK stays `unsafe`-free. Non-optional: `libc` is already
+# universal in the graph and the opt-in is purely *runtime* (`--shm`),
+# so there is no feature matrix. publish=false sibling, no new licence.
+rstui-acp-shm = { path = "../rstui-acp-shm" }
