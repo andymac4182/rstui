@@ -105,6 +105,35 @@ use crate::block::Block;
 use crate::link::Link;
 use rstui_core::{Buffer, Color, Position, Rect, Style, Widget};
 
+// The flowchart renderer is the original implementation, kept verbatim in
+// this module. Every *other* Mermaid diagram type is a self-contained sibling
+// module that parses its own dialect and renders onto the shared
+// [`draw::Surface`]; the [`Mermaid`] widget dispatches on the header keyword
+// (see [`DiagramKind`]) so one widget renders any Mermaid source.
+mod draw;
+
+mod architecture;
+mod block_diagram;
+mod c4;
+mod class_diagram;
+mod er;
+mod gantt;
+mod gitgraph;
+mod journey;
+mod kanban;
+mod mindmap;
+mod packet;
+mod pie;
+mod quadrant;
+mod radar;
+mod requirement;
+mod sankey;
+mod sequence;
+mod state;
+mod timeline;
+mod xychart;
+mod zenuml;
+
 // ---------------------------------------------------------------------------
 // AST
 // ---------------------------------------------------------------------------
@@ -803,20 +832,206 @@ impl Widget for Mermaid<'_> {
         }
         buf.set_style(inner, self.style);
 
-        match parse_graph(self.source.as_ref()) {
-            Ok(graph) => {
-                let layout = lay_out(&graph);
-                layout.blit_into(inner, buf, self.style, &self.theme);
+        let src = self.source.as_ref();
+        match diagram_kind(src) {
+            DiagramKind::Sequence => sequence::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Class => class_diagram::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::State => state::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Er => er::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Journey => journey::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Gantt => gantt::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Pie => pie::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Quadrant => quadrant::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Requirement => {
+                requirement::render(src, inner, buf, self.style, &self.theme)
             }
-            Err(err) => {
-                let msg = match err {
-                    MermaidError::MissingHeader => "[mermaid: missing graph header]",
-                    MermaidError::EmptyGraph => "[mermaid: empty graph]",
-                };
-                let style = self.style.patch(self.theme.placeholder);
-                buf.set_str(Position::new(inner.x, inner.y), msg, style);
+            DiagramKind::GitGraph => gitgraph::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Mindmap => mindmap::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Timeline => timeline::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Sankey => sankey::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::XyChart => xychart::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Block => {
+                block_diagram::render(src, inner, buf, self.style, &self.theme)
+            }
+            DiagramKind::Packet => packet::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Kanban => kanban::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::Architecture => {
+                architecture::render(src, inner, buf, self.style, &self.theme)
+            }
+            DiagramKind::Radar => radar::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::C4 => c4::render(src, inner, buf, self.style, &self.theme),
+            DiagramKind::ZenUml => zenuml::render(src, inner, buf, self.style, &self.theme),
+            // Flowchart *and* an unrecognised header both take the original
+            // path verbatim: a real `graph`/`flowchart` lays out, anything
+            // else yields the long-standing `missing graph header`
+            // placeholder. The legacy behaviour and its exact messages are
+            // preserved unchanged for backward compatibility.
+            DiagramKind::Flowchart | DiagramKind::Unknown(_) => {
+                match parse_graph(src) {
+                    Ok(graph) => {
+                        let layout = lay_out(&graph);
+                        layout.blit_into(inner, buf, self.style, &self.theme);
+                    }
+                    Err(err) => {
+                        let msg = match err {
+                            MermaidError::MissingHeader => "[mermaid: missing graph header]",
+                            MermaidError::EmptyGraph => "[mermaid: empty graph]",
+                        };
+                        let style = self.style.patch(self.theme.placeholder);
+                        buf.set_str(Position::new(inner.x, inner.y), msg, style);
+                    }
+                }
             }
         }
+    }
+}
+
+/// Draws a centred, framed `[mermaid: <note>]` message — the shared fallback
+/// every non-flowchart renderer uses when its source has nothing parseable
+/// (or while a renderer is a stub), so a bad diagram is an honest, legible
+/// box rather than a blank area or a panic. `kind` is the diagram label,
+/// `note` the short reason (e.g. `"no data"`).
+pub(crate) fn diagram_placeholder(
+    kind: &str,
+    note: &str,
+    area: Rect,
+    buf: &mut Buffer,
+    base: Style,
+    theme: &MermaidTheme,
+) {
+    let msg = format!("mermaid · {kind}: {note}");
+    let w = (msg.chars().count() as i32 + 4).min(area.width as i32).max(2);
+    let h = 3.min(area.height as i32).max(1);
+    let mut s = draw::Surface::new(w, h);
+    let border = base.patch(theme.cluster);
+    let text = base.patch(theme.placeholder);
+    if h >= 3 && w >= 4 {
+        s.labeled_box(0, 0, w, h, draw::BoxStyle::Round, &msg, border, text);
+    } else {
+        s.text_clipped(0, 0, &msg, w, text);
+    }
+    s.blit(area, buf, base);
+}
+
+// ---------------------------------------------------------------------------
+// Diagram-type dispatch
+// ---------------------------------------------------------------------------
+
+/// Which Mermaid diagram a source declares.
+///
+/// Detected from the first significant line's leading keyword after skipping
+/// blank lines, `%%` comments / `%%{init}%%` directives, and an optional
+/// leading `--- … ---` YAML frontmatter block — the same preamble Mermaid
+/// itself tolerates. Drives the [`Mermaid`] widget's per-type render
+/// dispatch; [`Unknown`](Self::Unknown) falls through to the original
+/// flowchart path so its long-standing placeholder text is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DiagramKind {
+    /// `graph` / `flowchart` — the original box-and-arrow renderer.
+    Flowchart,
+    /// `sequenceDiagram`.
+    Sequence,
+    /// `classDiagram` (and `classDiagram-v2`).
+    Class,
+    /// `stateDiagram` (and `stateDiagram-v2`).
+    State,
+    /// `erDiagram`.
+    Er,
+    /// `journey`.
+    Journey,
+    /// `gantt`.
+    Gantt,
+    /// `pie`.
+    Pie,
+    /// `quadrantChart`.
+    Quadrant,
+    /// `requirementDiagram`.
+    Requirement,
+    /// `gitGraph`.
+    GitGraph,
+    /// `mindmap`.
+    Mindmap,
+    /// `timeline`.
+    Timeline,
+    /// `sankey-beta`.
+    Sankey,
+    /// `xychart-beta`.
+    XyChart,
+    /// `block-beta`.
+    Block,
+    /// `packet-beta` / `packet`.
+    Packet,
+    /// `kanban`.
+    Kanban,
+    /// `architecture-beta`.
+    Architecture,
+    /// `radar-beta` / `radar`.
+    Radar,
+    /// `C4Context` / `C4Container` / `C4Component` / `C4Dynamic` /
+    /// `C4Deployment`.
+    C4,
+    /// `zenuml`.
+    ZenUml,
+    /// A header we do not recognise — routed through the legacy flowchart
+    /// path so the existing `missing graph header` placeholder is preserved.
+    Unknown(String),
+}
+
+/// Detects the [`DiagramKind`] of `src`: skip blanks, `%%` comment/directive
+/// lines, and an optional leading `--- … ---` frontmatter block, then match
+/// the first significant line's leading keyword.
+fn diagram_kind(src: &str) -> DiagramKind {
+    let mut lines = src
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .map(strip_comment)
+        .map(str::trim)
+        .filter(|l| !l.is_empty());
+
+    let Some(mut first) = lines.next() else {
+        return DiagramKind::Unknown(String::new());
+    };
+    // An optional YAML frontmatter block (`---` … `---`) precedes the header.
+    if first == "---" {
+        for l in lines.by_ref() {
+            if l == "---" {
+                break;
+            }
+        }
+        let Some(next) = lines.next() else {
+            return DiagramKind::Unknown(String::new());
+        };
+        first = next;
+    }
+
+    let word: String = first
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != ':' && *c != '{')
+        .collect();
+    match word.as_str() {
+        "graph" | "flowchart" => DiagramKind::Flowchart,
+        "sequenceDiagram" => DiagramKind::Sequence,
+        w if w.starts_with("classDiagram") => DiagramKind::Class,
+        w if w.starts_with("stateDiagram") => DiagramKind::State,
+        "erDiagram" => DiagramKind::Er,
+        "journey" => DiagramKind::Journey,
+        "gantt" => DiagramKind::Gantt,
+        "pie" => DiagramKind::Pie,
+        "quadrantChart" => DiagramKind::Quadrant,
+        "requirementDiagram" => DiagramKind::Requirement,
+        "gitGraph" => DiagramKind::GitGraph,
+        "mindmap" => DiagramKind::Mindmap,
+        "timeline" => DiagramKind::Timeline,
+        "sankey-beta" | "sankey" => DiagramKind::Sankey,
+        "xychart-beta" | "xychart" => DiagramKind::XyChart,
+        "block-beta" | "block" => DiagramKind::Block,
+        "packet-beta" | "packet" => DiagramKind::Packet,
+        "kanban" => DiagramKind::Kanban,
+        "architecture-beta" | "architecture" => DiagramKind::Architecture,
+        "radar-beta" | "radar" => DiagramKind::Radar,
+        w if w.starts_with("C4") => DiagramKind::C4,
+        "zenuml" => DiagramKind::ZenUml,
+        other => DiagramKind::Unknown(other.to_owned()),
     }
 }
 
