@@ -56,6 +56,11 @@
 //!   stores and `update` mutates (clamp, scroll-by, sticky-bottom-while-
 //!   streaming, scroll-into-view) that a `ScrollView` projects
 //!   ([ADR 0012](https://github.com/andymac4182/rstui/blob/main/docs/adr/0012-widget-composition-and-layout-model.md) §P0).
+//! - [`selection`]: the optional, caller-owned text-selection model —
+//!   [`Selection`] (a row-major terminal-stream span over content
+//!   coordinates) plus [`selected_text`], a pure, total projection the app
+//!   stores and `update` mutates on drag; widgets read `contains` and the
+//!   app extracts the copied text (ADR 0012 §P1).
 //!
 //! Keeping these pieces dependency-free and panic-light makes them trivial to
 //! unit test without a real terminal, which is the property the rest of the
@@ -87,6 +92,7 @@ pub mod focus;
 pub mod geometry;
 pub mod layout;
 pub mod scroll;
+pub mod selection;
 pub mod style;
 pub mod stylize;
 pub mod terminal;
@@ -105,6 +111,7 @@ pub use focus::{FocusId, FocusRing};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Alignment, Constraint, Direction, Layout};
 pub use scroll::ScrollState;
+pub use selection::{Selection, selected_text};
 pub use style::{Color, Modifier, Style};
 pub use stylize::{Styled, Stylize};
 pub use terminal::{CompletedFrame, Frame, Terminal};

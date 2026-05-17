@@ -190,6 +190,14 @@
 //! - [`date_picker`]: [`DatePicker`] — a closed field that drops an opaque
 //!   anchored [`Calendar`] panel (the [`Select`] anchored-panel idiom,
 //!   self-contained); caller-owned open/selected day numbers, no date math.
+//! - [`extmark`]: [`Extmark`] — a caller-owned `(range, Style, atomic)`
+//!   overlay [`Editor`]/[`Input`] project as styled, optionally cursor-atomic
+//!   "pills" (@-mention/paste chips); the reducer owns and re-derives the
+//!   ranges, the widget only reads (ADR 0012 §P1).
+//! - [`line_number_gutter`]: [`LineNumberGutter`] — a pure layout widget
+//!   drawing a numeric (+ optional per-row sign) gutter and exposing the
+//!   inner content [`Rect`](rstui_core::Rect) (the [`Block::inner`](block::Block::inner)
+//!   pattern), for code/diff/editor panes.
 //!
 //! # Example
 //!
@@ -224,12 +232,14 @@ pub mod diff;
 pub mod divider;
 pub mod drawer;
 pub mod editor;
+pub mod extmark;
 pub mod form;
 pub mod gauge;
 pub mod grid;
 pub mod help_overlay;
 pub mod input;
 pub mod kbd;
+pub mod line_number_gutter;
 pub mod link;
 pub mod list;
 pub mod markdown;
@@ -274,9 +284,11 @@ pub use description_list::{DescriptionList, DescriptionRow};
 pub use diff::{Diff, DiffLayout, DiffTheme};
 pub use divider::{Divider, DividerOrientation};
 pub use editor::Editor;
+pub use extmark::Extmark;
 pub use form::{Form, FormField};
 pub use gauge::Gauge;
 pub use input::Input;
+pub use line_number_gutter::LineNumberGutter;
 pub use link::{Link, LinkActivation};
 pub use list::{List, ListItem};
 pub use markdown::{LinkRegion, Markdown, MarkdownTheme};

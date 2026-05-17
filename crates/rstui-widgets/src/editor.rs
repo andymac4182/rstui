@@ -70,6 +70,7 @@
 use std::borrow::Cow;
 
 use crate::block::Block;
+use crate::extmark::{self, Extmark};
 use rstui_core::{Buffer, Modifier, Position, Rect, Style, TextArea, Widget};
 
 /// A multi-line text-entry panel rendered as a pure projection of a
@@ -85,6 +86,13 @@ use rstui_core::{Buffer, Modifier, Position, Rect, Style, TextArea, Widget};
 /// [`cursor_style`](Self::cursor_style). When the document is empty an
 /// optional [`placeholder`](Self::placeholder) hint is shown on the first
 /// row, styled with [`placeholder_style`](Self::placeholder_style).
+///
+/// Caller-owned [`extmarks`](Self::extmarks) (the @-mention / pasted-file
+/// "pill" model) patch their [`Style`] over the cells in their character
+/// range — a **flattened** char index into the document (rows joined by
+/// `'\n'`, so a pill may span a line break), cascading **base → focus →
+/// extmark → caret**. The reducer owns and re-derives the list on every edit;
+/// the widget only projects it (see the [`Extmark`] docs).
 ///
 /// # Example
 ///
@@ -111,6 +119,7 @@ pub struct Editor<'a> {
     model: &'a TextArea,
     focused: bool,
     scroll: (usize, usize),
+    extmarks: &'a [Extmark],
     block: Option<Block<'a>>,
     style: Style,
     focus_style: Style,
@@ -128,6 +137,7 @@ impl<'a> Editor<'a> {
             model,
             focused: false,
             scroll: (0, 0),
+            extmarks: &[],
             block: None,
             style: Style::new(),
             focus_style: Style::new(),
@@ -158,6 +168,34 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn scroll(mut self, scroll: (usize, usize)) -> Self {
         self.scroll = scroll;
+        self
+    }
+
+    /// Sets the caller-owned [`Extmark`] list — styled (optionally atomic)
+    /// character ranges patched over the document (@-mention / pasted-file
+    /// pills). The range is a **flattened** char index (rows joined by
+    /// `'\n'`), so a pill may cross a line break. The reducer owns the slice
+    /// and re-derives it on every edit; the widget only reads it and never
+    /// enforces atomicity (that is the reducer's cursor-stepping job — see the
+    /// [`Extmark`] docs). Empty, reversed, overlapping, and out-of-range
+    /// ranges are all total.
+    ///
+    /// ```
+    /// use rstui_core::{Buffer, Color, Position, Rect, Style, TextArea, Widget};
+    /// use rstui_widgets::{Editor, Extmark};
+    ///
+    /// let doc = TextArea::from_value("hi @ada\nbye");
+    /// // Flattened char index: '@' is char 3 of "hi @ada\nbye".
+    /// let marks = [Extmark::pill(3..7, Style::new().bg(Color::Blue))];
+    /// let mut buf = Buffer::empty(Rect::new(0, 0, 7, 2));
+    /// Editor::new(&doc).extmarks(&marks).render(buf.area(), &mut buf);
+    ///
+    /// assert_eq!(buf.get(Position::new(3, 0)).unwrap().bg, Color::Blue);
+    /// assert_eq!(buf.get(Position::new(0, 0)).unwrap().bg, Color::Reset);
+    /// ```
+    #[must_use]
+    pub fn extmarks(mut self, extmarks: &'a [Extmark]) -> Self {
+        self.extmarks = extmarks;
         self
     }
 
@@ -267,6 +305,7 @@ impl Widget for Editor<'_> {
             model,
             focused,
             scroll,
+            extmarks,
             block,
             style,
             focus_style,
@@ -329,7 +368,18 @@ impl Widget for Editor<'_> {
         // Stamp the visible window: rows [row_off, row_off + height), each
         // clipped to columns [col_off, col_off + width). A row or column
         // past the document is simply blank (the base fill), never a panic.
+        //
+        // `flat` is the character index into the flattened document (rows
+        // joined by '\n', exactly TextArea::to_string()), which is what an
+        // extmark range is addressed in. It starts at the first visible row's
+        // offset (chars + 1 newline per skipped row) and advances one logical
+        // line — including its newline — each iteration.
         let lines = model.lines();
+        let mut flat = lines
+            .iter()
+            .take(row_off)
+            .map(|l| l.chars().count() + 1)
+            .sum::<usize>();
         for screen_row in 0..inner.height {
             let doc_row = row_off + screen_row as usize;
             let Some(line) = lines.get(doc_row) else {
@@ -337,13 +387,16 @@ impl Widget for Editor<'_> {
             };
             let y = top.saturating_add(screen_row);
             let mut x = left;
-            for ch in line.chars().skip(col_off) {
+            for (col, ch) in line.chars().enumerate().skip(col_off) {
                 if x >= right {
                     break;
                 }
-                buf.set_cell(Position::new(x, y), ch, base);
+                // Cascade: base/focus fill → extmark pill at this flat index.
+                let cell = extmark::patch_at(base, extmarks, flat + col);
+                buf.set_cell(Position::new(x, y), ch, cell);
                 x = x.saturating_add(1);
             }
+            flat += line.chars().count() + 1;
         }
 
         // The caret: translate the model cursor to a screen cell. If it is
@@ -359,10 +412,19 @@ impl Widget for Editor<'_> {
                         .get(cur_row)
                         .and_then(|l| l.chars().nth(cur_col))
                         .unwrap_or(' ');
+                    // Flatten the (row, col) cursor the same way the body
+                    // does, so an extmark under the caret cascades beneath it.
+                    let cur_flat = lines
+                        .iter()
+                        .take(cur_row)
+                        .map(|l| l.chars().count() + 1)
+                        .sum::<usize>()
+                        + cur_col;
+                    let under = extmark::patch_at(base, extmarks, cur_flat);
                     buf.set_cell(
                         Position::new(sx as u16, sy as u16),
                         glyph,
-                        base.patch(cursor_style),
+                        under.patch(cursor_style),
                     );
                 }
             }
@@ -631,5 +693,200 @@ mod tests {
         assert_eq!(caret.symbol, '日');
         assert!(caret.modifier.contains(Modifier::REVERSED));
         assert_eq!(buf.get(Position::new(2, 0)).unwrap().symbol, 'x');
+    }
+
+    fn bg(buf: &Buffer, x: u16, y: u16) -> Color {
+        buf.get(Position::new(x, y)).unwrap().bg
+    }
+
+    #[test]
+    fn an_extmark_patches_a_single_line_char_range() {
+        let model = TextArea::from_value("hi @ada");
+        let marks = [Extmark::pill(3..7, Style::new().bg(Color::Blue))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        for x in 0..3 {
+            assert_eq!(bg(&buf, x, 0), Color::Reset);
+        }
+        for x in 3..7 {
+            assert_eq!(bg(&buf, x, 0), Color::Blue);
+        }
+    }
+
+    #[test]
+    fn an_extmark_spans_a_newline_in_the_flattened_index() {
+        // "ab\ncd": flat indices a=0 b=1 '\n'=2 c=3 d=4. A pill 1..4 covers
+        // 'b' (row 0, col 1) and 'c' (row 1, col 0) — across the line break.
+        let model = TextArea::from_value("ab\ncd");
+        let marks = [Extmark::new(1..4, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 2));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(bg(&buf, 0, 0), Color::Reset); // 'a'
+        assert_eq!(bg(&buf, 1, 0), Color::Red); // 'b'
+        assert_eq!(bg(&buf, 0, 1), Color::Red); // 'c'
+        assert_eq!(bg(&buf, 1, 1), Color::Reset); // 'd'
+    }
+
+    #[test]
+    fn multiple_extmarks_each_apply() {
+        let model = TextArea::from_value("abcd\nefgh");
+        let marks = [
+            Extmark::new(0..2, Style::new().bg(Color::Red)),
+            // flat: e=5 f=6 g=7 → 6..8 covers 'f','g' on row 1.
+            Extmark::new(6..8, Style::new().bg(Color::Green)),
+        ];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(bg(&buf, 0, 0), Color::Red);
+        assert_eq!(bg(&buf, 1, 0), Color::Red);
+        assert_eq!(bg(&buf, 1, 1), Color::Green); // 'f'
+        assert_eq!(bg(&buf, 2, 1), Color::Green); // 'g'
+        assert_eq!(bg(&buf, 0, 1), Color::Reset); // 'e'
+    }
+
+    #[test]
+    fn overlapping_extmarks_cascade_last_wins() {
+        let model = TextArea::from_value("abcdef");
+        let marks = [
+            Extmark::new(0..6, Style::new().bg(Color::Red)),
+            Extmark::new(2..4, Style::new().bg(Color::Blue)),
+        ];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(bg(&buf, 1, 0), Color::Red);
+        assert_eq!(bg(&buf, 2, 0), Color::Blue); // later mark wins
+        assert_eq!(bg(&buf, 4, 0), Color::Red);
+    }
+
+    #[test]
+    fn an_out_of_range_extmark_is_a_total_no_op() {
+        let model = TextArea::from_value("abc\ndef");
+        let marks = [Extmark::new(100..200, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        for y in 0..2 {
+            for x in 0..4 {
+                assert_eq!(bg(&buf, x, y), Color::Reset);
+            }
+        }
+    }
+
+    #[test]
+    // Reversed/empty ranges are exactly what this totality test feeds in.
+    #[allow(clippy::reversed_empty_ranges)]
+    fn empty_and_reversed_ranges_paint_nothing() {
+        let model = TextArea::from_value("abcdef");
+        let marks = [
+            Extmark::new(3..3, Style::new().bg(Color::Red)),
+            Extmark::new(5..2, Style::new().bg(Color::Green)),
+        ];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        for x in 0..6 {
+            assert_eq!(bg(&buf, x, 0), Color::Reset);
+        }
+    }
+
+    #[test]
+    fn the_caret_wins_over_an_extmark_under_it() {
+        let mut model = TextArea::from_value("abc\ndef");
+        model.set_cursor(1, 1); // 'e', flat index 5
+        let marks = [Extmark::new(0..9, Style::new().bg(Color::Blue))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        Editor::new(&model)
+            .focused(true)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        let caret = buf.get(Position::new(1, 1)).unwrap();
+        assert_eq!(caret.symbol, 'e');
+        assert_eq!(caret.bg, Color::Blue); // extmark cascades under…
+        assert!(caret.modifier.contains(Modifier::REVERSED)); // …the caret
+    }
+
+    #[test]
+    fn an_extmark_maps_through_2d_scroll() {
+        // Skip the first row and the first two columns; the pill is addressed
+        // in flat document indices regardless of the viewport.
+        let model = TextArea::from_value("row0\nrow1\nrow2");
+        // flat: r=0..3 '\n'=4 r=5 o=6 w=7 1=8 → "row1" is 5..9.
+        let marks = [Extmark::pill(5..9, Style::new().bg(Color::Blue))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 2));
+        Editor::new(&model)
+            .scroll((1, 2))
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        // Row 1 ("row1") is the first visible row; cols 2.. → "w1".
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 'w');
+        assert_eq!(bg(&buf, 0, 0), Color::Blue); // 'w' (flat 7)
+        assert_eq!(bg(&buf, 1, 0), Color::Blue); // '1' (flat 8)
+    }
+
+    #[test]
+    fn an_extmark_over_a_multibyte_line_is_char_indexed() {
+        let model = TextArea::from_value("é日x\nynext");
+        let marks = [Extmark::new(1..2, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 2));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(1, 0)).unwrap().symbol, '日');
+        assert_eq!(bg(&buf, 0, 0), Color::Reset); // 'é'
+        assert_eq!(bg(&buf, 1, 0), Color::Red); // '日'
+        assert_eq!(bg(&buf, 2, 0), Color::Reset); // 'x'
+    }
+
+    #[test]
+    fn zero_area_with_extmarks_is_a_no_op() {
+        let model = TextArea::from_value("hello\nworld");
+        let marks = [Extmark::new(0..11, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 2));
+        Editor::new(&model)
+            .extmarks(&marks)
+            .render(Rect::new(0, 0, 0, 0), &mut buf);
+        assert!(buf.cells().iter().all(|c| c.bg == Color::Reset));
+    }
+
+    #[test]
+    fn an_empty_model_with_extmarks_leaves_the_placeholder_untinted() {
+        let model = TextArea::new();
+        let marks = [Extmark::new(0..5, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 2));
+        Editor::new(&model)
+            .placeholder("type…")
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 't');
+        for y in 0..2 {
+            for x in 0..6 {
+                assert_eq!(bg(&buf, x, y), Color::Reset);
+            }
+        }
+    }
+
+    #[test]
+    fn extmarks_project_independently_of_focus_and_compose_with_the_block() {
+        let model = TextArea::from_value("hi");
+        let marks = [Extmark::new(0..2, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 3));
+        // Unfocused + framed: the pill still renders inside the block's inner.
+        Editor::new(&model)
+            .block(Block::bordered())
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(1, 1)).unwrap().symbol, 'h');
+        assert_eq!(bg(&buf, 1, 1), Color::Red);
+        assert_eq!(bg(&buf, 2, 1), Color::Red);
     }
 }
