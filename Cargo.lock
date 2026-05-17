@@ -756,6 +756,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-kitchen-sink"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+ "rstui-crossterm",
+ "rstui-runtime",
+ "rstui-widgets",
+]
+
+[[package]]
 name = "rstui-plugin-host"
 version = "0.0.1"
 
