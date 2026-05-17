@@ -85,26 +85,61 @@ validation path for each change.
 > (which never toggle focus) would not catch. This is exactly why MD-1 is
 > an ADR-gated architectural change, not a byte-identical one-shot.
 >
-> **~29 measured, gate-green slices total** (the byte-identical set + the
-> complete additive bench + APP-1's generous cap). **The remainder is now
-> empirically ranked, not just risk-classified** — none a quick
-> byte-identical slice:
-> - **Tier-2 architectural — now headed by MD-1** (`Markdown` cache:
->   ~1.49 ms→~visible-rows; the #1 remaining win by 100×), then
->   `Diff`/`Mermaid` re-parse, `Paragraph`/`Toast` PG-2; a dedicated
->   multi-slice, API-additive/-breaking, ADR-gated program: caller-owned
->   cached layout models for `Markdown`/`Diff`/`Mermaid` re-parse,
->   `Paragraph`/`Toast` PG-2 single-source count-only path, borrowed
->   `List`/`Table`/`Stepper`/`Tabs` constructors, plugin-host PROTO-3 `Cow`
->   payload, acp-client UI-1/UI-2 per-`Entry` render memo.
-> - **Behaviorally non-identical** (the byte-identical gate can't validate
->   these — each needs a behavioral/design decision, possibly an ADR):
->   `table` T3/T5 (col-count / proportional widths from the visible window
->   vs all rows — changes column widths on scroll), acp-client **APP-1**
->   (transcript cap — visible history truncation).
-> - **Risky / involved**: Batch E **CM-3** (subtle 2-D `TextArea`
->   `line_lens` cache — corrupts editing if it ever desyncs), acp-client
->   **DRV-1/2** (typed `sacp` notification rework).
+> **~31 measured, gate-green slices total** (the byte-identical set + the
+> complete additive bench + APP-1's generous cap + **DRV-1** and **PG-2**,
+> landed `e0ca4ad`/`3a2a9a4`). **The remainder is now empirically ranked,
+> not just risk-classified** — and each is gated by a *concrete,
+> code-grounded barrier the `cargo xtask ci` gate cannot clear*, not by
+> effort:
+> - **PG-2 — DONE (`3a2a9a4`).** Re-classified out of Tier-2: a count-only
+>   path needed *no* API change. `Paragraph::line_count` now calls
+>   `count_rows` (a line-for-line transliteration of
+>   `compose_rows`/`wrap_cells`/`flush_row` with the per-row cell `Vec`
+>   replaced by a `usize`); an exhaustive matrix test (15 texts × 3 wraps ×
+>   10 widths) gate-enforces `== compose_rows(.., usize::MAX).len()`
+>   exactly. Toast/DescriptionList no longer compose twice/frame.
+> - **DRV-1 — DONE (`e0ca4ad`).** `summarize_update` matches the typed
+>   `SessionUpdate` enum directly for exactly `ContentBlock::Text`
+>   `AgentMessageChunk`/`AgentThoughtChunk` (the per-token hot path);
+>   every other content/variant **falls through to the unchanged
+>   `serde_json` path** — safe by construction, behaviour-identical for
+>   the replaced case. **DRV-2 — intentionally NOT converted:**
+>   `describe_permission` is a *cold* path (human-gated permission
+>   prompts, not per-token) and its doc comment documents the JSON
+>   indirection as a deliberate schema-resilience choice; a typed rewrite
+>   is a behaviour-risk change against documented design intent for zero
+>   measurable hot-path benefit. The analysis *is* the deliverable: don't.
+> - **Tier-2 architectural — headed by MD-1** (`Markdown` cache:
+>   ~1.49 ms→~visible; #1 by 100×), then `Diff`/`Mermaid` re-parse,
+>   borrowed `List`/`Table`/`Stepper`/`Tabs` constructors, plugin-host
+>   PROTO-3 `Cow` payload, acp-client UI-1/UI-2 per-`Entry` memo.
+>   **MD-1's concrete barrier:** it adds a *public* `MarkdownDoc` type
+>   (hard to reverse — semver surface) **and** the gate is provably
+>   insufficient for its known failure mode — `blocks_into` keys on
+>   `focused_link`+`theme`, so a stale-link-highlight regression only
+>   manifests when focus *changes between frames* against a cached doc, a
+>   stateful interaction the static markdown snapshots (fixed
+>   `focused_link`) never exercise. Plan prescribes an ADR note.
+> - **`List`-API-coupled**: **SB-1/MENU-1/CP-1** build all-N rows then
+>   hand the whole `Vec` to `List`, which clips internally. Pre-windowing
+>   in the widget would duplicate `List`'s scroll/selection/highlight-bar
+>   index math (off-by-one risk the snapshots may not fully cover);
+>   correctly sequenced *after* the Tier-2 `List` borrowed/windowed
+>   constructor (LIST-1), not doable in isolation safely.
+> - **Design decision the gate cannot adjudicate**: `table` T3/T5
+>   (col-count / proportional widths from the visible window vs all rows).
+>   Both scans are inherently "all rows" — any bound *is* an output
+>   change, so there is no behaviour-preserving subset. Worse, windowing
+>   `col_count` makes the **column count change mid-scroll**; whether that
+>   jitter is acceptable is a UX/design call the snapshot gate cannot
+>   make — it records whatever is chosen, right or wrong. acp-client
+>   **APP-1** (transcript cap — visible history truncation) is the same
+>   class.
+> - **Highest silent-corruption surface**: Batch E **CM-3** (`TextArea`
+>   `line_lens` parallel cache across ~10 distinct `lines` mutation sites;
+>   a desync on a rare op interleaving ships silent editing corruption,
+>   and the target cost is already viewport/line-bounded in practice —
+>   the `Editor` windows to visible rows).
 > - **Additive infra**: Batch J bench scenarios (`view→diff→flush`,
 >   per-widget, edit) + alloc counter — substantial, drives the runtime
 >   loop.
