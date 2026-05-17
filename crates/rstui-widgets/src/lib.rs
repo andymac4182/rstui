@@ -86,6 +86,13 @@
 //! - [`mermaid`]: [`Mermaid`] — a narrow Mermaid flowchart subset parsed to a
 //!   public AST ([`mermaid::MermaidGraph`]) and laid out as a deterministic
 //!   Unicode box-and-arrow diagram.
+//! - [`structurizr`]: [`Structurizr`] — a [Structurizr
+//!   DSL](https://docs.structurizr.com/dsl) workspace parsed to a public C4
+//!   model AST ([`structurizr::Workspace`]) and laid out as a deterministic
+//!   C4 view (System Landscape / Context / Container / Component /
+//!   Deployment) with stereotyped element cards, boundary boxes, and labelled
+//!   relationship arrows. A separate diagramming language from Mermaid, so a
+//!   separate widget.
 //! - [`modal`]: [`Modal`] — a centred, **opaque**, optionally-[`Block`]-framed
 //!   dialog over an overlay area; the visual half of the
 //!   [`FocusRing`](rstui_core::FocusRing) scope-stack modal model (ADR 0004
@@ -323,6 +330,9 @@ pub mod command_palette;
 pub mod data_table;
 pub mod date_picker;
 pub mod description_list;
+/// The shared diagram drawing surface reused by the Mermaid and Structurizr
+/// renderers. Crate-internal, not part of the public API.
+mod diagram;
 pub mod diff;
 pub mod divider;
 pub mod drawer;
@@ -373,6 +383,7 @@ pub mod stacked_bar_chart;
 pub mod stat_panel;
 pub mod status_bar;
 pub mod stepper;
+pub mod structurizr;
 pub mod switch;
 pub mod table;
 pub mod tabs;
@@ -452,6 +463,7 @@ pub use split_pane::SplitPane;
 pub use stat_panel::{StatPanel, Trend};
 pub use status_bar::StatusBar;
 pub use stepper::{Step, Stepper, StepperOrientation};
+pub use structurizr::{Structurizr, StructurizrError, StructurizrTheme};
 pub use switch::Switch;
 pub use table::{Row, Table, TableColumnFit};
 pub use tabs::Tabs;

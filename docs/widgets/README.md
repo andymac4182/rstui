@@ -30,7 +30,7 @@ caller-owned state it projects — this is the part that matters most), the
 | Family | Widgets | Reference |
 |--------|---------|-----------|
 | **Core set** | Block, Paragraph, List, Tabs, Gauge, Scrollbar, Spinner, FpsCounter, Table, Checkbox, Button, Radio, Input, Modal, StatusBar, Toast, Tree, Select, Editor | [core-set.md](core-set.md) |
-| **Rich rendering** | Markdown, Link, Diff, Mermaid, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
+| **Rich rendering** | Markdown, Link, Diff, Mermaid, Structurizr, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
 | **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider, DataTable | [forms-and-data.md](forms-and-data.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
 | **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, KeymapView, Flow | [overlays-and-control.md](overlays-and-control.md) |
@@ -112,6 +112,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [StatPanel](observability.md#statpanel) | observability | `stat_panel_demo` |
 | [StatusBar](core-set.md#statusbar) | core | `status_bar_demo` |
 | [Stepper](navigation-and-layout.md#stepper) | nav/layout | `stepper_demo` |
+| [Structurizr](rich-rendering.md#structurizr) | rich | `structurizr_demo` |
 | [Switch](forms-and-data.md#switch) | forms/data | `switch_demo` |
 | [Table](core-set.md#table) | core | `table_demo` |
 | [Tabs](core-set.md#tabs) | core | `tabs_demo` |

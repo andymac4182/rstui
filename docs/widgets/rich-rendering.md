@@ -98,6 +98,38 @@ Mermaid::new(src: &str)
 
 ---
 
+## Structurizr
+
+![Structurizr demo](media/structurizr_demo.gif)
+
+A read-only [Structurizr DSL](https://docs.structurizr.com/dsl/language)
+view: parses a real subset of the C4-model DSL (`workspace` → `model` of
+`person`/`softwareSystem`/nested `container`/`component` + `->`
+relationships, and `views`) and lays out the selected view as a
+**deterministic** C4 diagram — stereotyped element cards, a dashed boundary
+box around a system's containers, and labelled relationship arrows, with a
+`‹ k/n ›` view pager. A *separate* diagramming language from
+[Mermaid](#mermaid), so a separate widget; the two share one internal
+drawing surface (`crate::diagram`) rather than reinventing rasterisation.
+Hand-written brace/quote/comment-aware parser, zero new dependencies,
+lenient (an unparseable line is skipped, never a panic).
+
+- **Companion types:** `StructurizrError`, `StructurizrTheme`, `Workspace`
+  (C4 model AST: `Element`/`ElementKind`/`Relationship`/`View`/`ViewKind`)
+- **State model:** pure projection of caller-owned DSL source + an optional
+  selected view index.
+
+```rust
+Structurizr::new(src: &str)
+.block(Block) .style(Style) .theme(StructurizrTheme)
+.view(index: usize)            // select/page a view (wraps)
+Structurizr::parse(src) -> Result<Workspace, StructurizrError>
+```
+
+**Demo:** `cargo run -p rstui-widgets --example structurizr_demo`
+
+---
+
 ## Extmark
 
 ![Extmark demo](media/extmark_demo.gif)
