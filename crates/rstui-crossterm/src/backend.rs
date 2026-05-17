@@ -178,17 +178,20 @@ impl<W: Write> Backend for CrosstermBackend<W> {
                 write_modifier_diff(modifier, cell.modifier, &mut self.writer)?;
                 modifier = cell.modifier;
             }
-            if cell.fg != fg || cell.bg != bg {
-                // Degrade to the terminal's real fidelity before mapping, so
-                // a truecolor theme on a 256/16-colour terminal emits an
-                // index it can render instead of an ignored `38;2`.
-                let colors = CtColors::new(
-                    to_crossterm_color(cell.fg.degrade(level)),
-                    to_crossterm_color(cell.bg.degrade(level)),
-                );
+            // Degrade to the terminal's real fidelity *first*, then run the
+            // running-state minimisation on the degraded colour. Tracking the
+            // pre-degrade colour would re-emit an escape whenever the logical
+            // colour changed even if both map to the same on-wire colour —
+            // e.g. at `NoColor` every colour change would emit a redundant
+            // `SetColors(Reset, Reset)`. Minimising on what is actually
+            // written is both fewer bytes and the correct invariant.
+            let dfg = cell.fg.degrade(level);
+            let dbg = cell.bg.degrade(level);
+            if dfg != fg || dbg != bg {
+                let colors = CtColors::new(to_crossterm_color(dfg), to_crossterm_color(dbg));
                 queue!(self.writer, SetColors(colors))?;
-                fg = cell.fg;
-                bg = cell.bg;
+                fg = dfg;
+                bg = dbg;
             }
             queue!(self.writer, Print(cell.symbol))?;
         }

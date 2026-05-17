@@ -118,3 +118,17 @@ rest are `rstui-crossterm`-local.
 - The backlog is explicit and sourced, so the remaining hardening is a
   tracked queue, not rediscovery. Each item is independently shippable
   through `rstui-crossterm` with no `rstui-core` dependency change.
+
+## Regression lock
+
+The per-fix unit tests were scattered (`backend.rs`/`style.rs`), so a
+refactor could silently break one. The single discoverable, end-to-end
+guard is **`crates/rstui-crossterm/tests/control_code_contract.rs`** — it
+asserts every byte-level property here as one contract (sync envelope incl.
+lazy-open ordering; colour degraded through `draw` *and* the production
+`run` loop for every level/kind incl. `Indexed(>=16)@Ansi16`; scrollback
+`ESC[3J`), so any regression fails `cargo xtask ci` *by name*. Writing it
+also surfaced and fixed a real defect: `draw`'s running-state minimisation
+now tracks the **degraded** colour, so a colour that degrades to default no
+longer emits a redundant `SetColors` (at `NoColor`, zero colour escapes).
+New ADR-0013 control-code work must extend that contract test.
