@@ -643,6 +643,12 @@ pub struct LinkRegion {
 #[derive(Debug, Clone)]
 pub struct Mermaid<'a> {
     source: Cow<'a, str>,
+    /// MM-1/2: a caller-supplied pre-parsed flowchart graph. When set,
+    /// `render` skips the per-frame parse + `diagram_kind` dispatch and
+    /// lays this out directly — the caller-owned-cache seam for an app
+    /// that holds a stable flowchart source in its model. `None` is the
+    /// unchanged parse-`source`-every-frame path.
+    graph: Option<&'a MermaidGraph>,
     block: Option<Block<'a>>,
     style: Style,
     theme: MermaidTheme,
@@ -653,6 +659,29 @@ impl<'a> Mermaid<'a> {
     pub fn new(source: impl Into<Cow<'a, str>>) -> Self {
         Self {
             source: source.into(),
+            graph: None,
+            block: None,
+            style: Style::new(),
+            theme: MermaidTheme::default(),
+        }
+    }
+
+    /// A Mermaid view of a **pre-parsed** flowchart [`MermaidGraph`] the
+    /// caller already holds — the parse-free path (MM-1/2). An app that
+    /// keeps a stable flowchart source in its model parses it **once**
+    /// (via [`Mermaid::parse`]) into model state and renders it every
+    /// frame through this, instead of re-running the parser+layout each
+    /// frame; mirrors the `ScrollState`/`Input`/`Editor` caller-owned
+    /// seam. Byte-identical to `Mermaid::new(src)` whose `src` parses to
+    /// `graph` (both run `lay_out(graph).blit_into(..)`); `new` and the
+    /// 22 keyword diagram paths are untouched, so this is purely
+    /// additive. Flowchart graphs only — the keyword diagram types parse
+    /// their own source and share no graph type.
+    #[must_use]
+    pub fn from_graph(graph: &'a MermaidGraph) -> Self {
+        Self {
+            source: Cow::Borrowed(""),
+            graph: Some(graph),
             block: None,
             style: Style::new(),
             theme: MermaidTheme::default(),
@@ -831,6 +860,15 @@ impl Widget for Mermaid<'_> {
             return;
         }
         buf.set_style(inner, self.style);
+
+        // MM-1/2: a caller-supplied pre-parsed graph skips the per-frame
+        // parse + `diagram_kind` dispatch entirely — byte-identical to the
+        // `Flowchart` Ok arm below (the same `lay_out` → `blit_into`,
+        // after the same block/inner/`set_style` above).
+        if let Some(graph) = self.graph {
+            lay_out(graph).blit_into(inner, buf, self.style, &self.theme);
+            return;
+        }
 
         let src = self.source.as_ref();
         match diagram_kind(src) {
@@ -3596,5 +3634,50 @@ mod tests {
         assert!(out.contains("Start") && out.contains("Stop"));
         let m = Mermaid::new(src);
         assert_eq!(m.links(), vec![Link::new("Start", "https://example")]);
+    }
+
+    #[test]
+    fn from_graph_renders_byte_identical_to_parsing_the_source() {
+        // MM-1/2 gate (the PG-2/CM-3 exactness discipline): rendering a
+        // pre-parsed graph must be cell-for-cell identical (symbol *and*
+        // style) to `Mermaid::new(src)` whose `src` parses to that graph —
+        // the whole correctness contract of the caller-owned parse cache.
+        // Covered plain, framed (`.block`), and styled, since the cache
+        // path runs after the same block/inner/`set_style`.
+        let src = "graph TD\n  A[Start] --> B[Decide]\n  B -->|yes| C[Ship]\n  \
+                   B -->|no| D[Fix]\n  D --> B\n  C --> E[Done]";
+        let graph = Mermaid::parse(src).expect("fixture parses");
+        for (w, h) in [(40u16, 18u16), (24, 10), (60, 24)] {
+            let area = Rect::new(0, 0, w, h);
+
+            let mut from_src = Buffer::empty(area);
+            Mermaid::new(src).render(area, &mut from_src);
+            let mut from_cache = Buffer::empty(area);
+            Mermaid::from_graph(&graph).render(area, &mut from_cache);
+            assert_eq!(
+                from_src.cells(),
+                from_cache.cells(),
+                "from_graph diverged from new(src) at {w}x{h}"
+            );
+
+            // …and through the builder chain (block + style), exactly the
+            // kitchen-sink rich_text call shape.
+            let sty = Style::new().fg(Color::Cyan);
+            let mut b_src = Buffer::empty(area);
+            Mermaid::new(src)
+                .style(sty)
+                .block(Block::bordered())
+                .render(area, &mut b_src);
+            let mut b_cache = Buffer::empty(area);
+            Mermaid::from_graph(&graph)
+                .style(sty)
+                .block(Block::bordered())
+                .render(area, &mut b_cache);
+            assert_eq!(
+                b_src.cells(),
+                b_cache.cells(),
+                "from_graph+block+style diverged from new at {w}x{h}"
+            );
+        }
     }
 }
