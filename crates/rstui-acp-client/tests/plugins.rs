@@ -61,10 +61,12 @@ fn drive(exe: &str, command: Option<(&str, &str)>) -> Vec<PluginAction> {
         .wait_with_output()
         .expect("plugin should exit (Shutdown / stdin EOF)");
     assert!(out.status.success(), "{exe} exited with {:?}", out.status);
+    // Plugin stdout is a JSON-RPC stream: action notifications *and* the
+    // `initialize` response. Keep the actions; skip responses/non-actions.
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| decode_action(l).unwrap_or_else(|e| panic!("bad action line {l:?}: {e}")))
+        .filter_map(|l| decode_action(l).ok())
         .collect()
 }
 

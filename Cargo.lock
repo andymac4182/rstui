@@ -722,6 +722,7 @@ version = "0.0.1"
 dependencies = [
  "crossterm",
  "futures",
+ "rstui-acp-plugin-sdk",
  "rstui-core",
  "rstui-crossterm",
  "rstui-runtime",
@@ -731,6 +732,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "rstui-acp-plugin-sdk"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

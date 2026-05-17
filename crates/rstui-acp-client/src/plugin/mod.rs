@@ -1,12 +1,17 @@
 //! The deny-by-default plugin extension layer.
 //!
-//! [`protocol`] is the newline-JSON wire vocabulary; [`host`] is the in-app
-//! side (spawn, broadcast, merge); reference plugins live in `src/bin/` and
-//! use [`host::serve`]. See [`protocol`] for how this complements — rather
-//! than replaces — `rstui-plugin-host`'s ADR 0007 security hooks.
+//! The wire vocabulary + transports + the plugin author SDK now live in the
+//! standalone [`rstui_acp_plugin_sdk`] crate (JSON-RPC 2.0, ACP/MCP-style,
+//! transport-agnostic). This module is the *in-app* side: [`host`] spawns
+//! plugin processes, speaks JSON-RPC to them, and merges their UI actions
+//! into the reducer. The SDK names are re-exported here (and as
+//! [`protocol`]) so the app, the reference plugins, and the tests use one
+//! shared definition.
 
 pub mod host;
-pub mod protocol;
 
-pub use host::{PluginEvent, PluginHost, serve};
-pub use protocol::{API_VERSION, FooterSegment, HostEvent, PluginAction};
+/// The plugin wire vocabulary (compat path: `crate::plugin::protocol::*`).
+pub use rstui_acp_plugin_sdk::proto as protocol;
+pub use rstui_acp_plugin_sdk::{API_VERSION, FooterSegment, HostEvent, PluginAction, serve};
+
+pub use host::{PluginEvent, PluginHost};
