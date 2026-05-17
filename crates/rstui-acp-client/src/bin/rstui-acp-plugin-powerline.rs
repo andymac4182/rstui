@@ -10,7 +10,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rstui_acp_client::plugin::protocol::{FooterSegment, HostEvent, PluginAction};
-use rstui_acp_client::plugin::serve;
+use rstui_acp_client::plugin::serve_auto;
 
 #[derive(Default)]
 struct State {
@@ -91,7 +91,7 @@ fn agent_label(command: &str) -> String {
 
 fn main() {
     let mut state = State::default();
-    serve(move |event, emit| match event {
+    serve_auto(move |event, emit| match event {
         HostEvent::Init { cwd, .. } => {
             state.cwd = cwd;
             emit(PluginAction::Log {

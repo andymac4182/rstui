@@ -8,11 +8,11 @@
 //! [`HostEvent::AskResponse`] back as a note.
 
 use rstui_acp_client::plugin::protocol::{HostEvent, PluginAction};
-use rstui_acp_client::plugin::serve;
+use rstui_acp_client::plugin::serve_auto;
 
 fn main() {
     let mut next_id: u64 = 1;
-    serve(move |event, emit| match event {
+    serve_auto(move |event, emit| match event {
         HostEvent::Init { .. } => {
             emit(PluginAction::RegisterCommand {
                 name: "ask".to_owned(),

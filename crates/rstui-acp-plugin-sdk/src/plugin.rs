@@ -60,6 +60,33 @@ where
     serve_over(StdioTransport::new(), handler);
 }
 
+/// The transport-selecting entry the reference plugins use: a `--ws <port>`
+/// CLI arg or `RSTUI_PLUGIN_WS=<port>` env var runs the WebSocket server;
+/// otherwise it serves over stdio. One binary, both transports — which is
+/// what the cross-runtime/transport profiling needs.
+pub fn serve_auto<F>(handler: F)
+where
+    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
+{
+    let args: Vec<String> = std::env::args().collect();
+    let port: Option<u16> = args
+        .iter()
+        .position(|a| a == "--ws")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .or_else(|| {
+            std::env::var("RSTUI_PLUGIN_WS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        });
+    match port {
+        Some(p) => {
+            let _ = serve_ws(("127.0.0.1", p), handler);
+        }
+        None => serve(handler),
+    }
+}
+
 /// Runs a plugin as a WebSocket server: binds `addr`, accepts one client,
 /// and dispatches over a [`WsTransport`](crate::ws::WsTransport) — the same
 /// JSON-RPC, a different transport (the goal's "stdio or websockets").
