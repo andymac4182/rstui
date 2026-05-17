@@ -30,11 +30,11 @@ pub(crate) mod chrome;
 pub(crate) mod screens;
 pub(crate) mod theme;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use rstui_core::{
-    Constraint, Event, KeyCode, KeyModifiers, Layout, Margin, MouseButton, MouseEventKind,
-    Position, Rect, Size, TextEdit,
+    Buffer, Constraint, Event, KeyCode, KeyModifiers, Layout, Margin, MouseButton, MouseEventKind,
+    Position, Rect, Selection, Size, Style, TextEdit, selected_text,
 };
 use rstui_runtime::{App, Cmd, Frame};
 use rstui_widgets::ToastLevel;
@@ -95,8 +95,14 @@ pub enum Msg {
     Resized(Size),
     /// A key was pressed (code + modifiers), routed by `update`.
     Key(KeyCode, KeyModifiers),
-    /// A left-button press at this cell.
-    Click(Position),
+    /// Left button pressed at this cell — starts a text selection and is the
+    /// first half of a click (the click acts on [`MouseUp`](Self::MouseUp)).
+    MouseDown(Position),
+    /// The pointer moved with the left button held — extends the selection.
+    MouseDrag(Position),
+    /// Left button released here — finalises a drag-selection (copy) or, if
+    /// there was no drag, routes the click.
+    MouseUp(Position),
     /// The scroll wheel moved (`up`) at this cell.
     Scroll {
         /// `true` for wheel-up / scroll-back.
@@ -154,6 +160,20 @@ pub struct KitchenSink {
     palette_row: usize,
     /// Every screen's interactive state.
     screens: ScreenState,
+    /// The caller-owned text selection (ADR 0012 §P1): `update` mutates it
+    /// from the mouse, `view` projects it as a highlight and reads it back
+    /// with [`selected_text`]. Coordinates are content-buffer cells.
+    selection: Selection,
+    /// The cell the left button went down on, while it is still held.
+    press: Option<Position>,
+    /// Whether the pointer moved since [`press`](Self::press) (a drag, not a
+    /// click) — decides copy-vs-click on release.
+    drag_moved: bool,
+    /// The text the current selection covers, recomputed by `view` from the
+    /// rendered cells (interior-mutable so the pure `view` can fill it; read
+    /// by the copy path on release). The framework-pure analogue of a
+    /// clipboard read.
+    selected: RefCell<String>,
 }
 
 impl KitchenSink {
@@ -175,6 +195,10 @@ impl KitchenSink {
             palette_query: TextEdit::new(),
             palette_row: 0,
             screens: ScreenState::new(),
+            selection: Selection::new(),
+            press: None,
+            drag_moved: false,
+            selected: RefCell::new(String::new()),
         }
     }
 
@@ -224,6 +248,38 @@ impl KitchenSink {
     /// The active screen's drawable rect the last frame actually rendered.
     fn content_rect(&self) -> Rect {
         self.geom.get().content
+    }
+
+    /// Routes a completed click (a mouse-up with no intervening drag):
+    /// dismiss a passive overlay, pick a rail row, or hand the active screen
+    /// its click — the same routing the old single `Click` message did.
+    fn route_click(&mut self, pos: Position) {
+        if self.overlay != Overlay::None {
+            if matches!(self.overlay, Overlay::Help | Overlay::QuitConfirm) {
+                self.overlay = Overlay::None;
+            }
+            return;
+        }
+        let sidebar = self.sidebar_rect();
+        if sidebar.contains(pos) {
+            let inner_rows = sidebar.height.saturating_sub(2);
+            let offset = Screen::sidebar_offset(self.nav, inner_rows);
+            let row = pos.y.saturating_sub(sidebar.y + 1) as usize;
+            if let Some(i) = Screen::screen_at_row(row, offset) {
+                self.nav = i;
+                self.screen = Screen::ALL[i];
+                self.pane = Pane::Content;
+            }
+        } else {
+            let content = self.content_rect();
+            if content.contains(pos) {
+                self.pane = Pane::Content;
+                let out = self.screens.on_click(self.screen, pos, content);
+                if let Some((level, body)) = out.toast {
+                    self.notify(level, body);
+                }
+            }
+        }
     }
 
     /// Move the sidebar cursor by `delta`, clamped to the screen list.
@@ -313,7 +369,9 @@ impl App for KitchenSink {
             Event::Resize(size) => Some(Msg::Resized(size)),
             Event::Paste(text) => Some(Msg::Paste(text)),
             Event::Mouse(m) => match m.kind {
-                MouseEventKind::Down(MouseButton::Left) => Some(Msg::Click(m.position)),
+                MouseEventKind::Down(MouseButton::Left) => Some(Msg::MouseDown(m.position)),
+                MouseEventKind::Drag(MouseButton::Left) => Some(Msg::MouseDrag(m.position)),
+                MouseEventKind::Up(MouseButton::Left) => Some(Msg::MouseUp(m.position)),
                 MouseEventKind::ScrollUp => Some(Msg::Scroll {
                     up: true,
                     at: m.position,
@@ -371,6 +429,9 @@ impl App for KitchenSink {
                     }
                     return Cmd::none();
                 }
+                // Any navigation/overlay key drops a stale mouse selection
+                // (the content is about to change under it).
+                self.selection.clear();
                 // Global chords first.
                 match code {
                     KeyCode::Char('q') | KeyCode::Esc => {
@@ -433,39 +494,59 @@ impl App for KitchenSink {
                     }
                 }
             }
-            Msg::Click(pos) => {
-                if self.overlay != Overlay::None {
-                    // A click anywhere dismisses a passive overlay; the
-                    // drawer/palette keep their own keys.
-                    if matches!(self.overlay, Overlay::Help | Overlay::QuitConfirm) {
-                        self.overlay = Overlay::None;
-                    }
-                    return Cmd::none();
-                }
-                let sidebar = self.sidebar_rect();
-                if sidebar.contains(pos) {
-                    // The rail is grouped + scrollable, so map the clicked
-                    // inner row through the same geometry the renderer uses.
-                    let inner_rows = sidebar.height.saturating_sub(2);
-                    let offset = Screen::sidebar_offset(self.nav, inner_rows);
-                    let row = pos.y.saturating_sub(sidebar.y + 1) as usize;
-                    if let Some(i) = Screen::screen_at_row(row, offset) {
-                        self.nav = i;
-                        self.screen = Screen::ALL[i];
-                        self.pane = Pane::Content;
-                    }
-                } else {
-                    let content = self.content_rect();
-                    if content.contains(pos) {
-                        self.pane = Pane::Content;
-                        let out = self.screens.on_click(self.screen, pos, content);
-                        if let Some((level, body)) = out.toast {
-                            self.notify(level, body);
-                        }
-                    }
+            Msg::MouseDown(pos) => {
+                // A press replaces any prior selection and anchors a new one
+                // (only over the content — chrome is not selectable). The
+                // click itself is deferred to release so a drag can preempt it.
+                self.selection.clear();
+                self.drag_moved = false;
+                self.press = Some(pos);
+                if self.overlay == Overlay::None && self.content_rect().contains(pos) {
+                    self.selection.start(pos);
                 }
             }
+            Msg::MouseDrag(pos) => {
+                // A terminal only emits Drag on real movement; clamp to the
+                // content so the row-major stream stays inside the screen.
+                if !self.selection.is_empty() {
+                    let c = self.content_rect();
+                    let clamped = Position::new(
+                        pos.x.clamp(c.x, c.right().saturating_sub(1)),
+                        pos.y.clamp(c.y, c.bottom().saturating_sub(1)),
+                    );
+                    self.selection.extend(clamped);
+                    self.drag_moved = true;
+                }
+            }
+            Msg::MouseUp(pos) => {
+                let had_press = self.press.take().is_some();
+                if self.drag_moved && !self.selection.is_empty() {
+                    // A real drag: the selection is the user's "copy". `view`
+                    // already extracted the covered text into `selected`.
+                    let txt = self.selected.borrow().clone();
+                    if txt.trim().is_empty() {
+                        self.selection.clear();
+                    } else {
+                        let n = txt.chars().count();
+                        let preview: String = txt
+                            .chars()
+                            .take(28)
+                            .map(|c| if c == '\n' { '⏎' } else { c })
+                            .collect();
+                        self.notify(ToastLevel::Success, format!("Copied {n} chars: {preview}"));
+                    }
+                } else if had_press {
+                    // No drag → it was a click; selection collapses and the
+                    // press is routed exactly as before.
+                    self.selection.clear();
+                    self.route_click(pos);
+                }
+                self.drag_moved = false;
+            }
             Msg::Scroll { up, at } => {
+                // The content shifts under a selection when it scrolls, so
+                // drop it (the ADR 0012 §P1 "content changed" clear).
+                self.selection.clear();
                 if self.overlay == Overlay::None && self.content_rect().contains(at) {
                     self.screens.on_scroll(self.screen, up);
                 } else if self.sidebar_rect().contains(at) {
@@ -488,8 +569,44 @@ impl App for KitchenSink {
         chrome::view_header(self, frame, header);
         chrome::view_sidebar(self, frame, sidebar);
         chrome::view_content(self, frame, content);
+        // Project the selection over the freshly-drawn screen, then draw
+        // overlays last so a modal/toast still sits above it.
+        self.project_selection(frame);
         chrome::view_footer(self, frame, footer);
         chrome::view_overlays(self, frame, area);
+    }
+}
+
+impl KitchenSink {
+    /// Pure projection of the caller-owned [`Selection`] (ADR 0012 §P1):
+    /// extract the covered text (confined to the content so a multi-row
+    /// stream never grabs chrome) and overlay a high-contrast highlight on
+    /// the selected cells. Reads the selection, never mutates it.
+    fn project_selection(&self, frame: &mut Frame<'_>) {
+        if self.selection.is_empty() {
+            self.selected.borrow_mut().clear();
+            return;
+        }
+        let cr = self.content_rect();
+        let buf = frame.buffer_mut();
+        // A sub-buffer at the *same absolute coords* as the content, so
+        // `selected_text`'s row-major stream is clipped to the screen, not
+        // the whole frame (no sidebar/footer text bleeds into a copy).
+        let mut sub = Buffer::empty(cr);
+        for p in cr.positions() {
+            if let Some(cell) = buf.get(p) {
+                sub.set_cell(p, cell.symbol, cell.style());
+            }
+        }
+        *self.selected.borrow_mut() = selected_text(&sub, &self.selection);
+        let sel_style = Style::new().fg(self.theme.base).bg(self.theme.accent);
+        for p in cr.positions() {
+            if self.selection.contains(p) {
+                if let Some(cell) = buf.get_mut(p) {
+                    cell.apply_style(sel_style);
+                }
+            }
+        }
     }
 }
 

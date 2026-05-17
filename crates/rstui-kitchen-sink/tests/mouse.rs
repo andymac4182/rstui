@@ -23,12 +23,25 @@ fn ch(c: char) -> Event {
 fn key(code: KeyCode) -> Event {
     Event::from(KeyEvent::from_code(code))
 }
-fn click_at(h: &mut Harness<KitchenSink>, x: u16, y: u16) {
+fn mouse(h: &mut Harness<KitchenSink>, kind: MouseEventKind, x: u16, y: u16) {
     h.handle(Event::Mouse(MouseEvent::new(
-        MouseEventKind::Down(MouseButton::Left),
+        kind,
         Position::new(x, y),
         KeyModifiers::NONE,
     )));
+}
+/// A real click is press **and** release at the same cell (no drag).
+fn click_at(h: &mut Harness<KitchenSink>, x: u16, y: u16) {
+    mouse(h, MouseEventKind::Down(MouseButton::Left), x, y);
+    mouse(h, MouseEventKind::Up(MouseButton::Left), x, y);
+}
+/// A drag-selection: press, move across the row, release.
+fn drag(h: &mut Harness<KitchenSink>, x1: u16, y1: u16, x2: u16, y2: u16) {
+    mouse(h, MouseEventKind::Down(MouseButton::Left), x1, y1);
+    let midx = (x1 + x2) / 2;
+    mouse(h, MouseEventKind::Drag(MouseButton::Left), midx, y1);
+    mouse(h, MouseEventKind::Drag(MouseButton::Left), x2, y2);
+    mouse(h, MouseEventKind::Up(MouseButton::Left), x2, y2);
 }
 fn scroll(h: &mut Harness<KitchenSink>, up: bool, x: u16, y: u16) {
     let kind = if up {
@@ -255,4 +268,79 @@ fn clicking_every_screen_never_panics() {
         assert!(h.is_running(), "{name}: clicks kept it running");
         assert!(!h.snapshot().is_empty(), "{name}: still renders");
     }
+}
+
+/// Drag across exactly the cells of `needle` on its row.
+fn select_word(h: &mut Harness<KitchenSink>, needle: &str) {
+    let (x, y) = cell_of(h, needle);
+    drag(h, x, y, x + needle.chars().count() as u16 - 1, y);
+}
+
+#[test]
+fn dragging_selects_and_copies_markdown_text() {
+    let mut h = harness();
+    h.handle(ch('7')); // Rich Text
+    h.handle(key(KeyCode::Right)); // → Markdown sub-tab
+    // "CommonMark" only appears in the rendered Markdown body.
+    select_word(&mut h, "CommonMark");
+    let s = h.snapshot();
+    assert!(
+        s.contains("Copied") && s.contains("CommonMark"),
+        "drag-select over Markdown copies the covered text:\n{s}"
+    );
+}
+
+#[test]
+fn dragging_selects_paragraph_prose() {
+    let mut h = harness();
+    h.handle(ch('7')); // Rich Text, Paragraph tab (default)
+    select_word(&mut h, "deterministically"); // a word only in the prose
+    let s = h.snapshot();
+    assert!(
+        s.contains("Copied") && s.contains("determ"),
+        "drag-select over a Paragraph copies the prose:\n{s}"
+    );
+}
+
+#[test]
+fn a_plain_click_does_not_copy_anything() {
+    let mut h = harness();
+    h.handle(ch('7'));
+    // Press + release on the same cell is a click, not a selection.
+    click_at(&mut h, 60, 20);
+    assert!(
+        !h.snapshot().contains("Copied"),
+        "a click must not leave/copy a selection:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}
+
+#[test]
+fn selection_is_correct_after_a_resize() {
+    // Same regression family as clicks: the highlight + extracted text must
+    // follow the *rendered* geometry, not a guessed size.
+    let mut h = harness();
+    h.resize(96, 28);
+    h.handle(ch('7'));
+    h.handle(key(KeyCode::Right)); // Markdown tab
+    select_word(&mut h, "CommonMark");
+    assert!(
+        h.snapshot().contains("Copied"),
+        "drag-select still copies after a resize:\n{}",
+        h.snapshot()
+    );
+}
+
+#[test]
+fn navigating_after_a_selection_clears_it_without_panicking() {
+    let mut h = harness();
+    h.handle(ch('7'));
+    h.handle(key(KeyCode::Right));
+    select_word(&mut h, "CommonMark");
+    assert!(h.snapshot().contains("Copied"));
+    // A navigation key drops the stale selection; the app stays healthy.
+    h.handle(ch('1')); // jump to Welcome
+    assert!(h.is_running());
+    assert!(h.snapshot().contains("Welcome"));
 }
