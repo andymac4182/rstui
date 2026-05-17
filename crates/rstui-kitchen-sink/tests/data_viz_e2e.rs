@@ -7,8 +7,10 @@
 //! - `Observability`, `Metrics`, `Traces` — the suite that showcases the
 //!   observability widget family (`LineChart`, `Heatmap`, `Histogram`,
 //!   `StatPanel`, `FlameGraph`, `TraceWaterfall`, `LogStream`);
-//! - `Dashboard` (`Sparkline` / `BarChart` / `Gauge` KPIs) and `Live Logs`
-//!   (the filtered tail) — the sibling palette-only screens the hotkey suite
+//! - `Dashboard` (the business-dashboard chart suite: `Canvas` revenue line,
+//!   `StackedBarChart`, `Waterfall`, `Funnel`, `PieChart`, `BulletChart`,
+//!   `Gantt`, `CalendarHeatmap`, KPI `Sparkline`s) and `Live Logs` (the
+//!   filtered tail) — the sibling palette-only screens the hotkey suite
 //!   also cannot reach.
 //!
 //! Each must be reachable via the palette, render its signature content, be
@@ -66,7 +68,7 @@ fn goto(h: &mut Harness<KitchenSink>, query: &str) {
 /// against the screen modules), so a present marker proves the screen's
 /// content actually composed, not just the global chrome.
 const DATA_VIZ: [(&str, &str, &str); 5] = [
-    ("dashboard", "Dashboard", "Recent activity"),
+    ("dashboard", "Dashboard", "Roadmap"),
     ("live logs", "Live Logs", "application.log"),
     ("observability", "Observability", "Throughput vs errors"),
     ("metrics", "Metrics", "Latency heatmap"),
