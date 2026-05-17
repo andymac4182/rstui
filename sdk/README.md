@@ -68,13 +68,19 @@ Run it via the **V8 host** (`sdk/v8-host`):
 rstui-acp-client --plugin "node sdk/v8-host/host.mjs ./my-plugin.mjs"
 ```
 
-- With `secure-exec` installed (`npm i secure-exec`), the plugin runs in an
-  isolated **V8 sandbox** with **deny-by-default** fs/network — untrusted
-  code is contained (ADR 0007 posture, in JS).
-- Without it, the host runs the plugin in-process (dev mode, **not**
-  sandboxed; a stderr warning says so). Same bridge, same wire — "our own
-  host, learning from secure-exec".
-- `--sandbox` requires secure-exec (errors if absent).
+- **Default (supported, verified):** the host runs the plugin **in this
+  Node process** — same bridge + JSON-RPC wire, but **not** a V8 isolate
+  (a stderr line says so). The full pipeline (handshake, commands, modal
+  round-trip, shutdown) is covered by the smoke test.
+- **`--sandbox` (experimental, _not_ yet verified):** runs the plugin in
+  a `secure-exec` V8 isolate (deny-by-default host fs/network; only an
+  in-memory VFS), implemented to secure-exec's documented
+  `createInMemoryFileSystem`/`bindings` pattern. Known open issues before
+  this can be relied on: the in-isolate bindings global, ESM-vs-CJS module
+  form for the mounted SDK/plugin, and whether secure-exec's bounded
+  `run()` supports a long-lived host-driven event loop. Requires
+  `npm i secure-exec`. Treat as a work-in-progress, not production V8
+  isolation yet.
 
 ## Verify
 

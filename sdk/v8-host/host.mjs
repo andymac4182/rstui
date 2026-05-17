@@ -19,6 +19,7 @@
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { resolve as resolvePath } from "node:path";
+import { readFileSync } from "node:fs";
 
 // ---- JSON-RPC plumbing ------------------------------------------------
 
@@ -131,56 +132,83 @@ async function loadSecureExec() {
 }
 
 async function runDevFallback() {
-  if (!forceSandbox) {
-    process.stderr.write(
-      "[rstui-v8-host] secure-exec not installed — running UNSANDBOXED " +
-        "(dev mode). `npm i secure-exec` for V8 isolation.\n",
-    );
-  }
+  // The supported, verified path: the plugin runs in this Node process
+  // (NOT a V8 isolate). Same bridge + JSON-RPC wire as the sandbox would
+  // use. `--sandbox` opts into the experimental secure-exec isolate.
+  process.stderr.write(
+    "[rstui-v8-host] running the plugin in-process (not sandboxed). " +
+      "`--sandbox` = experimental secure-exec V8 isolation.\n",
+  );
   globalThis.__rstuiHost = bridge;
   await import(pathToFileURL(pluginPath).href);
 }
 
 async function runSandboxed(se) {
-  // Deny-by-default driver: the plugin gets no fs/network/process.
+  // secure-exec isolates have their own in-memory VFS and cannot import
+  // host files. Mount the SDK + plugin into the VFS and import by VFS path
+  // (this is exactly secure-exec's own `plugin-system` example pattern).
+  const sdkSrc = readFileSync(
+    resolvePath(import.meta.dirname, "../ts/index.mjs"),
+    "utf8",
+  );
+  let pluginSrc = readFileSync(pluginPath, "utf8");
+  // Real plugins `import "@rstui-acp/plugin-sdk"`; the sample imports it
+  // relatively. Either way, repoint it at the mounted SDK.
+  pluginSrc = pluginSrc.replace(
+    /from\s+["'](?:@rstui-acp\/plugin-sdk|[^"']*\/ts\/index\.mjs)["']/g,
+    'from "/rstui/sdk.mjs"',
+  );
+
+  const filesystem = se.createInMemoryFileSystem();
+  await filesystem.mkdir("/rstui");
+  await filesystem.writeFile("/rstui/sdk.mjs", sdkSrc);
+  await filesystem.writeFile("/rstui/plugin.mjs", pluginSrc);
+
+  // Isolation: the sandbox sees ONLY this in-memory VFS (no host disk) and
+  // NO network. (fs:allow gates the VFS itself — the SDK/plugin modules.)
   const driver = se.createNodeDriver({
+    filesystem,
     permissions: {
-      fs: () => ({ allow: false }),
+      fs: () => ({ allow: true }),
       network: () => ({ allow: false }),
     },
   });
+  // cpuTimeLimitMs caps a *single* run(); ours is the whole session loop,
+  // so it is a generous ceiling, not a per-call bound.
   const runtime = new se.NodeRuntime({
     systemDriver: driver,
     runtimeDriverFactory: se.createNodeRuntimeDriverFactory(),
-    memoryLimit: 64,
-    cpuTimeLimitMs: 0, // 0 = no per-call CPU cap (this is a long-lived loop)
+    memoryLimit: 128,
+    cpuTimeLimitMs: 24 * 60 * 60 * 1000,
     bindings: { rstui: { next: bridge.next, emit: bridge.emit } },
   });
-  // The sandbox bootstrap wires the SDK bridge to the injected bindings,
-  // then imports the user plugin (which calls definePlugin and loops).
-  const sdkUrl = pathToFileURL(
-    resolvePath(import.meta.dirname, "../ts/index.mjs"),
-  ).href;
-  const userUrl = pathToFileURL(pluginPath).href;
   const bootstrap = `
     globalThis.__rstuiHost = {
       next: (...a) => SecureExec.bindings.rstui.next(...a),
       emit: (...a) => SecureExec.bindings.rstui.emit(...a),
     };
-    await import(${JSON.stringify(sdkUrl)});
-    await import(${JSON.stringify(userUrl)});
+    await import("/rstui/plugin.mjs");
   `;
-  await runtime.run(bootstrap, "/rstui-bootstrap.mjs");
+  await runtime.run(bootstrap, "/rstui/boot.mjs");
   runtime.dispose?.();
 }
 
 (async () => {
-  const se = await loadSecureExec();
   try {
-    if (se) {
+    if (forceSandbox) {
+      // EXPERIMENTAL: the secure-exec V8 isolate path is implemented to
+      // secure-exec's documented VFS/bindings pattern but is NOT yet
+      // verified end-to-end (open: the in-isolate bindings global, ESM vs
+      // CJS module form, and whether run() supports a long-lived
+      // host-driven loop vs. its bounded-execution model). Opt in only
+      // with `--sandbox`; the default below is the verified path.
+      const se = await loadSecureExec();
+      if (!se) throw new Error("--sandbox requires `npm i secure-exec`");
+      process.stderr.write(
+        "[rstui-v8-host] --sandbox: EXPERIMENTAL secure-exec V8 path " +
+          "(unverified); use the default for the supported path.\n",
+      );
       await runSandboxed(se);
-    } else if (forceSandbox) {
-      throw new Error("--sandbox requires `npm i secure-exec`");
     } else {
       await runDevFallback();
     }
