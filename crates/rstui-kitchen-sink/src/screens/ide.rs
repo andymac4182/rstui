@@ -97,6 +97,11 @@ impl State {
         self.doc().insert_str(text);
     }
 
+    /// Cut `sel` out of the active file buffer.
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        crate::screens::cut_area(self.doc(), sel)
+    }
+
     /// A click on the file-tab strip switches files.
     pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
         let [tabs, _body, _foot] = Layout::vertical([

@@ -116,6 +116,14 @@ impl State {
         }
     }
 
+    /// Cut `sel` out of the focused text field (username or password).
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        match self.field() {
+            Some(f) => crate::screens::cut_field(f, sel),
+            None => false,
+        }
+    }
+
     /// Click a field to focus it, the remember row to toggle, or the
     /// button to submit. Geometry mirrors [`view`] (same Align + Block).
     pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {

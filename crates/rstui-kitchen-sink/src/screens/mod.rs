@@ -33,11 +33,44 @@ pub(crate) mod settings_app;
 pub(crate) mod traces;
 pub(crate) mod welcome;
 
-use rstui_core::{KeyCode, Margin, Position, Rect};
+use rstui_core::{KeyCode, Margin, Position, Rect, TextArea, TextEdit};
 use rstui_runtime::Frame;
 use rstui_widgets::ToastLevel;
 
 use crate::theme::Theme;
+
+/// Cut `sel` out of a single-line [`TextEdit`] (the focused field): delete
+/// its first occurrence and put the caret where it was. `false` if the
+/// field does not contain it (nothing to cut — the caller still copied).
+pub(crate) fn cut_field(te: &mut TextEdit, sel: &str) -> bool {
+    let value = te.value();
+    let Some(byte) = value.find(sel) else {
+        return false;
+    };
+    let caret = value[..byte].chars().count();
+    let mut next = value.to_string();
+    next.replace_range(byte..byte + sel.len(), "");
+    te.set_value(next);
+    te.set_cursor(caret);
+    true
+}
+
+/// Cut `sel` out of a multi-line [`TextArea`] (an editor buffer): delete its
+/// first occurrence and re-seat the caret at the cut point.
+pub(crate) fn cut_area(ta: &mut TextArea, sel: &str) -> bool {
+    let value = ta.lines().join("\n");
+    let Some(byte) = value.find(sel) else {
+        return false;
+    };
+    let before = &value[..byte];
+    let row = before.matches('\n').count();
+    let col = before.rsplit('\n').next().unwrap_or("").chars().count();
+    let mut next = value.clone();
+    next.replace_range(byte..byte + sel.len(), "");
+    ta.set_value(next);
+    ta.set_cursor(row, col);
+    true
+}
 
 /// The text-bearing rect inside a rounded framing block (every panel here is
 /// `Block::bordered()` with no padding, so its inner is a one-cell margin).
@@ -515,7 +548,33 @@ impl ScreenState {
             Screen::Chat => self.chat.on_paste(text),
             Screen::Login => self.login.on_paste(text),
             Screen::Ide => self.ide.on_paste(text),
+            Screen::Logs => self.logs.on_paste(text),
             _ => {}
+        }
+    }
+
+    /// Whether a finished drag-selection on `screen` is auto-copied to the
+    /// clipboard on release. Read-only renders auto-copy (the selection *is*
+    /// the copy); editable screens do **not**, so the selection stays live
+    /// for `Ctrl+C` (copy) or `Ctrl+X` (cut) — the per-container option.
+    pub(crate) fn selection_auto_copy(&self, screen: Screen) -> bool {
+        !matches!(
+            screen,
+            Screen::Forms | Screen::Chat | Screen::Login | Screen::Ide | Screen::Logs
+        )
+    }
+
+    /// Cut: delete the selected text `sel` from the active screen's focused
+    /// editable (the caller has already copied it). Returns `true` if the
+    /// screen is editable and removed it — `false` means "copy only".
+    pub(crate) fn cut(&mut self, screen: Screen, sel: &str) -> bool {
+        match screen {
+            Screen::Forms => self.forms.cut(sel),
+            Screen::Chat => self.chat.cut(sel),
+            Screen::Login => self.login.cut(sel),
+            Screen::Ide => self.ide.cut(sel),
+            Screen::Logs => self.logs.cut(sel),
+            _ => false,
         }
     }
 

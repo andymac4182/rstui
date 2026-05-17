@@ -202,6 +202,11 @@ impl State {
         self.composer.insert_str(&text.replace('\n', " "));
     }
 
+    /// Cut `sel` out of the composer.
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        crate::screens::cut_field(&mut self.composer, sel)
+    }
+
     /// The channel rail / conversation split.
     fn split(area: Rect) -> [Rect; 2] {
         Layout::horizontal([Constraint::Length(20), Constraint::Fill(1)]).areas(area)
