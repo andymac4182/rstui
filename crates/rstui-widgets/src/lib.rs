@@ -142,6 +142,12 @@
 //! - [`calendar`]: [`Calendar`] — a month grid that does **no** date math
 //!   (the caller supplies the day numbers — dependency-free, no `chrono`); a
 //!   pure projection with optional [`Block`].
+//! - [`canvas`]: [`Canvas`]/[`Marker`]/[`Points`]/[`CanvasLine`]/[`Rectangle`] —
+//!   the keystone free-form plotting surface: a [`paint`](canvas::Canvas::paint)
+//!   closure draws caller-owned data in Cartesian space at sub-cell
+//!   [`Marker`] resolution (Braille `2×4`, half-block, dot, block); the
+//!   foundation the line/scatter charts plot on, immediate-mode (no retained
+//!   scene), a pure projection with an optional [`Block`].
 //! - [`description_list`]: [`DescriptionList`]/[`DescriptionRow`] — an aligned
 //!   key→value pane; values wrap by reusing [`Paragraph`] (no second wrap).
 //! - [`badge`]: [`Badge`]/[`BadgeLevel`] — a tiny inline status pill with
@@ -260,6 +266,7 @@ pub mod block;
 pub mod breadcrumb;
 pub mod button;
 pub mod calendar;
+pub mod canvas;
 pub mod card;
 pub mod checkbox;
 pub mod command_palette;
@@ -323,6 +330,7 @@ pub use block::{Block, BorderSet, BorderType, Borders, Padding};
 pub use breadcrumb::Breadcrumb;
 pub use button::Button;
 pub use calendar::Calendar;
+pub use canvas::{Canvas, CanvasLine, Context, Marker, Painter, Points, Rectangle, Shape};
 pub use card::Card;
 pub use checkbox::Checkbox;
 pub use command_palette::CommandPalette;
