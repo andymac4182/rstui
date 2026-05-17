@@ -34,10 +34,12 @@ pub mod ws;
 
 pub use jsonrpc::{Kind, Message, RpcError};
 pub use plugin::{
-    Host, Plugin, serve, serve_auto, serve_over, serve_plugin, serve_plugin_ws, serve_ws,
+    Host, Plugin, serve, serve_auto, serve_over, serve_plugin, serve_plugin_ws, serve_stdio_lp,
+    serve_unix, serve_ws,
 };
 pub use proto::{
     API_VERSION, FooterSegment, HostEvent, PluginAction, decode_action, decode_event,
     encode_action, encode_event,
 };
+pub use transport::{IoTransport, LpTransport};
 pub use ws::WsTransport;

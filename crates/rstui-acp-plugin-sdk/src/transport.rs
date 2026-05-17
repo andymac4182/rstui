@@ -7,9 +7,13 @@
 //!
 //! Both carry the JSON-RPC [`Message`] unchanged.
 
-use std::io::{self, BufRead, BufReader, Stdin, Stdout, Write};
+use std::io::{self, BufRead, BufReader, Read, Stdin, Stdout, Write};
 
 use crate::jsonrpc::Message;
+
+/// Frame ceiling for length-prefixed transports (16 MiB) — a malformed or
+/// hostile length can never make us allocate unbounded.
+const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
 /// A bidirectional JSON-RPC message channel.
 pub trait Transport {
@@ -60,6 +64,80 @@ impl<R: BufRead, W: Write> Transport for IoTransport<R, W> {
 
     fn send(&mut self, msg: &Message) -> io::Result<()> {
         self.writer.write_all(msg.encode_line().as_bytes())?;
+        self.writer.flush()
+    }
+}
+
+/// Length-prefixed JSON-RPC over any `Read` + `Write`: each message is a
+/// big-endian `u32` byte count followed by the raw JSON bytes (no newline
+/// scan, exact reads, JSON parsed straight from the byte slice). Same
+/// JSON-RPC 2.0 semantics — only the framing is binary.
+pub struct LpTransport<R: Read, W: Write> {
+    reader: BufReader<R>,
+    writer: W,
+    /// Reused across `recv` so a steady message stream allocates once, not
+    /// per frame (the hot-path win the profiler flagged).
+    rbuf: Vec<u8>,
+    /// Likewise reused across `send` (serialize in place, no temp `Vec`).
+    wbuf: Vec<u8>,
+}
+
+impl<R: Read, W: Write> LpTransport<R, W> {
+    /// Wraps a reader/writer pair (same shape as [`IoTransport`]).
+    pub fn new(reader: R, writer: W) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            writer,
+            rbuf: Vec::new(),
+            wbuf: Vec::new(),
+        }
+    }
+}
+
+impl<R: Read, W: Write> Transport for LpTransport<R, W> {
+    fn recv(&mut self) -> io::Result<Option<Message>> {
+        let mut len = [0u8; 4];
+        // Distinguish a clean EOF (no bytes at a frame boundary) from a
+        // truncated frame (some bytes then EOF).
+        let mut got = 0;
+        while got < 4 {
+            let n = self.reader.read(&mut len[got..])?;
+            if n == 0 {
+                return if got == 0 {
+                    Ok(None)
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "truncated length prefix",
+                    ))
+                };
+            }
+            got += n;
+        }
+        let n = u32::from_be_bytes(len);
+        if n > MAX_FRAME {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "frame exceeds 16 MiB cap",
+            ));
+        }
+        let n = n as usize;
+        self.rbuf.clear();
+        self.rbuf.resize(n, 0);
+        self.reader.read_exact(&mut self.rbuf)?;
+        serde_json::from_slice(&self.rbuf)
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    fn send(&mut self, msg: &Message) -> io::Result<()> {
+        self.wbuf.clear();
+        serde_json::to_writer(&mut self.wbuf, msg)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let n = u32::try_from(self.wbuf.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
+        self.writer.write_all(&n.to_be_bytes())?;
+        self.writer.write_all(&self.wbuf)?;
         self.writer.flush()
     }
 }

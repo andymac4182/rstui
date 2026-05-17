@@ -9,7 +9,7 @@ use crate::jsonrpc::Kind;
 use crate::proto::{
     HostEvent, PluginAction, initialize_ack, message_to_host_event, plugin_action_to_message,
 };
-use crate::transport::{StdioTransport, Transport};
+use crate::transport::{LpTransport, StdioTransport, Transport};
 
 /// Runs a plugin over `transport` until end-of-stream or `Shutdown`.
 ///
@@ -60,6 +60,56 @@ where
     serve_over(StdioTransport::new(), handler);
 }
 
+/// Runs a plugin over stdio with **length-prefixed** framing (binary
+/// `u32` length + JSON bytes) — no newline scan, exact reads.
+pub fn serve_stdio_lp<F>(handler: F)
+where
+    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
+{
+    serve_over(
+        LpTransport::new(std::io::stdin(), std::io::stdout()),
+        handler,
+    );
+}
+
+/// Runs a plugin as a **Unix-domain-socket** server (no TCP/IP stack, no
+/// port — the lowest-overhead local socket). `lp` selects length-prefixed
+/// framing; otherwise newline JSON. One client, then exit.
+///
+/// # Errors
+///
+/// Bind/accept failures (or "unsupported" on non-Unix targets).
+#[cfg(unix)]
+pub fn serve_unix<F>(path: &str, lp: bool, handler: F) -> std::io::Result<()>
+where
+    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
+{
+    use std::io::BufReader;
+    use std::os::unix::net::UnixListener;
+
+    let _ = std::fs::remove_file(path); // bind fails if the path exists
+    let listener = UnixListener::bind(path)?;
+    let (stream, _) = listener.accept()?;
+    let _ = std::fs::remove_file(path); // unlink once bound (one-shot server)
+    if lp {
+        serve_over(LpTransport::new(stream.try_clone()?, stream), handler);
+    } else {
+        let read = BufReader::new(stream.try_clone()?);
+        serve_over(crate::transport::IoTransport::new(read, stream), handler);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn serve_unix<F>(_path: &str, _lp: bool, handler: F) -> std::io::Result<()>
+where
+    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
+{
+    // No AF_UNIX here — fall back to stdio so the plugin still runs.
+    serve(handler);
+    Ok(())
+}
+
 /// The transport-selecting entry the reference plugins use: a `--ws <port>`
 /// CLI arg or `RSTUI_PLUGIN_WS=<port>` env var runs the WebSocket server;
 /// otherwise it serves over stdio. One binary, both transports — which is
@@ -69,21 +119,32 @@ where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
     let args: Vec<String> = std::env::args().collect();
-    let port: Option<u16> = args
-        .iter()
-        .position(|a| a == "--ws")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .or_else(|| {
-            std::env::var("RSTUI_PLUGIN_WS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-        });
-    match port {
-        Some(p) => {
-            let _ = serve_ws(("127.0.0.1", p), handler);
-        }
-        None => serve(handler),
+    let arg_val = |flag: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let uds: Option<String> = arg_val("--uds").or_else(|| std::env::var("RSTUI_PLUGIN_UDS").ok());
+    let ws: Option<u16> = arg_val("--ws").and_then(|s| s.parse().ok()).or_else(|| {
+        std::env::var("RSTUI_PLUGIN_WS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    let lp = args.iter().any(|a| a == "--lp")
+        || std::env::var("RSTUI_PLUGIN_LP").is_ok_and(|v| v != "0" && !v.is_empty());
+
+    // Precedence: Unix socket → websocket → stdio. `--lp` (length-prefixed
+    // binary framing) applies to the uds/stdio paths; websocket has its own
+    // RFC 6455 framing.
+    if let Some(path) = uds {
+        let _ = serve_unix(&path, lp, handler);
+    } else if let Some(port) = ws {
+        let _ = serve_ws(("127.0.0.1", port), handler);
+    } else if lp {
+        serve_stdio_lp(handler);
+    } else {
+        serve(handler);
     }
 }
 

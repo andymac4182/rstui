@@ -144,9 +144,10 @@ function ver(cmd) {
   }
 }
 
+const TRANSPORTS = ["stdio", "stdio-lp", "uds", "uds-lp", "ws"];
 const rows = [];
 for (const impl of impls()) {
-  for (const transport of ["stdio", "ws"]) {
+  for (const transport of TRANSPORTS) {
     process.stderr.write(`measuring ${impl.name}/${transport}…\n`);
     const startup = await measureStartup(impl, transport);
     const { p50, p95, tput } = await measureLatencyAndThroughput(
@@ -167,6 +168,11 @@ isolate **runtime + JSON-RPC transport overhead**, not plugin logic.
 - **startup** — spawn → \`initialize\` ack (cold process + handshake), median of ${STARTUP_RUNS}.
 - **latency** — single in-flight \`command/invoke\` → \`ui/note\` round-trip; p50/p95 of ${LAT_ITERS} (after ${WARMUP} warm-up).
 - **throughput** — ${TPUT_MSGS} \`command/invoke\` pipelined, messages/sec.
+- **transports** — \`stdio\` (newline JSON), \`stdio-lp\` (length-prefixed
+  binary framing — u32 BE length + JSON bytes, no newline scan), \`uds\`
+  (Unix-domain socket, newline), \`uds-lp\` (UDS + length-prefixed), \`ws\`
+  (RFC 6455 over loopback TCP). All five carry the identical JSON-RPC 2.0
+  payload — only the framing/socket differs. See OPTIMISATION.md.
 
 Environment: ${os.type()} ${os.release()} · ${os.arch()} · ${os.cpus()[0]?.model ?? "cpu?"} · \
 node ${process.version} · bun ${ver(`${BUN} --version`)} · ${ver("rustc --version")}.
@@ -188,28 +194,42 @@ const best = (key, dir = "min") =>
 const sStart = best("startup");
 const sLat = best("p50");
 const sTput = best("tput", "max");
-const ratio = (impl) => {
-  const s = rows.find((r) => r.impl === impl && r.transport === "stdio");
-  const w = rows.find((r) => r.impl === impl && r.transport === "ws");
-  return s && w ? (s.tput / w.tput).toFixed(1) : "?";
+// Mean throughput per transport across impls → a measured ranking, so the
+// prose can never contradict the table (no hard-coded "X beats Y").
+const transports = [...new Set(rows.map((r) => r.transport))];
+const meanTput = (t) => {
+  const rs = rows.filter((r) => r.transport === t);
+  return rs.reduce((s, r) => s + r.tput, 0) / rs.length;
 };
-const tputRatios = [...new Set(rows.map((r) => r.impl))]
-  .map((i) => `${i} ${ratio(i)}×`)
-  .join(", ");
+const tputRank = transports
+  .map((t) => ({ t, m: meanTput(t) }))
+  .sort((a, b) => b.m - a.m);
+const rankLine = tputRank
+  .map((x) => `\`${x.t}\` ${n0(x.m)}`)
+  .join(" › ");
+const fastest = tputRank[0];
+const wsRow = tputRank.find((x) => x.t === "ws");
+const vsWs =
+  wsRow && wsRow.m > 0
+    ? ` — the fastest local framing is ~${(fastest.m / wsRow.m).toFixed(1)}× websocket`
+    : "";
 md += `
 ## Reading it (derived from the numbers above)
 
 - **Fastest cold start:** ${sStart.impl}/${sStart.transport} (${n1(sStart.startup)} ms).
 - **Lowest round-trip latency (p50):** ${sLat.impl}/${sLat.transport} (${n0(sLat.p50)} µs).
 - **Highest throughput:** ${sTput.impl}/${sTput.transport} (${n0(sTput.tput)} msg/s).
-- **stdio beats websocket on throughput** by roughly ${tputRatios}
-  (websocket adds RFC 6455 framing + a loopback TCP hop). Use stdio for
-  local plugins; websocket when the plugin must be remote/long-lived.
+- **Transports by mean throughput** (msg/s, across hosts): ${rankLine}${vsWs}.
+  websocket carries RFC 6455 framing + a loopback TCP hop; length-prefixed
+  framing removes the newline scan/concat; a Unix-domain socket removes the
+  TCP/IP stack. Use the lowest-overhead local transport for co-located
+  plugins; websocket only when a plugin must be remote/long-lived.
 - Numbers vary run-to-run (JIT warm-up, scheduler) — treat as orders of
   magnitude, not exact. Rust avoids VM warm-up so its cold start and tail
   latency are the most consistent.
-- Every host speaks the **identical JSON-RPC 2.0 wire** — the runtime
-  choice is purely performance/operational, never a protocol difference.
+- Every host speaks the **identical JSON-RPC 2.0 wire** — the runtime and
+  transport choice is purely performance/operational, never a protocol
+  difference.
 `;
 
 const out = resolve(here, "RESULTS.md");

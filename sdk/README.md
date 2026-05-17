@@ -1,18 +1,24 @@
 # rstui-acp-client plugin SDKs
 
 Plugins are **separate processes** that speak **JSON-RPC 2.0** (the same wire
-ACP and MCP use) to the client over a transport — **stdio or WebSocket**
-(same `Message`, different framing). The WebSocket server is dependency-free
-(hand-rolled RFC 6455: inline SHA-1/base64 handshake, masked/unmasked text
-frames) so the strict workspace dependency/`cargo deny` budget is untouched.
-A Rust plugin chooses its transport with `serve(...)` (stdio) or
-`serve_ws(addr, ...)` / `serve_plugin_ws(addr, p)` (WebSocket). Two SDKs,
-one wire:
+ACP and MCP use) to the client over a transport — **stdio, Unix-domain
+socket, or WebSocket**, with optional **length-prefixed binary framing**
+(`--lp`, a u32-BE length + JSON bytes — no newline scan) on the stdio/uds
+paths (same `Message`, different framing). The WebSocket server is
+dependency-free (hand-rolled RFC 6455: inline SHA-1/base64 handshake,
+masked/unmasked text frames) so the strict workspace dependency/`cargo deny`
+budget is untouched. A Rust plugin can pick its transport explicitly
+(`serve` = stdio, `serve_stdio_lp`, `serve_unix(path, lp, …)`,
+`serve_ws(addr, …)`) or just call `serve_auto(…)` and let `--uds`/`--ws`/
+`--lp` (or `RSTUI_PLUGIN_UDS`/`_WS`/`_LP`) choose; the TS SDK's `bridge()`
+mirrors the same selection and precedence. See `sdk/bench/OPTIMISATION.md`
+for the overhead analysis and the QUIC / protobuf / Cap'n Proto evaluation.
+Two SDKs, one wire:
 
 | SDK | Language | Role |
 |---|---|---|
 | `rstui-acp-plugin-sdk` (`crates/`) | Rust | Owns the **whole** comms stack (framing, handshake, dispatch). A Rust plugin only writes handlers. |
-| `@rstui-acp/plugin-sdk` (`sdk/ts`) | TypeScript | Marshals handlers ↔ the **V8 host** bridge. It never touches stdio — the host owns the transport. |
+| `@rstui-acp/plugin-sdk` (`sdk/ts`) | TypeScript | Marshals handlers ↔ the transport. `bridge()` auto-selects the injected **V8-host** bridge, else a standalone stdio / uds / ws transport (with optional `--lp` framing) — same selection/precedence as the Rust `serve_auto`. |
 
 ## Wire (JSON-RPC 2.0)
 

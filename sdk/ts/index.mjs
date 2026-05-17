@@ -1,12 +1,18 @@
 // @rstui-acp/plugin-sdk — runtime (ESM JS; types in index.d.ts).
 //
 // A TS plugin is a process speaking JSON-RPC 2.0 — the same wire as native
-// Rust plugins. Transports (chosen by bridge()):
+// Rust plugins. Transports (chosen by bridge(), precedence top→bottom —
+// mirrors the Rust SDK's serve_auto):
 //   * injected `globalThis.__rstuiHost`  — running under the V8 host.
+//   * `--uds <path>` / RSTUI_PLUGIN_UDS — a Unix-domain-socket server (no
+//     TCP/IP stack, no port — the lowest-overhead local socket).
 //   * `--ws <port>` / RSTUI_PLUGIN_WS=<port> — a dependency-free RFC 6455
 //     WebSocket server (node:net + node:crypto; works in Node and Bun).
+//   * `--lp` / RSTUI_PLUGIN_LP — length-prefixed binary framing (u32 BE
+//     length + JSON bytes; no newline scan) over stdio/uds.
 //   * otherwise — newline-delimited JSON-RPC over stdio.
-// See sdk/RUNTIME_DECISION.md for why this (not secure-exec) is the path.
+// See sdk/RUNTIME_DECISION.md for why this (not secure-exec) is the path,
+// and sdk/bench/OPTIMISATION.md for the transport/overhead analysis.
 
 // Plugin → host method per action `type` (matches the Rust SDK proto).
 const ACTION_METHOD = {
@@ -23,17 +29,24 @@ const ACTION_METHOD = {
 
 // The shared JSON-RPC plugin protocol: transport-agnostic. A transport
 // supplies `writeLine(str)` + `close()` and feeds inbound lines to feed().
+//
+// Hot path: the queue carries the **event object** (not a re-serialized
+// JSON string), and `emitObj`/`nextObj` let definePlugin skip a redundant
+// stringify+parse on every inbound and outbound message — the only JSON
+// work per round-trip is now the one decode in feed() and the one encode
+// in emitObj(). The legacy string API (feed/emit/next) is retained so the
+// injected V8-host bridge contract is unchanged. See OPTIMISATION.md.
 function makeBridgeCore({ writeLine, closeTransport }) {
   const queue = [];
   let waiting = null;
   let done = false;
-  const push = (s) => {
+  const push = (obj) => {
     if (waiting) {
       const w = waiting;
       waiting = null;
-      w(s);
+      w(obj);
     } else {
-      queue.push(s);
+      queue.push(obj);
     }
   };
   const finish = () => {
@@ -44,16 +57,34 @@ function makeBridgeCore({ writeLine, closeTransport }) {
       w(null);
     }
   };
+  const emitObj = (a) => {
+    const method = ACTION_METHOD[a.type];
+    if (!method) return;
+    writeLine(JSON.stringify({ jsonrpc: "2.0", method, params: a }));
+  };
+  const nextObj = () => {
+    if (queue.length > 0) return Promise.resolve(queue.shift());
+    if (done) return Promise.resolve(null);
+    return new Promise((res) => {
+      waiting = res;
+    });
+  };
   return {
     finish,
     feed(line) {
-      const s = String(line).trim();
-      if (!s) return;
+      // A binary/socket framer hands us an exact JSON string; only the
+      // newline path can carry stray whitespace, so trim lazily.
       let msg;
       try {
-        msg = JSON.parse(s);
+        msg = JSON.parse(line);
       } catch {
-        return;
+        const s = String(line).trim();
+        if (!s) return;
+        try {
+          msg = JSON.parse(s);
+        } catch {
+          return;
+        }
       }
       if (msg.method === undefined) return; // a response, not for us
       if (msg.method === "initialize" && msg.id !== undefined) {
@@ -66,10 +97,11 @@ function makeBridgeCore({ writeLine, closeTransport }) {
         );
       }
       if (msg.params && typeof msg.params === "object") {
-        push(JSON.stringify(msg.params));
+        push(msg.params);
         if (msg.params.type === "shutdown") finish();
       }
     },
+    emitObj,
     emit(actionJson) {
       let a;
       try {
@@ -77,16 +109,13 @@ function makeBridgeCore({ writeLine, closeTransport }) {
       } catch {
         return;
       }
-      const method = ACTION_METHOD[a.type];
-      if (!method) return;
-      writeLine(JSON.stringify({ jsonrpc: "2.0", method, params: a }));
+      emitObj(a);
     },
+    nextObj,
     next() {
-      if (queue.length > 0) return Promise.resolve(queue.shift());
-      if (done) return Promise.resolve(null);
-      return new Promise((res) => {
-        waiting = res;
-      });
+      // Legacy string contract (kept for any external caller / parity with
+      // the injected host): serialize on demand. definePlugin uses nextObj.
+      return nextObj().then((o) => (o == null ? null : JSON.stringify(o)));
     },
     close() {
       try {
@@ -96,6 +125,51 @@ function makeBridgeCore({ writeLine, closeTransport }) {
       }
       globalThis.process?.exit?.(0);
     },
+  };
+}
+
+// ---- length-prefixed binary framing (shared by stdio-lp + uds) ---------
+// One message = u32 big-endian byte length + raw JSON bytes. No newline
+// scan, no per-line string concat — exact reads straight off the socket.
+function lpEncode(s) {
+  const body = Buffer.from(s, "utf8");
+  const head = Buffer.allocUnsafe(4);
+  head.writeUInt32BE(body.length, 0);
+  return Buffer.concat([head, body]);
+}
+function makeLpDecoder(onMsg) {
+  let buf = Buffer.alloc(0);
+  let start = 0; // read cursor; advance through whole frames without reslice
+  return (chunk) => {
+    if (start === buf.length) {
+      buf = chunk; // steady state: previous chunk fully consumed — adopt
+      start = 0;
+    } else if (start > 0) {
+      buf = Buffer.concat([buf.subarray(start), chunk]); // splice tail only
+      start = 0;
+    } else {
+      buf = Buffer.concat([buf, chunk]);
+    }
+    for (;;) {
+      if (buf.length - start < 4) return;
+      const n = buf.readUInt32BE(start);
+      if (buf.length - start < 4 + n) return;
+      const json = buf.toString("utf8", start + 4, start + 4 + n);
+      start += 4 + n;
+      onMsg(json);
+    }
+  };
+}
+function makeNlDecoder(onMsg) {
+  let buf = "";
+  return (chunk) => {
+    buf += chunk;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const l = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (l) onMsg(l);
+    }
   };
 }
 
@@ -114,6 +188,76 @@ function makeStdioBridge() {
     .createInterface({ input: p.stdin });
   rl.on("line", (l) => core.feed(l));
   rl.on("close", core.finish);
+  return core;
+}
+
+// Length-prefixed JSON-RPC over stdio (binary framing, no newline scan).
+// stdin stays in Buffer mode (no setEncoding) so frames split exactly.
+function makeStdioLpBridge() {
+  const p = globalThis.process;
+  const core = makeBridgeCore({
+    writeLine: (s) => p.stdout.write(lpEncode(s)),
+    closeTransport: () => {
+      try {
+        p.stdin.destroy();
+      } catch {}
+    },
+  });
+  const dec = makeLpDecoder((m) => core.feed(m));
+  p.stdin.on("data", dec);
+  p.stdin.on("end", core.finish);
+  p.stdin.on("close", core.finish);
+  return core;
+}
+
+// Unix-domain-socket *server* (mirrors the Rust serve_unix): bind a
+// filesystem path, accept one client, frame newline or length-prefixed.
+// No TCP/IP stack, no port — the lowest-overhead local socket.
+async function makeUdsBridge(path, lp) {
+  const net = await import("node:net");
+  const fs = await import("node:fs");
+  let sock = null;
+  let server = null;
+  const core = makeBridgeCore({
+    writeLine: (s) => {
+      if (sock) sock.write(lp ? lpEncode(s) : `${s}\n`);
+    },
+    closeTransport: () => {
+      try {
+        sock?.end();
+      } catch {}
+      try {
+        server?.close();
+      } catch {}
+      try {
+        fs.unlinkSync(path);
+      } catch {}
+    },
+  });
+  try {
+    fs.unlinkSync(path); // bind fails if a stale socket file exists
+  } catch {}
+  await new Promise((resolve, reject) => {
+    server = net.createServer((s) => {
+      if (sock) {
+        s.destroy();
+        return;
+      }
+      sock = s;
+      if (lp) {
+        const dec = makeLpDecoder((m) => core.feed(m));
+        s.on("data", dec);
+      } else {
+        s.setEncoding("utf8");
+        const dec = makeNlDecoder((l) => core.feed(l));
+        s.on("data", dec);
+      }
+      s.on("close", core.finish);
+      s.on("error", core.finish);
+    });
+    server.on("error", reject);
+    server.listen(path, () => resolve());
+  });
   return core;
 }
 
@@ -243,17 +387,25 @@ async function bridge() {
     return injected; // running under the V8 host
   }
   const argv = globalThis.process?.argv ?? [];
-  const wsIdx = argv.indexOf("--ws");
-  const wsPort =
-    (wsIdx >= 0 && Number(argv[wsIdx + 1])) ||
-    Number(globalThis.process?.env?.RSTUI_PLUGIN_WS) ||
-    0;
+  const env = globalThis.process?.env ?? {};
+  const argVal = (f) => {
+    const i = argv.indexOf(f);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  const uds = argVal("--uds") || env.RSTUI_PLUGIN_UDS;
+  const wsPort = Number(argVal("--ws")) || Number(env.RSTUI_PLUGIN_WS) || 0;
+  const lp =
+    argv.includes("--lp") ||
+    (!!env.RSTUI_PLUGIN_LP && env.RSTUI_PLUGIN_LP !== "0");
+  // Precedence (mirrors the Rust serve_auto): uds → ws → stdio. `--lp`
+  // selects binary framing for the uds/stdio paths; ws has RFC 6455.
+  if (uds) return makeUdsBridge(uds, lp);
   if (wsPort) return makeWsBridge(wsPort);
-  if (globalThis.process?.stdin && globalThis.process?.stdout) {
-    return makeStdioBridge(); // plain process over stdio
-  }
+  const haveStdio = globalThis.process?.stdin && globalThis.process?.stdout;
+  if (lp && haveStdio) return makeStdioLpBridge();
+  if (haveStdio) return makeStdioBridge(); // plain process over stdio
   throw new Error(
-    "rstui plugin SDK: no host bridge / stdio / --ws — run as a process or via the V8 host.",
+    "rstui plugin SDK: no host bridge / stdio / --ws / --uds — run as a process or via the V8 host.",
   );
 }
 
@@ -263,7 +415,25 @@ export async function definePlugin(handlers) {
   /** id -> resolve fn for in-flight modal()/askUser() */
   const pending = new Map();
 
-  const emit = (action) => b.emit(JSON.stringify(action));
+  // Fast path: hand the action object straight to the core (one encode).
+  // Fallback keeps the injected V8-host's string `emit` contract.
+  const emit = b.emitObj
+    ? (action) => b.emitObj(action)
+    : (action) => b.emit(JSON.stringify(action));
+  // Inbound: nextObj yields the event object directly (no stringify→parse
+  // bounce); the injected host still returns a JSON string, so parse that.
+  const readEvent = b.nextObj
+    ? () => b.nextObj()
+    : async () => {
+        const raw = await b.next();
+        if (raw === null || raw === undefined) return null;
+        if (typeof raw !== "string") return raw;
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return undefined; // skip a malformed frame, keep pumping
+        }
+      };
 
   const host = {
     registerCommand: (name, description) =>
@@ -308,14 +478,9 @@ export async function definePlugin(handlers) {
   };
 
   for (;;) {
-    const raw = await b.next();
-    if (raw === null || raw === undefined) break;
-    let ev;
-    try {
-      ev = JSON.parse(raw);
-    } catch {
-      continue;
-    }
+    const ev = await readEvent();
+    if (ev === null) break; // end of stream
+    if (ev === undefined || typeof ev !== "object") continue; // skip junk
 
     if (ev.type === "modal_response" && pending.has(`modal:${ev.id}`)) {
       pending.get(`modal:${ev.id}`)(ev);
