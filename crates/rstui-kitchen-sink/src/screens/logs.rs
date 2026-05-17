@@ -120,6 +120,16 @@ impl State {
         }
     }
 
+    /// Pasted text drops into the filter box.
+    pub(crate) fn on_paste(&mut self, text: &str) {
+        self.query.insert_str(&text.replace('\n', " "));
+    }
+
+    /// Cut `sel` out of the filter box.
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        crate::screens::cut_field(&mut self.query, sel)
+    }
+
     /// Draw the live tail. `tick` grows the stream.
     pub(crate) fn view(&self, theme: &Theme, tick: u64, frame: &mut Frame<'_>, area: Rect) {
         let [bar, body, foot] = Layout::vertical([

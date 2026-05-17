@@ -283,10 +283,15 @@ fn dragging_selects_and_copies_markdown_text() {
     h.handle(key(KeyCode::Right)); // → Markdown sub-tab
     // "CommonMark" only appears in the rendered Markdown body.
     select_word(&mut h, "CommonMark");
-    let s = h.snapshot();
     assert!(
-        s.contains("Copied") && s.contains("CommonMark"),
-        "drag-select over Markdown copies the covered text:\n{s}"
+        h.snapshot().contains("Copied"),
+        "the copy is confirmed:\n{}",
+        h.snapshot()
+    );
+    assert!(
+        h.app().clipboard().contains("CommonMark"),
+        "a read-only render auto-copies the covered text to the clipboard: {:?}",
+        h.app().clipboard()
     );
 }
 
@@ -295,10 +300,15 @@ fn dragging_selects_paragraph_prose() {
     let mut h = harness();
     h.handle(ch('7')); // Rich Text, Paragraph tab (default)
     select_word(&mut h, "deterministically"); // a word only in the prose
-    let s = h.snapshot();
     assert!(
-        s.contains("Copied") && s.contains("determ"),
-        "drag-select over a Paragraph copies the prose:\n{s}"
+        h.snapshot().contains("Copied"),
+        "the copy is confirmed:\n{}",
+        h.snapshot()
+    );
+    assert!(
+        h.app().clipboard().contains("determ"),
+        "the Paragraph prose is auto-copied: {:?}",
+        h.app().clipboard()
     );
 }
 
@@ -363,7 +373,7 @@ fn data_diff_selection_stays_inside_the_diff_panel() {
     goto(&mut h, "Data Display");
     let (x, y) = cell_of(&h, "render(area");
     drag(&mut h, x, y, x + 90, y + 8); // way past the diff, into the accordion
-    let sel = h.app().last_selection();
+    let sel = h.app().clipboard();
     assert!(!sel.is_empty(), "something was selected");
     assert!(
         sel.contains("render(area") || sel.contains("pad"),
@@ -384,7 +394,7 @@ fn welcome_tour_selection_excludes_the_quickstart_card() {
     h.handle(ch('1')); // Welcome: Markdown tour (left) | Card (right)
     let (x, y) = cell_of(&h, "interactive"); // a tour-only word
     drag(&mut h, x, y, x + 80, y + 4); // would cross into the Card
-    let sel = h.app().last_selection();
+    let sel = h.app().clipboard();
     assert!(
         sel.to_lowercase().contains("interactive"),
         "tour text selected: {sel:?}"
@@ -405,9 +415,9 @@ fn markdown_code_block_is_selectable() {
     let (x, y) = cell_of(&h, "fn render"); // inside the ``` code block
     drag(&mut h, x, y, x + 40, y);
     assert!(
-        h.app().last_selection().contains("fn render"),
+        h.app().clipboard().contains("fn render"),
         "the code block is selectable: {:?}",
-        h.app().last_selection()
+        h.app().clipboard()
     );
 }
 
@@ -417,7 +427,7 @@ fn dragging_a_markdown_link_selects_its_label_and_does_not_follow_it() {
     h.handle(ch('7'));
     h.handle(key(KeyCode::Right));
     select_word(&mut h, "the rstui repo"); // a [label](href)
-    let sel = h.app().last_selection();
+    let sel = h.app().clipboard();
     assert!(
         sel.contains("the rstui repo"),
         "the link label is selected by a drag: {sel:?}"
@@ -448,7 +458,7 @@ fn a_selection_never_includes_a_panel_border() {
     h.handle(ch('7')); // Rich Text, framed Paragraph body
     let (x, y) = cell_of(&h, "deterministically");
     drag(&mut h, x, y, x + 200, y + 60); // far past the panel on both axes
-    let sel = h.app().last_selection();
+    let sel = h.app().clipboard();
     assert!(!sel.is_empty());
     for g in ['│', '─', '╭', '╮', '╰', '╯', '┌', '┐', '└', '┘'] {
         assert!(
@@ -456,4 +466,87 @@ fn a_selection_never_includes_a_panel_border() {
             "a selection must never include a border glyph {g:?}: {sel:?}"
         );
     }
+}
+
+/// A Ctrl-modified key (clipboard chords).
+fn ctrl(c: char) -> Event {
+    Event::from(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+}
+
+#[test]
+fn ctrl_c_quits_only_when_nothing_is_selected() {
+    let mut h = harness();
+    h.handle(ctrl('c'));
+    assert!(!h.is_running(), "Ctrl+C with no selection still quits");
+}
+
+#[test]
+fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
+    // Chat is editable → its drag-selection is NOT auto-copied; it stays
+    // live with a hint, and Ctrl+C performs the copy.
+    let mut h = harness();
+    h.handle(ch('9')); // Chat (thread is the selectable container)
+    let (x, y) = cell_of(&h, "Morning"); // a seeded thread message word
+    drag(&mut h, x, y, x + 6, y);
+    assert!(
+        h.snapshot().contains("Selected") && !h.snapshot().contains("Copied"),
+        "an editable container leaves it selected, not auto-copied:\n{}",
+        h.snapshot()
+    );
+    assert!(h.app().clipboard().is_empty(), "nothing copied yet");
+    h.handle(ctrl('c'));
+    assert!(
+        h.app().clipboard().contains("Morning"),
+        "Ctrl+C copies the still-live selection: {:?}",
+        h.app().clipboard()
+    );
+    assert!(h.snapshot().contains("Copied"));
+    assert!(
+        h.is_running(),
+        "Ctrl+C with a selection copies, does not quit"
+    );
+}
+
+#[test]
+fn ctrl_x_cuts_selected_text_out_of_the_code_editor() {
+    let mut h = harness();
+    goto(&mut h, "Code Editor");
+    assert!(
+        h.snapshot().contains("KitchenSink"),
+        "seed code is visible:\n{}",
+        h.snapshot()
+    );
+    let (x, y) = cell_of(&h, "KitchenSink");
+    drag(&mut h, x, y, x + "KitchenSink".len() as u16 - 1, y);
+    h.handle(ctrl('x')); // cut
+    assert!(
+        h.app().clipboard().contains("KitchenSink"),
+        "cut puts the text on the clipboard: {:?}",
+        h.app().clipboard()
+    );
+    assert!(
+        !h.snapshot().contains("KitchenSink"),
+        "cut removed it from the buffer:\n{}",
+        h.snapshot()
+    );
+    assert!(h.snapshot().contains("Cut"));
+}
+
+#[test]
+fn ctrl_v_pastes_the_clipboard_into_a_focused_input() {
+    let mut h = harness();
+    // Auto-copy a word from a read-only render to load the clipboard.
+    h.handle(ch('7'));
+    h.handle(key(KeyCode::Right)); // Markdown tab
+    select_word(&mut h, "CommonMark");
+    assert!(h.app().clipboard().contains("CommonMark"));
+    // Now paste it into the Logs filter input.
+    goto(&mut h, "Live Logs");
+    h.handle(ctrl('v'));
+    assert!(
+        h.snapshot().contains("CommonMark"),
+        "Ctrl+V pasted the clipboard into the filter input:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
 }

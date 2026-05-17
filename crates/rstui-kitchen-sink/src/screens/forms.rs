@@ -167,6 +167,18 @@ impl State {
         }
     }
 
+    /// Cut `sel` from the focused field (the multi-line notes or a
+    /// single-line input).
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        if self.focus.focused() == Some(NOTES) {
+            return crate::screens::cut_area(&mut self.notes, sel);
+        }
+        match self.focused_text() {
+            Some(t) => crate::screens::cut_field(t, sel),
+            None => false,
+        }
+    }
+
     /// The eight stacked field rects, the geometry the renderer and the
     /// click hit-test share.
     fn field_rows(area: Rect) -> [Rect; 8] {

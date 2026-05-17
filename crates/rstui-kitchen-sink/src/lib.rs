@@ -27,6 +27,7 @@
 //! ```
 
 pub(crate) mod chrome;
+pub(crate) mod clipboard;
 pub(crate) mod screens;
 pub(crate) mod theme;
 
@@ -179,6 +180,10 @@ pub struct KitchenSink {
     /// extraction/highlight is restricted to it, so a selection never
     /// crosses into a neighbouring panel or the chrome.
     sel_region: Cell<Option<Rect>>,
+    /// The in-app clipboard: the last text copied or cut. `Ctrl+V` pastes
+    /// this into the focused editable (the OS clipboard is also set via
+    /// OSC 52, and the terminal's own paste arrives as [`Event::Paste`]).
+    clipboard: String,
 }
 
 impl KitchenSink {
@@ -205,6 +210,7 @@ impl KitchenSink {
             drag_moved: false,
             selected: RefCell::new(String::new()),
             sel_region: Cell::new(None),
+            clipboard: String::new(),
         }
     }
 
@@ -261,6 +267,37 @@ impl KitchenSink {
     fn clear_selection(&mut self) {
         self.selection.clear();
         self.sel_region.set(None);
+    }
+
+    /// Puts `text` on the in-app clipboard *and* the host clipboard (OSC 52,
+    /// best-effort), and toasts what happened. `verb` is "Copied" or "Cut".
+    fn do_copy(&mut self, text: String, verb: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let n = text.chars().count();
+        let to_os = clipboard::copy(&text);
+        self.clipboard = text;
+        let where_ = if to_os {
+            "clipboard"
+        } else {
+            "in-app clipboard"
+        };
+        self.notify(ToastLevel::Success, format!("{verb} {n} chars → {where_}"));
+    }
+
+    /// Pastes the in-app clipboard into whatever editable currently has
+    /// focus (the same sink the terminal's own paste reaches).
+    fn paste_clipboard(&mut self) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        let text = self.clipboard.clone();
+        if self.overlay == Overlay::Palette {
+            self.palette_query.insert_str(&text);
+        } else if self.overlay == Overlay::None && self.pane == Pane::Content {
+            self.screens.on_paste(self.screen, &text);
+        }
     }
 
     /// Routes a completed click (a mouse-up with no intervening drag):
@@ -396,10 +433,10 @@ impl App for KitchenSink {
                 _ => None,
             },
             Event::Key(_) => {
+                // Clipboard chords (Ctrl+C/X/V) are decided in `update`,
+                // where the selection/focus state is known — Ctrl+C only
+                // quits when there is *nothing* selected.
                 let key = event.as_key_press()?;
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    return Some(Msg::Quit);
-                }
                 Some(Msg::Key(key.code, key.modifiers))
             }
             Event::FocusGained | Event::FocusLost => None,
@@ -425,7 +462,39 @@ impl App for KitchenSink {
                     self.screens.on_paste(self.screen, &text);
                 }
             }
-            Msg::Key(code, _mods) => {
+            Msg::Key(code, mods) => {
+                let ctrl = mods.contains(KeyModifiers::CONTROL);
+                // Clipboard chords have top priority and work on every screen
+                // and overlay (so a selection can always be copied/cut and
+                // the clipboard pasted into whatever editable has focus).
+                if ctrl {
+                    match code {
+                        KeyCode::Char('c' | 'C') => {
+                            if self.selection.is_empty() {
+                                // Nothing selected → Ctrl+C keeps its
+                                // familiar "interrupt/quit" meaning.
+                                return Cmd::quit();
+                            }
+                            let txt = self.selected.borrow().clone();
+                            self.do_copy(txt, "Copied");
+                            return Cmd::none();
+                        }
+                        KeyCode::Char('x' | 'X') => {
+                            if !self.selection.is_empty() {
+                                let txt = self.selected.borrow().clone();
+                                let cut = self.screens.cut(self.screen, &txt);
+                                self.do_copy(txt, if cut { "Cut" } else { "Copied" });
+                                self.clear_selection();
+                            }
+                            return Cmd::none();
+                        }
+                        KeyCode::Char('v' | 'V') => {
+                            self.paste_clipboard();
+                            return Cmd::none();
+                        }
+                        _ => {}
+                    }
+                }
                 if self.overlay != Overlay::None {
                     return self.key_in_overlay(code);
                 }
@@ -434,6 +503,7 @@ impl App for KitchenSink {
                 // Enter) still flow through the global keymap below.
                 if self.pane == Pane::Content
                     && self.screen.is_text_entry()
+                    && !ctrl
                     && matches!(code, KeyCode::Char(_))
                 {
                     let out = self.screens.on_key(self.screen, code, self.tick);
@@ -547,19 +617,24 @@ impl App for KitchenSink {
             Msg::MouseUp(pos) => {
                 let had_press = self.press.take().is_some();
                 if self.drag_moved && !self.selection.is_empty() {
-                    // A real drag: the selection is the user's "copy". `view`
-                    // already extracted the covered text into `selected`.
+                    // A real drag finished. `view` already extracted the
+                    // covered text into `selected`.
                     let txt = self.selected.borrow().clone();
                     if txt.trim().is_empty() {
                         self.clear_selection();
+                    } else if self.screens.selection_auto_copy(self.screen) {
+                        // Auto-copy containers (read-only renders): the
+                        // selection *is* a copy — straight to the clipboard.
+                        self.do_copy(txt, "Copied");
+                        self.clear_selection();
                     } else {
+                        // Editable containers: keep the selection live so the
+                        // user can Ctrl+C to copy or Ctrl+X to cut it.
                         let n = txt.chars().count();
-                        let preview: String = txt
-                            .chars()
-                            .take(28)
-                            .map(|c| if c == '\n' { '⏎' } else { c })
-                            .collect();
-                        self.notify(ToastLevel::Success, format!("Copied {n} chars: {preview}"));
+                        self.notify(
+                            ToastLevel::Info,
+                            format!("Selected {n} chars — Ctrl+C copy · Ctrl+X cut"),
+                        );
                     }
                 } else if had_press {
                     // No drag → it was a click; selection collapses and the
@@ -645,6 +720,13 @@ impl KitchenSink {
     #[must_use]
     pub fn last_selection(&self) -> String {
         self.selected.borrow().clone()
+    }
+
+    /// The in-app clipboard (what `Ctrl+V` would paste). Exposed for tests
+    /// and embedders.
+    #[must_use]
+    pub fn clipboard(&self) -> &str {
+        &self.clipboard
     }
 
     pub(crate) fn theme(&self) -> &Theme {
