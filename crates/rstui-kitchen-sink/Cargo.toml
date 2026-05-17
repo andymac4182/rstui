@@ -21,6 +21,9 @@ workspace = true
 rstui-core = { path = "../rstui-core" }
 rstui-widgets = { path = "../rstui-widgets" }
 rstui-runtime = { path = "../rstui-runtime" }
+# The shared keymap engine (extracted from this crate's former local
+# module so the ACP client can use the exact same model — ADR 0015).
+rstui-keymap = { path = "../rstui-keymap" }
 # The full-screen entry point (`run_app`) lives here; it owns the alternate
 # screen, raw mode, mouse + paste + focus capture, and panic-safe restore.
 rstui-crossterm = { path = "../rstui-crossterm" }

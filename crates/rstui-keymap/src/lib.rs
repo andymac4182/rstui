@@ -25,7 +25,7 @@ use rstui_core::{KeyCode, KeyEvent, KeyModifiers};
 /// typing, `PageUp`, …) are deliberately *not* here — they fall through to
 /// the focused screen raw, exactly as bindings cascade past in Textual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     /// Ask to quit (opens the confirm modal).
     Quit,
     /// Toggle the help overlay.
@@ -50,7 +50,7 @@ pub(crate) enum Action {
 
 impl Action {
     /// Stable id used for config/override lookup (Textual's binding id).
-    pub(crate) fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Action::Quit => "app.quit",
             Action::Help => "app.help",
@@ -66,7 +66,7 @@ impl Action {
     }
 
     /// One-line help text (shown in the help overlay / settings table).
-    pub(crate) fn help(self) -> &'static str {
+    pub fn help(self) -> &'static str {
         match self {
             Action::Quit => "Quit (confirm)",
             Action::Help => "Toggle this help",
@@ -83,7 +83,7 @@ impl Action {
 
     /// The actions shown in help/settings, in display order (the nine
     /// per-screen `Goto` binds collapse to one row).
-    pub(crate) fn shown() -> [Action; 9] {
+    pub fn shown() -> [Action; 9] {
         [
             Action::Palette,
             Action::Help,
@@ -101,7 +101,7 @@ impl Action {
 /// One key chord: a [`KeyCode`] plus the modifier set, normalised so
 /// `Ctrl+C` and `Ctrl+c` (and `Shift`-implied uppercase) compare equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Chord {
+pub struct Chord {
     code: KeyCode,
     mods: KeyModifiers,
 }
@@ -137,7 +137,7 @@ impl Chord {
     /// Parses `"ctrl+shift+p"`, `"cmd+k"`, `"alt+left"`, `"esc"`, `"f2"`,
     /// `"space"`, `"q"`, `"?"`. Modifier names: `ctrl`/`control`,
     /// `alt`/`opt`/`option`, `shift`, `cmd`/`super`/`win`/`meta`.
-    pub(crate) fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
         if s.is_empty() {
             return None;
@@ -188,19 +188,19 @@ impl Chord {
     }
 
     /// Whether `ev` triggers this chord (both normalised).
-    pub(crate) fn matches(&self, ev: &KeyEvent) -> bool {
+    pub fn matches(&self, ev: &KeyEvent) -> bool {
         *self == Self::norm(ev.code, ev.modifiers)
     }
 
     /// The chord a key event represents (normalised) — the capture half of
     /// interactive re-binding.
-    pub(crate) fn from_event(ev: &KeyEvent) -> Self {
+    pub fn from_event(ev: &KeyEvent) -> Self {
         Self::norm(ev.code, ev.modifiers)
     }
 
     /// A canonical, **`parse`-able** spec (`"ctrl+c"`, `"esc"`, `"f2"`,
     /// `"q"`) — what a captured chord is stored as in an override.
-    pub(crate) fn spec(&self) -> String {
+    pub fn spec(&self) -> String {
         let mut s = String::new();
         if self.mods.contains(KeyModifiers::CONTROL) {
             s.push_str("ctrl+");
@@ -239,7 +239,7 @@ impl Chord {
     }
 
     /// Human-readable, OS-aware (`⌘K` on macOS, `Super+K` elsewhere).
-    pub(crate) fn display(&self) -> String {
+    pub fn display(&self) -> String {
         let mac = cfg!(target_os = "macos");
         let mut out = String::new();
         let m = self.mods;
@@ -283,7 +283,7 @@ impl Chord {
 /// What fires an action: a single chord, or a two-chord **sequence** (a
 /// leader/prefix chord then a key, opencode's `<leader> x`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Trigger {
+pub enum Trigger {
     /// One chord.
     Key(Chord),
     /// `first` then `second` within the keymap's timeout.
@@ -332,13 +332,13 @@ struct Bind {
 
 /// A named, self-contained keymap.
 #[derive(Debug, Clone)]
-pub(crate) struct Keymap {
+pub struct Keymap {
     /// Display name (`Default` / `Vim` / `Leader`).
-    pub(crate) name: &'static str,
+    pub name: &'static str,
     /// The leader chord for `⟨leader⟩`-prefixed chains, if any.
-    pub(crate) leader: Option<Chord>,
+    pub leader: Option<Chord>,
     /// How long (ms) a pressed leader waits for the second key.
-    pub(crate) leader_timeout_ms: u64,
+    pub leader_timeout_ms: u64,
     binds: Vec<Bind>,
 }
 
@@ -380,7 +380,7 @@ impl Keymap {
     /// Apply a user override (Textual `set_keymap` / opencode merged
     /// `keybinds`): replace this action's triggers, or disable it with
     /// `"none"`/`""`. Comma-separates alternatives.
-    pub(crate) fn override_action(&mut self, action: Action, keys: &str) {
+    pub fn override_action(&mut self, action: Action, keys: &str) {
         let triggers: Vec<Trigger> =
             if keys.trim().eq_ignore_ascii_case("none") || keys.trim().is_empty() {
                 Vec::new()
@@ -400,7 +400,7 @@ impl Keymap {
     /// The display string of every key bound to `action` (joined by `/`),
     /// or `—` when it is unbound/disabled. Powers help + footer + settings,
     /// so they always show the *live* binding.
-    pub(crate) fn keys_for(&self, action: Action) -> String {
+    pub fn keys_for(&self, action: Action) -> String {
         // The nine `Goto(n)` binds collapse to one help row.
         if matches!(action, Action::Goto(_)) {
             let mut digits: Vec<String> = self
@@ -449,7 +449,7 @@ enum Resolved {
 /// The registry: every keymap, the active one, the live user overrides, and
 /// the pending-sequence state. Owned by the app model; the reducer drives it.
 #[derive(Debug, Clone)]
-pub(crate) struct Keymaps {
+pub struct Keymaps {
     sets: Vec<Keymap>,
     active: usize,
     /// `(action, keys)` user customisations, applied over the active map.
@@ -458,9 +458,17 @@ pub(crate) struct Keymaps {
     pending: Option<(Chord, u64)>,
 }
 
+impl Default for Keymaps {
+    /// Equivalent to [`Keymaps::new`]: the three shipped keymaps with no
+    /// user overrides and no leader armed.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Keymaps {
     /// The three shipped keymaps, built with per-OS chords.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             sets: vec![default_map(), vim_map(), leader_map()],
             active: 0,
@@ -470,7 +478,7 @@ impl Keymaps {
     }
 
     /// The detected OS, for display.
-    pub(crate) fn os_name() -> &'static str {
+    pub fn os_name() -> &'static str {
         if cfg!(target_os = "macos") {
             "macOS"
         } else if cfg!(target_os = "windows") {
@@ -482,7 +490,7 @@ impl Keymaps {
 
     /// The active keymap with the user overrides applied (what the UI shows
     /// and what `resolve` matches against).
-    pub(crate) fn effective(&self) -> Keymap {
+    pub fn effective(&self) -> Keymap {
         let mut km = self.sets[self.active].clone();
         for (action, keys) in &self.overrides {
             km.override_action(*action, keys);
@@ -491,14 +499,14 @@ impl Keymaps {
     }
 
     /// Switch to the next keymap (clears any half-typed sequence).
-    pub(crate) fn cycle(&mut self) -> &'static str {
+    pub fn cycle(&mut self) -> &'static str {
         self.active = (self.active + 1) % self.sets.len();
         self.pending = None;
         self.sets[self.active].name
     }
 
     /// Customise (or disable with `"none"`) one action's keys, live.
-    pub(crate) fn set_override(&mut self, action: Action, keys: impl Into<String>) {
+    pub fn set_override(&mut self, action: Action, keys: impl Into<String>) {
         let keys = keys.into();
         self.overrides.retain(|(a, _)| *a != action);
         self.overrides.push((action, keys));
@@ -506,25 +514,25 @@ impl Keymaps {
 
     /// Active keymap name and whether a sequence leader is currently armed
     /// (for the status hint).
-    pub(crate) fn status(&self) -> (&'static str, bool) {
+    pub fn status(&self) -> (&'static str, bool) {
         (self.sets[self.active].name, self.pending.is_some())
     }
 
     /// Whether a leader/prefix has been pressed and we are waiting for the
     /// rest of the sequence (so the shell swallows the key).
-    pub(crate) fn armed(&self) -> bool {
+    pub fn armed(&self) -> bool {
         self.pending.is_some()
     }
 
     /// The active keymap's name.
-    pub(crate) fn active_name(&self) -> &'static str {
+    pub fn active_name(&self) -> &'static str {
         self.sets[self.active].name
     }
 
     /// Resolve a key event to an [`Action`], threading the leader-sequence
     /// state machine and its timeout (deterministic on the `tick` clock so
     /// the headless harness can drive it).
-    pub(crate) fn resolve(&mut self, ev: &KeyEvent, tick: u64) -> Option<Action> {
+    pub fn resolve(&mut self, ev: &KeyEvent, tick: u64) -> Option<Action> {
         let km = self.effective();
         let timeout_ticks = (km.leader_timeout_ms / 120).max(1);
 
@@ -558,7 +566,7 @@ impl Keymaps {
 
     /// Drop a leader that has sat un-completed past its timeout (called from
     /// the animation tick so a stale prefix never eats the next key).
-    pub(crate) fn expire(&mut self, tick: u64) {
+    pub fn expire(&mut self, tick: u64) {
         if let Some((_, deadline)) = self.pending {
             if tick > deadline {
                 self.pending = None;

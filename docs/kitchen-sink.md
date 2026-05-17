@@ -83,11 +83,18 @@ real-binary gate run by `cargo xtask record e2e --check`.
 | `f` | Traces screen: toggle the span waterfall ⇄ flame graph |
 | `s` `o` `c` `/` `e` | Data Grid: sort · group · collapse · filter · edit cell (`[` `]` pick the active column) |
 | `:` | Command palette — type to filter, `Enter` to jump |
-| `?` | Help overlay (the keymap) |
-| `g` | Settings drawer (toggle theme) |
+| `?` | Help overlay — the **live** keymap (reverse-looked-up, follows remaps) |
+| `g` | Settings drawer — the keymap manager (OS, active map, table; capture-to-rebind, disable, theme) |
+| `F2` | Cycle keymap: Default → Vim → opencode-style Leader |
 | `q` / `Esc` | Quit (opens a confirm modal; `y`/`Enter` confirms) |
 | typing | Into focused inputs; filters the palette |
 | mouse / scroll | Click hit-testing; wheel/PageUp-Down scrolling |
+
+Every shell binding is a semantic `Action` resolved through the shared
+[`rstui-keymap`](keymaps.md) engine (ADR 0015) — so the bindings above are
+the *Default* keymap; switching keymaps or remapping in the drawer changes
+them and the help/footer follow automatically. The displayed chords are
+per-OS (`⌘` on macOS, `Ctrl` elsewhere).
 
 ## Resolution adaptive
 

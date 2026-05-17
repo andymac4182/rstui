@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Size, TextArea};
+use rstui_keymap::Chord;
 use rstui_runtime::{App, Cmd, Frame};
 
 use crate::Config;
@@ -130,79 +131,35 @@ impl ModalState {
     }
 }
 
-/// Canonicalizes a key-chord string (`"Ctrl+ G"` → `"ctrl+g"`), ordering
-/// modifiers `ctrl, alt, shift, super` so plugin-declared and
-/// host-derived chords compare equal.
+/// Canonicalizes a key-chord string (`"Ctrl+ G"` → `"ctrl+g"`) through the
+/// shared [`rstui_keymap::Chord`] parser (ADR 0015), so a plugin-declared
+/// chord and a host-derived one compare equal *and* use the exact same
+/// vocabulary the kitchen sink does. Unparseable input falls back to a
+/// lowercased trim (lenient, never panics).
 #[must_use]
 pub fn normalize_chord(s: &str) -> String {
-    let mut ctrl = false;
-    let mut alt = false;
-    let mut shift = false;
-    let mut sup = false;
-    let mut key = String::new();
-    for part in s.split('+') {
-        match part.trim().to_ascii_lowercase().as_str() {
-            "ctrl" | "control" => ctrl = true,
-            "alt" | "option" | "meta" => alt = true,
-            "shift" => shift = true,
-            "super" | "cmd" | "win" => sup = true,
-            "" => {}
-            other => key = other.to_owned(),
-        }
-    }
-    let mut out = String::new();
-    if ctrl {
-        out.push_str("ctrl+");
-    }
-    if alt {
-        out.push_str("alt+");
-    }
-    if shift {
-        out.push_str("shift+");
-    }
-    if sup {
-        out.push_str("super+");
-    }
-    out.push_str(&key);
-    out
+    Chord::parse(s).map_or_else(|| s.trim().to_ascii_lowercase(), |c| c.spec())
 }
 
 /// The canonical chord for a key event, or `None` for a bare printable key
 /// (those type into the composer and must never be stolen as a shortcut).
+///
+/// The chord itself comes from the shared [`rstui_keymap::Chord`] so it is
+/// byte-identical to what [`normalize_chord`] produces for a registered
+/// keybinding; the gate (must carry ctrl/alt/super, or be a function key)
+/// is the client's own "shortcut vs composer input" policy.
 #[must_use]
 fn chord_of(key: &KeyEvent) -> Option<String> {
     let m = key.modifiers;
-    let ctrl = m.contains(KeyModifiers::CONTROL);
-    let alt = m.contains(KeyModifiers::ALT);
-    let sup = m.contains(KeyModifiers::SUPER);
-    let name = match key.code {
-        KeyCode::Char(c) => c.to_ascii_lowercase().to_string(),
-        KeyCode::F(n) => format!("f{n}"),
-        KeyCode::Enter => "enter".to_owned(),
-        KeyCode::Tab => "tab".to_owned(),
-        KeyCode::Backspace => "backspace".to_owned(),
-        KeyCode::Delete => "delete".to_owned(),
-        KeyCode::Esc => "esc".to_owned(),
-        _ => return None,
-    };
-    // A shortcut must carry ctrl/alt/super, or be a function key — never a
-    // bare/Shift-only printable (that is composer input).
     let is_fn = matches!(key.code, KeyCode::F(_));
-    if !(ctrl || alt || sup || is_fn) {
+    if !(m.contains(KeyModifiers::CONTROL)
+        || m.contains(KeyModifiers::ALT)
+        || m.contains(KeyModifiers::SUPER)
+        || is_fn)
+    {
         return None;
     }
-    let mut chord = String::new();
-    if ctrl {
-        chord.push_str("ctrl+");
-    }
-    if alt {
-        chord.push_str("alt+");
-    }
-    if sup {
-        chord.push_str("super+");
-    }
-    chord.push_str(&name);
-    Some(chord)
+    Some(Chord::from_event(key).spec())
 }
 
 /// A transient corner notification.
