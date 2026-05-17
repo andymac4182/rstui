@@ -469,6 +469,14 @@ layout/overlay/control family — the same pure-projection, total discipline:
   right-aligned numeric (+ optional per-row sign) gutter and exposing the inner
   content `Rect` (the `Block::inner` pattern) for code/diff/editor panes.
   Total (huge numbers saturate, narrow area collapses `inner`).
+- `flow` — `Flow`: a wrapped horizontal run of `Line` items packed across rows
+  within the area with a configurable gap (the `flex-wrap` pill-row — file
+  attachments, tag chips); a **pure layout projection** with a `layout(area)
+  -> Vec<Rect>` accessor, owns no state. Total (empty, item wider than area,
+  zero area all clip). Wave 4 P2 also added (additive, existing APIs intact):
+  `Table` `column_fit` (proportional/balanced) + `wrap_cells`, `Scrollbar`
+  `.arrows(bool)` end caps, `Slider` vertical `orientation`, and
+  `Block::bottom_title` — closing the last reconciled opentui parity items.
 
 ### `rstui-runtime`
 
@@ -664,6 +672,7 @@ cargo run -p rstui-widgets --example masked_input_demo
 cargo run -p rstui-widgets --example date_picker_demo
 cargo run -p rstui-widgets --example extmark_demo
 cargo run -p rstui-widgets --example line_number_gutter_demo
+cargo run -p rstui-widgets --example flow_demo
 # The flagship: one dynamic full-screen app exercising every widget +
 # layout, driven by the public runtime, headless-testable. The executable
 # proof of docs/composition.md / ADR 0012.

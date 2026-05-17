@@ -238,6 +238,31 @@ impl Scrollbar {
         self
     }
 
+    /// Toggles **both** end-cap arrows at once (a convenience over
+    /// [`begin_symbol`](Self::begin_symbol) / [`end_symbol`](Self::end_symbol)).
+    ///
+    /// `true` restores this orientation's default caps (`▲`/`▼` vertical,
+    /// `◄`/`►` horizontal); `false` removes both, handing those two cells
+    /// back to the track. This never changes the constructor default (arrows
+    /// **on**) — not calling it leaves existing behaviour unchanged; calling
+    /// it after a per-end override replaces both ends.
+    #[must_use]
+    pub const fn arrows(mut self, arrows: bool) -> Self {
+        if arrows {
+            let (begin, end) = if self.orientation.is_vertical() {
+                ('▲', '▼')
+            } else {
+                ('◄', '►')
+            };
+            self.begin_symbol = Some(begin);
+            self.end_symbol = Some(end);
+        } else {
+            self.begin_symbol = None;
+            self.end_symbol = None;
+        }
+        self
+    }
+
     /// Sets the base [`Style`] for the track and the arrows.
     #[must_use]
     pub const fn style(mut self, style: Style) -> Self {
@@ -624,6 +649,49 @@ mod tests {
         assert_eq!(bar.chars().next(), Some('^'));
         assert_eq!(bar.chars().next_back(), Some('v'));
         assert!(bar.contains('#')); // custom thumb
+    }
+
+    #[test]
+    fn arrows_false_removes_both_end_caps() {
+        // .arrows(false) == begin_symbol(None).end_symbol(None): a 4-tall bar
+        // is 4 track/thumb cells with no ▲/▼.
+        let bar = column(
+            Scrollbar::default()
+                .content_length(100)
+                .position(0)
+                .arrows(false),
+            1,
+            4,
+            0,
+        );
+        assert_eq!(bar.chars().count(), 4);
+        assert!(!bar.contains('▲') && !bar.contains('▼'));
+        assert!(bar.starts_with('█'));
+    }
+
+    #[test]
+    fn arrows_true_restores_the_orientation_default_caps() {
+        // Re-enabling after a removal brings back this orientation's arrows.
+        let v = column(
+            Scrollbar::default()
+                .content_length(100)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .arrows(true),
+            1,
+            6,
+            0,
+        );
+        assert_eq!(v.chars().next(), Some('▲'));
+        assert_eq!(v.chars().next_back(), Some('▼'));
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        Scrollbar::new(ScrollbarOrientation::HorizontalTop)
+            .content_length(40)
+            .arrows(true)
+            .render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, '◄');
+        assert_eq!(buf.get(Position::new(5, 0)).unwrap().symbol, '►');
     }
 
     #[test]

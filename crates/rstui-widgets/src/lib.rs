@@ -198,6 +198,9 @@
 //!   drawing a numeric (+ optional per-row sign) gutter and exposing the
 //!   inner content [`Rect`](rstui_core::Rect) (the [`Block::inner`](block::Block::inner)
 //!   pattern), for code/diff/editor panes.
+//! - [`flow`]: [`Flow`] — a wrapped horizontal run of [`Line`](rstui_core::Line)
+//!   items packed across rows within the area with a configurable gap (the
+//!   `flex-wrap` pill-row); a pure layout projection with a `layout` accessor.
 //!
 //! # Example
 //!
@@ -233,6 +236,7 @@ pub mod divider;
 pub mod drawer;
 pub mod editor;
 pub mod extmark;
+pub mod flow;
 pub mod form;
 pub mod gauge;
 pub mod grid;
@@ -302,6 +306,7 @@ pub use align::{Align, VerticalAlignment};
 pub use avatar::Avatar;
 pub use date_picker::DatePicker;
 pub use drawer::{Drawer, DrawerSide};
+pub use flow::Flow;
 pub use grid::Grid;
 pub use help_overlay::{HelpEntry, HelpOverlay};
 pub use kbd::Kbd;
@@ -317,14 +322,14 @@ pub use scrollbar::{Scrollbar, ScrollbarOrientation};
 pub use select::Select;
 pub use sidebar::{Sidebar, SidebarItem};
 pub use skeleton::{Skeleton, SkeletonShape};
-pub use slider::Slider;
+pub use slider::{Slider, SliderOrientation};
 pub use sparkline::Sparkline;
 pub use spinner::Spinner;
 pub use split_pane::SplitPane;
 pub use status_bar::StatusBar;
 pub use stepper::{Step, Stepper, StepperOrientation};
 pub use switch::Switch;
-pub use table::{Row, Table};
+pub use table::{Row, Table, TableColumnFit};
 pub use tabs::Tabs;
 pub use toast::{Toast, ToastCorner, ToastLevel, ToastMessage};
 pub use tooltip::Tooltip;

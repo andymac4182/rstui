@@ -25,14 +25,43 @@
 //!   [`Layout`], which already clamps. Out-of-range
 //!   selection/offset simply paint no bar; an empty area is a no-op.
 //!
-//! Per-cell alignment, multi-line rows / row heights, a `footer`, column and
-//! cell (2D) selection, and column spanning are deliberately out of scope for
-//! this slice — each is an additive follow-up that does not change this shape.
+//! Per-cell alignment, a `footer`, column and cell (2D) selection, and column
+//! spanning remain deliberately out of scope. Rich styled cells, auto-fit
+//! column sizing ([`TableColumnFit`]), and opt-in in-cell soft wrap
+//! ([`wrap_cells`](Table::wrap_cells)) are the ADR 0012 §P2 *additive* below —
+//! each strictly opt-in, leaving the original `Row`/`Table` API and its
+//! single-row, manual-width default behaviour unchanged.
 
 use std::borrow::Cow;
 
 use crate::block::Block;
+use crate::paragraph::{Paragraph, Wrap};
 use rstui_core::{Buffer, Constraint, Layout, Line, Position, Rect, Style, Widget};
+
+/// How [`Table`] derives its column widths when not sized by hand.
+///
+/// The default ([`Manual`](Self::Manual)) is the original behaviour: use the
+/// caller's [`widths`](Table::widths) constraints (or an equal share when
+/// none are given). The two auto-fit modes are opt-in and ignore `widths`,
+/// feeding their derived constraints through the *same* deterministic
+/// [`Layout`] divider, so they still clamp to the area and never panic.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TableColumnFit {
+    /// Use the caller's [`widths`](Table::widths) (equal [`Fill`] when empty)
+    /// — the unchanged default.
+    ///
+    /// [`Fill`]: rstui_core::Constraint::Fill
+    #[default]
+    Manual,
+    /// Size each column to its widest cell (header included), as a
+    /// [`Length`](rstui_core::Constraint::Length) per column. The layout
+    /// divider scales them down proportionally if their sum overflows the
+    /// area, so it is total.
+    Proportional,
+    /// Split the columns into an equal share regardless of content or the
+    /// caller's `widths` (an explicit, `widths`-overriding even split).
+    Balanced,
+}
 
 /// One row of a [`Table`]: an ordered list of cells, one per column.
 ///
@@ -122,6 +151,8 @@ pub struct Table<'a> {
     header: Option<Row<'a>>,
     widths: Vec<Constraint>,
     column_spacing: u16,
+    column_fit: TableColumnFit,
+    wrap_cells: bool,
     block: Option<Block<'a>>,
     style: Style,
     highlight_style: Style,
@@ -139,6 +170,8 @@ impl Default for Table<'_> {
             // ratatui's default, and the sensible one: one blank column
             // between cells so adjacent values never visually merge.
             column_spacing: 1,
+            column_fit: TableColumnFit::Manual,
+            wrap_cells: false,
             block: None,
             style: Style::default(),
             highlight_style: Style::default(),
@@ -201,6 +234,35 @@ impl<'a> Table<'a> {
     #[must_use]
     pub fn column_spacing(mut self, spacing: u16) -> Self {
         self.column_spacing = spacing;
+        self
+    }
+
+    /// Sets how columns are sized (default [`TableColumnFit::Manual`], the
+    /// original [`widths`](Self::widths)-driven behaviour).
+    ///
+    /// [`Proportional`](TableColumnFit::Proportional) /
+    /// [`Balanced`](TableColumnFit::Balanced) are opt-in auto-fit modes that
+    /// ignore `widths`; both still resolve through the same clamping
+    /// [`Layout`] divider, so an over-wide table scales down rather than
+    /// panicking.
+    #[must_use]
+    pub fn column_fit(mut self, fit: TableColumnFit) -> Self {
+        self.column_fit = fit;
+        self
+    }
+
+    /// Enables opt-in in-cell soft word wrap (default `false`).
+    ///
+    /// When `true`, a cell whose [`Line`] is wider than its column wraps onto
+    /// extra rows by **reusing [`Paragraph`]'s** soft wrap (so the wrap is
+    /// computed exactly one way, via
+    /// [`Paragraph::line_count`](crate::Paragraph::line_count)); each data
+    /// row's height becomes the tallest of its wrapped cells and the
+    /// selection bar/gutter span the whole row. The header stays one row.
+    /// Off (the default) every row is exactly one visual row, unchanged.
+    #[must_use]
+    pub fn wrap_cells(mut self, wrap: bool) -> Self {
+        self.wrap_cells = wrap;
         self
     }
 
@@ -268,6 +330,8 @@ impl Widget for Table<'_> {
             header,
             widths,
             column_spacing,
+            column_fit,
+            wrap_cells,
             block,
             style,
             highlight_style,
@@ -319,10 +383,29 @@ impl Widget for Table<'_> {
         if col_count == 0 {
             return;
         }
-        let constraints: Vec<Constraint> = if widths.is_empty() {
-            vec![Constraint::Fill(1); col_count]
-        } else {
-            widths
+        // Manual (default) is unchanged: caller widths, or an equal Fill when
+        // none. The two auto-fit modes are opt-in and override `widths`.
+        let constraints: Vec<Constraint> = match column_fit {
+            TableColumnFit::Manual => {
+                if widths.is_empty() {
+                    vec![Constraint::Fill(1); col_count]
+                } else {
+                    widths
+                }
+            }
+            TableColumnFit::Balanced => vec![Constraint::Fill(1); col_count],
+            TableColumnFit::Proportional => {
+                // Each column's widest cell (header included) as a Length; the
+                // divider scales them down if their sum overflows the area.
+                let mut max_w = vec![0u16; col_count];
+                for r in rows.iter().chain(header.iter()) {
+                    for (i, cell) in r.cells.iter().enumerate().take(col_count) {
+                        let w = u16::try_from(cell.width()).unwrap_or(u16::MAX);
+                        max_w[i] = max_w[i].max(w);
+                    }
+                }
+                max_w.into_iter().map(Constraint::Length).collect()
+            }
         };
         let column_rects = Layout::horizontal(constraints)
             .spacing(column_spacing)
@@ -344,6 +427,66 @@ impl Widget for Table<'_> {
         }
         let data_top = inner.top().saturating_add(header_rows);
         let data_height = inner.height.saturating_sub(header_rows);
+
+        if wrap_cells {
+            // Opt-in multi-row path: each cell soft-wraps by reusing
+            // Paragraph (one wrap implementation, via Paragraph::line_count),
+            // so a row is as tall as its tallest wrapped cell. The selection
+            // bar/gutter span the whole row and the highlight is patched LAST
+            // over the rendered glyphs (set_style patches), keeping the
+            // single-bar idiom even when rows are multi-line.
+            let data_bottom = data_top.saturating_add(data_height);
+            let mut y = data_top;
+            for (idx, row) in rows.iter().enumerate().skip(offset) {
+                if y >= data_bottom {
+                    break;
+                }
+                let row_base = style.patch(row.style);
+                let mut row_h: u16 = 1;
+                for (cell, col) in row.cells.iter().zip(&column_rects) {
+                    let h = u16::try_from(
+                        Paragraph::new(cell.clone())
+                            .wrap(Wrap { trim: false })
+                            .line_count(col.width),
+                    )
+                    .unwrap_or(u16::MAX)
+                    .max(1);
+                    row_h = row_h.max(h);
+                }
+                let row_h = row_h.min(data_bottom.saturating_sub(y));
+                let is_selected = selected == Some(idx);
+
+                for (cell, col) in row.cells.iter().zip(&column_rects) {
+                    let cell_w = col.width.min(inner.right().saturating_sub(col.x));
+                    let cell_area = Rect::new(col.x, y, cell_w, row_h);
+                    // Paragraph cascades base → line(cell) → span itself, so
+                    // the table → row base is enough here.
+                    Paragraph::new(cell.clone())
+                        .wrap(Wrap { trim: false })
+                        .style(row_base)
+                        .render(cell_area, buf);
+                }
+
+                if is_selected {
+                    // Highlight patched LAST across the full row height: the
+                    // gutter, columns, gaps, and padding read as one bar.
+                    buf.set_style(
+                        Rect::new(inner.left(), y, inner.width, row_h),
+                        highlight_style,
+                    );
+                    let mut x = inner.left();
+                    for ch in gutter.chars() {
+                        if x >= columns_area.x || x >= inner.right() {
+                            break;
+                        }
+                        buf.set_cell(Position::new(x, y), ch, bar_style);
+                        x = x.saturating_add(1);
+                    }
+                }
+                y = y.saturating_add(row_h);
+            }
+            return;
+        }
 
         for (row_i, (idx, row)) in rows
             .iter()
@@ -626,5 +769,111 @@ mod tests {
             .selected(Some(0))
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    // ---- ADR 0012 §P2 additive: column-fit + in-cell wrap ----
+
+    #[test]
+    fn proportional_fit_sizes_each_column_to_its_widest_cell() {
+        // col0 widest = 1 ("x"), col1 widest = 4 ("yyyy"); Proportional ⇒
+        // Length(1), Length(4) ⇒ exactly fills width 5 (widths ignored).
+        let table = Table::new(
+            [Row::new(["x", "yyyy"]), Row::new(["a", "b"])],
+            Vec::<Constraint>::new(),
+        )
+        .column_spacing(0)
+        .column_fit(TableColumnFit::Proportional);
+        assert_eq!(grid(table, 5, 2), "xyyyy\nab   \n");
+    }
+
+    #[test]
+    fn balanced_fit_overrides_widths_with_an_even_split() {
+        // Widths say [1, 1] but Balanced forces an equal Fill split: in
+        // width 4 each column is 2 cells wide.
+        let table = Table::new(
+            [Row::new(["a", "b"])],
+            [Constraint::Length(1), Constraint::Length(1)],
+        )
+        .column_spacing(0)
+        .column_fit(TableColumnFit::Balanced);
+        assert_eq!(grid(table, 4, 1), "a b \n");
+    }
+
+    #[test]
+    fn manual_fit_is_the_unchanged_default_behaviour() {
+        // Explicit Manual == the original path: caller widths honoured.
+        let table = Table::new(
+            [Row::new(["ab", "cd"])],
+            [Constraint::Length(2), Constraint::Length(2)],
+        )
+        .column_fit(TableColumnFit::Manual);
+        assert_eq!(grid(table, 5, 1), "ab cd\n");
+    }
+
+    #[test]
+    fn wrap_cells_makes_a_row_as_tall_as_its_tallest_wrapped_cell() {
+        // col0 "abcd" hard-wraps to 2 rows at width 2; col1 "z" is 1 row, so
+        // the row is 2 tall. Reuses Paragraph's wrap (one implementation).
+        let table = Table::new(
+            [Row::new(["abcd", "z"])],
+            [Constraint::Length(2), Constraint::Length(1)],
+        )
+        .column_spacing(0)
+        .wrap_cells(true);
+        assert_eq!(grid(table, 3, 2), "abz\ncd \n");
+    }
+
+    #[test]
+    fn wrap_cells_stacks_successive_rows_below_their_full_height() {
+        let table = Table::new(
+            [Row::new(["abcd"]), Row::new(["ef"])],
+            [Constraint::Length(2)],
+        )
+        .column_spacing(0)
+        .wrap_cells(true);
+        // Row 0 is 2 tall ("ab"/"cd"); row 1 ("ef") starts on line 2.
+        assert_eq!(grid(table, 2, 3), "ab\ncd\nef\n");
+    }
+
+    #[test]
+    fn wrap_cells_off_is_still_exactly_one_visual_row() {
+        // The default path is byte-for-byte unchanged: long cell is clipped,
+        // not wrapped.
+        let table = Table::new([Row::new(["abcd"])], [Constraint::Length(2)]);
+        assert_eq!(grid(table, 2, 2), "ab\n  \n");
+    }
+
+    #[test]
+    fn wrap_cells_selection_bar_spans_the_full_row_height() {
+        let table = Table::new([Row::new(["abcd"])], [Constraint::Length(2)])
+            .column_spacing(0)
+            .wrap_cells(true)
+            .selected(Some(0))
+            .highlight_style(Style::new().bg(Color::Blue));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 2));
+        table.render(buf.area(), &mut buf);
+        // Both wrapped rows of the selected cell carry the highlight bg.
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(buf.get(Position::new(x, y)).unwrap().bg, Color::Blue);
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_cells_keeps_a_styled_line_cells_span_styles() {
+        // Rich cell: a multi-span styled Line still cascades under the wrap
+        // path (table → row → cell-line → span via the reused Paragraph).
+        let cell = Line::from(vec![
+            Span::styled("ab", Style::new().fg(Color::Red)),
+            Span::styled("cd", Style::new().fg(Color::Green)),
+        ]);
+        let table = Table::new([Row::new([cell])], [Constraint::Length(2)])
+            .column_spacing(0)
+            .wrap_cells(true);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 2));
+        table.render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().fg, Color::Red); // "ab"
+        assert_eq!(buf.get(Position::new(0, 1)).unwrap().fg, Color::Green); // "cd"
     }
 }

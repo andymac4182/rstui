@@ -213,6 +213,8 @@ pub struct Block<'a> {
     title: Option<Line<'a>>,
     title_alignment: Alignment,
     title_style: Style,
+    bottom_title: Option<Line<'a>>,
+    bottom_title_alignment: Alignment,
     padding: Padding,
 }
 
@@ -286,6 +288,27 @@ impl<'a> Block<'a> {
     #[must_use]
     pub fn title_style(mut self, style: Style) -> Self {
         self.title_style = style;
+        self
+    }
+
+    /// Sets a title drawn on the **bottom** edge row (the opencode
+    /// compaction-divider / footer-label use).
+    ///
+    /// The mirror of [`title`](Self::title): a full [`Line`] clipped between
+    /// the vertical borders, its own [`alignment`](Line::alignment) winning
+    /// over [`bottom_title_alignment`](Self::bottom_title_alignment), per-span
+    /// styles cascading over the shared [`title_style`](Self::title_style).
+    #[must_use]
+    pub fn bottom_title(mut self, title: impl Into<Line<'a>>) -> Self {
+        self.bottom_title = Some(title.into());
+        self
+    }
+
+    /// Sets the default bottom-title alignment, used when the bottom-title
+    /// [`Line`] does not set its own.
+    #[must_use]
+    pub fn bottom_title_alignment(mut self, alignment: Alignment) -> Self {
+        self.bottom_title_alignment = alignment;
         self
     }
 
@@ -395,6 +418,39 @@ impl Widget for Block<'_> {
                             break 'title;
                         }
                         buf.set_cell(Position::new(x, top), ch, style);
+                        x = x.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        if let Some(title) = self.bottom_title {
+            // The mirror of the top title, on the bottom edge row, inside
+            // whatever vertical borders are present so it never clobbers a
+            // corner — the opencode compaction-divider / footer-label use.
+            let start = left + u16::from(borders.contains(Borders::LEFT));
+            let end = right - u16::from(borders.contains(Borders::RIGHT));
+            if end > start {
+                let avail = end - start;
+                let len = (title.width() as u16).min(avail);
+                let alignment = title.alignment.unwrap_or(self.bottom_title_alignment);
+                let x0 = match alignment {
+                    Alignment::Left => start,
+                    Alignment::Right => end - len,
+                    Alignment::Center => start + (avail - len) / 2,
+                };
+                // Same block title style → line → span cascade as the top
+                // title; only the title's own cells are stamped so a short
+                // bottom title leaves the border showing around it.
+                let base = self.title_style.patch(title.style);
+                let mut x = x0;
+                'bottom_title: for span in title.spans {
+                    let style = base.patch(span.style);
+                    for ch in span.content.chars() {
+                        if x >= end {
+                            break 'bottom_title;
+                        }
+                        buf.set_cell(Position::new(x, bottom - 1), ch, style);
                         x = x.saturating_add(1);
                     }
                 }
@@ -597,5 +653,73 @@ mod tests {
             .title("x")
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    // ---- ADR 0012 §P2 additive: bottom title ----
+
+    #[test]
+    fn bottom_title_is_aligned_and_clipped_on_the_bottom_border() {
+        // Mirrors the top-title alignment cases, on the bottom edge row.
+        assert_eq!(
+            lines(Block::bordered().bottom_title("Hi"), 6, 2),
+            "┌────┐\n└Hi──┘\n"
+        );
+        assert_eq!(
+            lines(
+                Block::bordered()
+                    .bottom_title("Hi")
+                    .bottom_title_alignment(Alignment::Right),
+                6,
+                2
+            ),
+            "┌────┐\n└──Hi┘\n"
+        );
+        assert_eq!(
+            lines(
+                Block::bordered()
+                    .bottom_title("Hi")
+                    .bottom_title_alignment(Alignment::Center),
+                7,
+                2
+            ),
+            "┌─────┐\n└─Hi──┘\n"
+        );
+        // Overlong bottom titles truncate between the borders.
+        assert_eq!(
+            lines(Block::bordered().bottom_title("overlong"), 5, 2),
+            "┌───┐\n└ove┘\n"
+        );
+    }
+
+    #[test]
+    fn top_and_bottom_titles_coexist_and_line_alignment_wins() {
+        // Both edges carry a title; the bottom Line's own right-alignment
+        // overrides the block default (the Text→Line cascade, like the top).
+        assert_eq!(
+            lines(
+                Block::bordered()
+                    .title("Top")
+                    .bottom_title(Line::raw("End").right_aligned())
+                    .bottom_title_alignment(Alignment::Left),
+                7,
+                3
+            ),
+            "┌Top──┐\n│     │\n└──End┘\n"
+        );
+    }
+
+    #[test]
+    fn bottom_title_span_styles_cascade_over_the_shared_title_style() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 7, 2));
+        Block::bordered()
+            .title_style(Style::new().add_modifier(Modifier::BOLD))
+            .bottom_title(Span::styled("Lo", Style::new().fg(Color::Red)))
+            .render(buf.area(), &mut buf);
+        // x=1,2 on the bottom row hold the title; it cascades the shared
+        // title_style base under its own span fg.
+        let l = buf.get(Position::new(1, 1)).unwrap();
+        assert_eq!(l.symbol, 'L');
+        assert_eq!(l.fg, Color::Red);
+        assert!(l.modifier.contains(Modifier::BOLD));
     }
 }
