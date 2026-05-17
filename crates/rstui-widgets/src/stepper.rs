@@ -31,6 +31,8 @@
 //! short column (the strip clips), and a multi-row area are all safe
 //! clips/no-ops — never a panic.
 
+use std::borrow::Cow;
+
 use rstui_core::{Buffer, Line, Position, Rect, Style, Widget};
 
 use crate::block::Block;
@@ -102,7 +104,7 @@ impl<'a> Step<'a> {
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct Stepper<'a> {
-    steps: Vec<Step<'a>>,
+    steps: Cow<'a, [Step<'a>]>,
     current: usize,
     orientation: StepperOrientation,
     block: Option<Block<'a>>,
@@ -120,7 +122,21 @@ impl<'a> Stepper<'a> {
         I: IntoIterator<Item = Step<'a>>,
     {
         Self {
-            steps: steps.into_iter().collect(),
+            steps: Cow::Owned(steps.into_iter().collect()),
+            ..Self::default()
+        }
+    }
+
+    /// A stepper over caller-owned `steps` the widget **borrows** instead of
+    /// collecting a fresh `Vec` each frame — the allocation-free path for a
+    /// reducer that already holds `&[Step]` in its model (the pure-projection
+    /// seam). Identical projection to [`new`](Self::new); the owned-iterator
+    /// constructor is unchanged (it wraps its collected `Vec` in
+    /// `Cow::Owned`), so this is purely additive.
+    #[must_use]
+    pub fn from_slice(steps: &'a [Step<'a>]) -> Self {
+        Self {
+            steps: Cow::Borrowed(steps),
             ..Self::default()
         }
     }
@@ -551,5 +567,22 @@ mod tests {
             .current(1)
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    #[test]
+    fn from_slice_renders_identically_to_the_owned_constructor() {
+        // `Cow::Borrowed` vs `Cow::Owned` is invisible to render; pinned
+        // with a current index so the active-step styling is covered.
+        let steps = [Step::new("One"), Step::new("Two"), Step::new("Three")];
+        let area = Rect::new(0, 0, 30, 1);
+        let mut owned = Buffer::empty(area);
+        Stepper::new(steps.iter().cloned())
+            .current(1)
+            .render(area, &mut owned);
+        let mut borrowed = Buffer::empty(area);
+        Stepper::from_slice(&steps)
+            .current(1)
+            .render(area, &mut borrowed);
+        assert_eq!(owned.cells(), borrowed.cells());
     }
 }

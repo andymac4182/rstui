@@ -128,7 +128,7 @@ impl<'a> From<Vec<Span<'a>>> for ListItem<'a> {
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct List<'a> {
-    items: Vec<ListItem<'a>>,
+    items: Cow<'a, [ListItem<'a>]>,
     block: Option<Block<'a>>,
     style: Style,
     highlight_style: Style,
@@ -145,7 +145,22 @@ impl<'a> List<'a> {
         T: Into<ListItem<'a>>,
     {
         Self {
-            items: items.into_iter().map(Into::into).collect(),
+            items: Cow::Owned(items.into_iter().map(Into::into).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// A list over caller-owned `items` the widget **borrows** instead of
+    /// collecting a fresh `Vec` each frame — the allocation-free path for a
+    /// reducer that already holds `&[ListItem]` in its model (the
+    /// pure-projection seam, the same one `Menu`/`Sidebar` window through).
+    /// Identical projection to [`new`](Self::new); the owned-iterator
+    /// constructor is unchanged (it wraps its collected `Vec` in
+    /// `Cow::Owned`), so this is purely additive.
+    #[must_use]
+    pub fn from_slice(items: &'a [ListItem<'a>]) -> Self {
+        Self {
+            items: Cow::Borrowed(items),
             ..Self::default()
         }
     }
@@ -245,7 +260,7 @@ impl Widget for List<'_> {
         let content_x0 = left.saturating_add(gutter_width);
 
         for (row, (idx, item)) in items
-            .into_iter()
+            .iter()
             .enumerate()
             .skip(offset)
             .take(inner.height as usize)
@@ -275,10 +290,10 @@ impl Widget for List<'_> {
             // Resolve each glyph through list → item-line → span, then patch
             // the highlight last on the selected row so it wins over per-item
             // styling exactly as the full-width bar does.
-            let line = item.line;
+            let line = &item.line;
             let line_base = style.patch(line.style);
             let mut x = content_x0;
-            'row: for span in line.spans {
+            'row: for span in &line.spans {
                 let mut span_style = line_base.patch(span.style);
                 if is_selected {
                     span_style = span_style.patch(highlight_style);
@@ -454,5 +469,29 @@ mod tests {
             .selected(Some(0))
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    #[test]
+    fn from_slice_renders_identically_to_the_owned_constructor() {
+        // `Cow::Borrowed` vs `Cow::Owned` is invisible to render; pinned
+        // with a selection + offset so the bar/scroll paths are covered.
+        let items = [
+            ListItem::new("alpha"),
+            ListItem::new("beta"),
+            ListItem::new("gamma"),
+            ListItem::new("delta"),
+        ];
+        let area = Rect::new(0, 0, 12, 3);
+        let mut owned = Buffer::empty(area);
+        List::new(items.iter().cloned())
+            .selected(Some(2))
+            .offset(1)
+            .render(area, &mut owned);
+        let mut borrowed = Buffer::empty(area);
+        List::from_slice(&items)
+            .selected(Some(2))
+            .offset(1)
+            .render(area, &mut borrowed);
+        assert_eq!(owned.cells(), borrowed.cells());
     }
 }

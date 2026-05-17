@@ -147,7 +147,7 @@ impl<'a> Row<'a> {
 /// ```
 #[derive(Debug, Clone)]
 pub struct Table<'a> {
-    rows: Vec<Row<'a>>,
+    rows: Cow<'a, [Row<'a>]>,
     header: Option<Row<'a>>,
     widths: Vec<Constraint>,
     column_spacing: u16,
@@ -164,7 +164,7 @@ pub struct Table<'a> {
 impl Default for Table<'_> {
     fn default() -> Self {
         Self {
-            rows: Vec::new(),
+            rows: Cow::Owned(Vec::new()),
             header: None,
             widths: Vec::new(),
             // ratatui's default, and the sensible one: one blank column
@@ -192,7 +192,26 @@ impl<'a> Table<'a> {
         C: IntoIterator<Item = Constraint>,
     {
         Self {
-            rows: rows.into_iter().collect(),
+            rows: Cow::Owned(rows.into_iter().collect()),
+            widths: widths.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
+    /// A table over caller-owned `rows` the widget **borrows** instead of
+    /// collecting a fresh `Vec` each frame — the allocation-free path for a
+    /// reducer that already holds `&[Row]` in its model (the pure-projection
+    /// seam). Identical projection to [`new`](Self::new) with the same
+    /// `widths` handling; the owned-iterator constructor is unchanged (it
+    /// wraps its collected `Vec` in `Cow::Owned`), so this is purely
+    /// additive.
+    #[must_use]
+    pub fn from_slice<C>(rows: &'a [Row<'a>], widths: C) -> Self
+    where
+        C: IntoIterator<Item = Constraint>,
+    {
+        Self {
+            rows: Cow::Borrowed(rows),
             widths: widths.into_iter().collect(),
             ..Self::default()
         }
@@ -204,7 +223,7 @@ impl<'a> Table<'a> {
     where
         R: IntoIterator<Item = Row<'a>>,
     {
-        self.rows = rows.into_iter().collect();
+        self.rows = Cow::Owned(rows.into_iter().collect());
         self
     }
 
@@ -879,5 +898,31 @@ mod tests {
         table.render(buf.area(), &mut buf);
         assert_eq!(buf.get(Position::new(0, 0)).unwrap().fg, Color::Red); // "ab"
         assert_eq!(buf.get(Position::new(0, 1)).unwrap().fg, Color::Green); // "cd"
+    }
+
+    #[test]
+    fn from_slice_renders_identically_to_the_owned_constructor() {
+        // `Cow::Borrowed` vs `Cow::Owned` is invisible to render; pinned
+        // with a header + selection so the gutter/bar paths are covered.
+        let rows = [
+            Row::new(["a", "1"]),
+            Row::new(["bb", "22"]),
+            Row::new(["ccc", "333"]),
+        ];
+        let area = Rect::new(0, 0, 12, 4);
+        let mut owned = Buffer::empty(area);
+        Table::new(
+            rows.iter().cloned(),
+            [Constraint::Length(4), Constraint::Length(4)],
+        )
+        .header(Row::new(["L", "R"]))
+        .selected(Some(1))
+        .render(area, &mut owned);
+        let mut borrowed = Buffer::empty(area);
+        Table::from_slice(&rows, [Constraint::Length(4), Constraint::Length(4)])
+            .header(Row::new(["L", "R"]))
+            .selected(Some(1))
+            .render(area, &mut borrowed);
+        assert_eq!(owned.cells(), borrowed.cells());
     }
 }

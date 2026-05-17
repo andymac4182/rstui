@@ -153,15 +153,21 @@ validation path for each change.
 >   re-parse is neither windowing-shaped nor a real-world cost — the only
 >   genuinely cache-class, no-hot-caller item; left as the documented
 >   future caller-owned-cache should a hot caller ever appear.
-> - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors — no
->   remaining hot caller (verified).** The real `List` build-all-then-clip
->   costs *were* MENU-1/SB-1/CP-1, now DONE via caller-side windowing
->   with no API change. `Stepper`/`Tabs` carry tiny fixed N (a wizard's
->   ~5 steps, a tab bar's ~8 tabs) — not a per-frame cost. `Table` T1
->   (clone-once) landed; its remaining cost is T3/T5 (below). So the
->   "borrowed constructor" is an API micro-nicety with no measured hot
->   caller left, not a slice — the fix would still be a public signature
->   change by definition, for no remaining real cost.
+> - **Borrowed `List`/`Table`/`Stepper`/`Tabs` constructors — DONE
+>   (additive `Cow`, no API break).** "API-breaking by definition" was
+>   the 5th over-broad label the re-derivation overturned: the
+>   `items`/`rows`/`steps`/`titles` fields are **private**, so changing
+>   `Vec<T>` → `Cow<'a,[T]>` is invisible to every caller — `new(IntoIterator)`
+>   wraps its collected `Vec` in `Cow::Owned` (unchanged behaviour),
+>   render iterates `.iter()` by-ref (List/Tabs needed a one-line
+>   `into_iter()`→`iter()`; Stepper/Table already did), and a new
+>   `from_slice(&'a [T])` → `Cow::Borrowed` is **purely additive** (the
+>   UI-1 internal-field precedent). A reducer holding `&[T]` in its model
+>   now hands it over with zero per-frame collect. Gate: every widget's
+>   full render-snapshot suite is unchanged **and** a new
+>   `from_slice_renders_identically_to_the_owned_constructor` per widget
+>   pins `Cow::Borrowed == Cow::Owned` cell-for-cell; Menu/Sidebar/
+>   CommandPalette/Select (which compose `List`) all still pass.
 > - **plugin-host PROTO-3 — cold path, not worth an API break
 >   (verified by code, DRV-2-class).** PROTO-1 (the actual 6–8-`Vec`
 >   capability round-trip + `read_frame` double-alloc) already landed

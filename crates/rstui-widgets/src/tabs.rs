@@ -26,6 +26,8 @@
 //! deliberately-deferred stateful-widget question `List` flagged, and is not
 //! smuggled in here.
 
+use std::borrow::Cow;
+
 use crate::block::Block;
 use rstui_core::{Buffer, Line, Position, Rect, Span, Style, Widget};
 
@@ -64,7 +66,7 @@ use rstui_core::{Buffer, Line, Position, Rect, Span, Style, Widget};
 /// ```
 #[derive(Debug, Clone)]
 pub struct Tabs<'a> {
-    titles: Vec<Line<'a>>,
+    titles: Cow<'a, [Line<'a>]>,
     block: Option<Block<'a>>,
     style: Style,
     highlight_style: Style,
@@ -75,7 +77,7 @@ pub struct Tabs<'a> {
 impl Default for Tabs<'_> {
     fn default() -> Self {
         Self {
-            titles: Vec::new(),
+            titles: Cow::Owned(Vec::new()),
             block: None,
             style: Style::new(),
             highlight_style: Style::new(),
@@ -93,7 +95,21 @@ impl<'a> Tabs<'a> {
         T: Into<Line<'a>>,
     {
         Self {
-            titles: titles.into_iter().map(Into::into).collect(),
+            titles: Cow::Owned(titles.into_iter().map(Into::into).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// A strip over caller-owned `titles` the widget **borrows** instead of
+    /// collecting a fresh `Vec` each frame — the allocation-free path for a
+    /// reducer that already holds `&[Line]` in its model (the pure-projection
+    /// seam). Identical projection to [`new`](Self::new); the existing
+    /// owned-iterator constructor is unchanged (it just wraps the collected
+    /// `Vec` in `Cow::Owned`), so this is purely additive.
+    #[must_use]
+    pub fn from_slice(titles: &'a [Line<'a>]) -> Self {
+        Self {
+            titles: Cow::Borrowed(titles),
             ..Self::default()
         }
     }
@@ -193,7 +209,7 @@ impl Widget for Tabs<'_> {
             true
         };
 
-        'strip: for (i, title) in titles.into_iter().enumerate() {
+        'strip: for (i, title) in titles.iter().enumerate() {
             // A divider sits between tabs only — not before the first.
             if i > 0 && !stamp(buf, &mut x, &divider.content, divider_style) {
                 break 'strip;
@@ -205,7 +221,7 @@ impl Widget for Tabs<'_> {
 
             let is_selected = selected == Some(i);
             let line_base = style.patch(title.style);
-            for span in title.spans {
+            for span in &title.spans {
                 let mut span_style = line_base.patch(span.style);
                 if is_selected {
                     // Highlight wins last, over the selected title glyphs only.
@@ -383,5 +399,23 @@ mod tests {
             .selected(Some(0))
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    #[test]
+    fn from_slice_renders_identically_to_the_owned_constructor() {
+        // The borrowed constructor must be a byte-identical projection of
+        // the same titles — `Cow::Borrowed` vs `Cow::Owned` is invisible to
+        // render. Pinned with a selection so the highlight path is covered.
+        let titles = [Line::raw("One"), Line::raw("Two"), Line::raw("Three")];
+        let area = Rect::new(0, 0, 20, 1);
+        let mut owned = Buffer::empty(area);
+        Tabs::new(titles.iter().cloned())
+            .selected(Some(1))
+            .render(area, &mut owned);
+        let mut borrowed = Buffer::empty(area);
+        Tabs::from_slice(&titles)
+            .selected(Some(1))
+            .render(area, &mut borrowed);
+        assert_eq!(owned.cells(), borrowed.cells());
     }
 }
