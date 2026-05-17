@@ -1057,6 +1057,27 @@ impl<'a> DataTable<'a> {
     }
 }
 
+/// The single open [`CellField::Select`] cell, captured during the row loop
+/// and rendered as one overlay *after* the body so its panel floats over
+/// the rows below instead of being overwritten by them. Private — an
+/// internal render detail, not public API.
+struct OpenDropdown<'a> {
+    /// The field cell's left column.
+    x: u16,
+    /// The field cell's row.
+    y: u16,
+    /// The field cell's width.
+    width: u16,
+    /// The cell's base style (selection bar already patched in).
+    base: Style,
+    /// The committed option index (the current cell value), if any.
+    selected: Option<usize>,
+    /// The caller-owned open/highlight state.
+    state: &'a CellSelectState,
+    /// The column's options.
+    options: &'a [Cow<'a, str>],
+}
+
 impl Widget for DataTable<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
@@ -1102,6 +1123,11 @@ impl Widget for DataTable<'_> {
 
         // ---- virtualized body: only the visible window is touched ----
         let offset = self.first_visible(body.height);
+        // An open Select cell is NOT drawn in the row loop — its panel must
+        // drop *over* the rows below, so it is deferred to a single overlay
+        // rendered after the body (only one cell can be editing at a time).
+        // Carries: (field_x, field_y, field_w, base, selected, state, opts).
+        let mut open_dropdown: Option<OpenDropdown<'_>> = None;
         for (row_i, (vi, vrow)) in self
             .visual
             .iter()
@@ -1188,6 +1214,19 @@ impl Widget for DataTable<'_> {
                                     .render(cell_area, buf);
                             }
                             Some(CellField::Select(options)) => {
+                                // Always draw the closed look in-loop (value +
+                                // ▾). The open panel is deferred so it can
+                                // drop *over* the rows below instead of being
+                                // clipped to this one cell row.
+                                if let Some(cell) = row.cell(ci) {
+                                    stamp_cell(buf, cell, rect, inner.right(), y, row_base, hl);
+                                }
+                                let mx = rect
+                                    .x
+                                    .saturating_add(rect.width.saturating_sub(1))
+                                    .min(inner.right().saturating_sub(1));
+                                buf.set_cell(Position::new(mx, y), '▾', base);
+
                                 // The dropdown is open only while *this* cell
                                 // is edited and the caller-owned state says so.
                                 let open_state = if editing_here {
@@ -1197,23 +1236,15 @@ impl Widget for DataTable<'_> {
                                 };
                                 if let Some(st) = open_state {
                                     let selected = options.iter().position(|o| o.as_ref() == text);
-                                    Select::new(options.iter().cloned())
-                                        .open(true)
-                                        .selected(selected)
-                                        .highlight(st.highlight())
-                                        .offset(st.offset())
-                                        .style(base)
-                                        .render(cell_area, buf);
-                                } else {
-                                    if let Some(cell) = row.cell(ci) {
-                                        stamp_cell(buf, cell, rect, inner.right(), y, row_base, hl);
-                                    }
-                                    // A ▾ affordance in the column's last cell.
-                                    let mx = rect
-                                        .x
-                                        .saturating_add(rect.width.saturating_sub(1))
-                                        .min(inner.right().saturating_sub(1));
-                                    buf.set_cell(Position::new(mx, y), '▾', base);
+                                    open_dropdown = Some(OpenDropdown {
+                                        x: rect.x,
+                                        y,
+                                        width: cell_w,
+                                        base,
+                                        selected,
+                                        state: st,
+                                        options: options.as_slice(),
+                                    });
                                 }
                             }
                             // CellField::Text (or no column): the original
@@ -1237,6 +1268,27 @@ impl Widget for DataTable<'_> {
                         }
                     }
                 }
+            }
+        }
+
+        // ---- the open Select cell's dropdown, as a single overlay ----
+        // Drawn AFTER every row so the panel floats over the rows below
+        // instead of being overwritten by the next loop iterations (the
+        // bug). `Select` is given the **one-row field rect**: it anchors
+        // there and drops its opaque panel into the gap below it within
+        // `buf.area()` (flipping above near the screen edge), exactly the
+        // float a standalone `Select` does — so the area must stay 1 row
+        // high (a tall area would push the field to the screen bottom and
+        // leave no gap, collapsing the panel).
+        if let Some(d) = open_dropdown {
+            if d.width > 0 {
+                Select::new(d.options.iter().cloned())
+                    .open(true)
+                    .selected(d.selected)
+                    .highlight(d.state.highlight())
+                    .offset(d.state.offset())
+                    .style(d.base)
+                    .render(Rect::new(d.x, d.y, d.width, 1), buf);
             }
         }
     }
@@ -1657,6 +1709,44 @@ mod tests {
             4,
         );
         assert!(!out.contains("ops"), "closed ⇒ no panel:\n{out}");
+    }
+
+    #[test]
+    fn an_open_select_panel_floats_opaquely_over_the_rows_below() {
+        // The reported bug: an open dropdown must load *over the top* of the
+        // rows beneath it. It is deferred to a single overlay drawn after
+        // the body and `clear_region`d opaque, so the rows under the panel
+        // are covered — not painted over the panel.
+        let c = vec![
+            DataColumn::new("k")
+                .width(Constraint::Length(6))
+                .field(CellField::select(["alpha", "beta"])),
+        ];
+        let r = [
+            DataRow::new(["alpha"]),
+            DataRow::new(["ZZZZ"]),
+            DataRow::new(["YYYY"]),
+        ];
+        let mut st = DataTableState::new();
+        st.begin_edit(0, 0); // editing the row-0 Select cell
+        let mut cs = CellSelectState::new();
+        cs.open(Some(0));
+        let v = project(&c, &r, &st);
+        let out = grid(
+            DataTable::new(&c, &r, &v, &st)
+                .cell_select(&cs)
+                .show_header(false),
+            6,
+            5,
+        );
+        // Panel lists "beta" below the field; the data rows it covers
+        // ("ZZZZ"/"YYYY") are hidden — proof it floats opaquely on top and
+        // is not overwritten by the row loop.
+        assert!(out.contains("beta"), "panel option shows:\n{out}");
+        assert!(
+            !out.contains("ZZZZ") && !out.contains("YYYY"),
+            "rows under the panel are covered (opaque, drawn last):\n{out}"
+        );
     }
 
     #[test]
