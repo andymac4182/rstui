@@ -29,16 +29,41 @@ validation path for each change.
 > - **Batch E partial** `TextEdit` O(1) `len()` cache + single-walk
 >   `delete_backward` (CM-2/CM-4); `SelectionSpan` frame-scoped projector
 >   (CM-1).
+> - **Batch F** runtime RT-07: inline-1 `Effects` enum — single-effect
+>   `Cmd` (the common case + every test) allocates zero. (RT-01 render
+>   gating + RT-05 coalescing already landed via a concurrent stream;
+>   RT-02 audit-noted low-value, RT-03 cadence-risk — both skipped.)
+> - **Batch I partial** acp-client APP-4: `tool_call` id→index map,
+>   per-frame O(toolEntries×toolCalls) → O(1).
+> - **Batch G partial** per-frame int→glyph stamping, no allocation:
+>   `calendar` per-day `format!` (W1-01), `stepper` node `String`
+>   (W5-STEP-2), `line_number_gutter` per-row `to_string` (GUT-1),
+>   `avatar` `Vec<char>` (W1-03).
 >
-> **Remaining backlog** (sequenced in the team task list / below): Batch E
-> **CM-3** (`TextArea` `line_lens` cache — deferred, needs dedicated focus
-> to keep the parallel cache exact across every 2D split/join/splice),
-> Batch F (runtime RT-01/02/03/05/07), Batch I (acp-client), Batch J
-> (bench scenarios), Batch G (widgets W1–W6), Tier-2 (API-additive
-> caching + borrowed constructors). Landing is **serial from one isolated
-> worktree** (fetch→rebase `origin/main`→`cargo xtask ci`→FF push) — the
+> **Remaining backlog** (sequenced in the team task list / below), each its
+> own focused slice via the serial flow: Batch E **CM-3** (`TextArea`
+> `line_lens` — deferred: subtle 2-D cache, corrupts editing if wrong),
+> Batch I remainder (APP-1 transcript cap, APP-3 ring-buffer log, UI-3
+> borrow footer, DRV-1/2 typed `sacp` match), Batch J (bench scenarios),
+> the rest of Batch G — the `block.clone()`→destructure cluster ×8 (needs
+> per-widget restructuring to dodge partial-move borrows; **not**
+> mechanical), `table` T1/T3/T5, `paragraph` PG-1/2, `menu`/`sidebar`/
+> `pagination`/`breadcrumb`/`help_overlay`/`grid`/`editor`, gauge GAUGE-1
+> (P3) — and **Tier-2** (caller-owned cached layout models for
+> `Markdown`/`Diff`/`Mermaid`/`Paragraph`, `List`/`Table`/`Stepper`/`Tabs`
+> borrowed constructors, plugin-host PROTO-3 `Cow` payload, acp-client
+> UI-1/UI-2 per-`Entry` render memo — API-additive/-breaking, each needs
+> an ADR note). Landing is **serial from one isolated worktree**
+> (fetch→rebase `origin/main`→`cargo xtask ci`→FF push) — the
 > parallel-agents-in-one-shared-worktree approach corrupts state in this
 > multi-stream repo and must not be retried.
+>
+> Also assessed & **rejected — not viable**: replacing `tokio` with
+> `smol`. `tokio` is pulled transitively by `sacp`→`rmcp` (the ACP
+> protocol stack is tokio-native), is already absent from the sync
+> core/widgets/runtime path (it's `optional`, ADR 0011), and is not on the
+> per-frame hot path — swapping would add a *second* runtime, bigger and
+> slower. Zero leverage on per-frame performance.
 
 Severity = how often the cost is paid: **P0** every frame / per-cell ·
 **P1** per widget render · **P2** per event/interaction · **P3** cold.
