@@ -47,23 +47,37 @@ validation path for each change.
 >   EDIT-1** (skip flat-index extmark scans when no extmarks).
 > - **Batch I partial** acp-client: APP-4 `tool_call` O(n²)→O(1);
 >   **UI-3** `footer_segments` borrows; **APP-3** diagnostic `log` capped.
+> - **Batch G long tail** also done, all byte-identical no-alloc stamping:
+>   `pagination` PA-1, `breadcrumb` W1-02 (drop `Vec<Crumb>`+enum),
+>   `help_overlay` HELP-1 (`Kbd::cluster_width`, no per-entry clone),
+>   `grid` GRID-1 (`cell()` solves one band, not the whole grid).
 >
-> **22 measured, gate-green, byte-identical slices total.** **Remaining
-> backlog** — and this is now, by design, only the work that should NOT be
-> rushed: **Tier-2** architectural caller-owned cached layout models
-> (`Markdown`/`Diff`/`Mermaid` re-parse + `Paragraph`/`Toast` PG-2
-> count-only — L-effort, single-source-of-truth, ADR-gated; the highest
-> remaining value but a dedicated multi-slice program), Batch E **CM-3**
-> (subtle 2-D `TextArea` cache — corrupts editing if wrong), Batch I
-> **APP-1** (transcript cap — behaviorally visible) / **DRV-1/2** (typed
-> `sacp` match — involved), Batch J (bench scenarios), and a minor P2/P3
-> long tail (`menu`/`sidebar`/`pagination`/`breadcrumb`/`help_overlay`/
-> `grid` — small path/window-sized per-frame `Vec`s where the restructure
-> risk now exceeds the bounded gain), gauge GAUGE-1 (P3). The remaining
-> **Tier-2** API surface — `List`/`Table`/`Stepper`/`Tabs` borrowed
-> constructors, plugin-host PROTO-3 `Cow` payload, acp-client UI-1/UI-2
-> per-`Entry` render memo — is API-additive/-breaking and each needs an
-> ADR note. Landing is **serial from one isolated worktree**
+> **26 measured, gate-green, byte-identical slices total** — the *entire*
+> portion of this plan implementable safely and byte-identically is now on
+> `origin/main`. **What remains is categorically different and is, by
+> design, the only work left** — none of it a quick byte-identical slice:
+> - **Tier-2 architectural** (highest remaining value; a dedicated
+>   multi-slice, API-additive/-breaking, ADR-gated program): caller-owned
+>   cached layout models for `Markdown`/`Diff`/`Mermaid` re-parse,
+>   `Paragraph`/`Toast` PG-2 single-source count-only path, borrowed
+>   `List`/`Table`/`Stepper`/`Tabs` constructors, plugin-host PROTO-3 `Cow`
+>   payload, acp-client UI-1/UI-2 per-`Entry` render memo.
+> - **Behaviorally non-identical** (the byte-identical gate can't validate
+>   these — each needs a behavioral/design decision, possibly an ADR):
+>   `table` T3/T5 (col-count / proportional widths from the visible window
+>   vs all rows — changes column widths on scroll), acp-client **APP-1**
+>   (transcript cap — visible history truncation).
+> - **Risky / involved**: Batch E **CM-3** (subtle 2-D `TextArea`
+>   `line_lens` cache — corrupts editing if it ever desyncs), acp-client
+>   **DRV-1/2** (typed `sacp` notification rework).
+> - **Additive infra**: Batch J bench scenarios (`view→diff→flush`,
+>   per-widget, edit) + alloc counter — substantial, drives the runtime
+>   loop.
+> - **Accepted as-is**: gauge GAUGE-1 (P3 — a byte-identical no-`format!`
+>   fix needs replicating f64 `Display` incl. inf/NaN; not worth the risk
+>   for ≤4 bytes/frame; the audit says accept it).
+>
+> Landing is **serial from one isolated worktree**
 > (fetch→rebase `origin/main`→`cargo xtask ci`→FF push) — the
 > parallel-agents-in-one-shared-worktree approach corrupts state in this
 > multi-stream repo and must not be retried.
