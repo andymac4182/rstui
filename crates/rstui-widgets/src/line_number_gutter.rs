@@ -231,13 +231,27 @@ impl Widget for LineNumberGutter<'_> {
         for r in 0..visible {
             let y = top.saturating_add(r as u16);
             let n = self.first.saturating_add(r as u64);
-            let text = n.to_string();
+            // Decimal digits of `n`, written from a stack buffer instead of
+            // `n.to_string()` — that allocated a String per visible row every
+            // frame (GUT-1), scrolling a code pane churned one heap String per
+            // line each frame. `u64` is at most 20 digits; `n == 0` → "0".
+            let mut digits = [0u8; 20];
+            let mut ndig = 0;
+            let mut v = n;
+            loop {
+                digits[ndig] = b'0' + (v % 10) as u8;
+                ndig += 1;
+                v /= 10;
+                if v == 0 {
+                    break;
+                }
+            }
             let row_style = self
                 .style
                 .patch(self.row_styles.get(r).copied().unwrap_or_else(Style::new));
 
             // Right-align the number within `num_w` columns starting at left.
-            let pad = num_w.saturating_sub(text.chars().count());
+            let pad = num_w.saturating_sub(ndig);
             let mut x = left;
             for _ in 0..pad {
                 if x >= right {
@@ -246,11 +260,13 @@ impl Widget for LineNumberGutter<'_> {
                 buf.set_cell(Position::new(x, y), ' ', row_style);
                 x = x.saturating_add(1);
             }
-            for ch in text.chars() {
+            // `digits` holds least-significant first; stamp most-significant
+            // first for the same glyph order `to_string()` produced.
+            for k in (0..ndig).rev() {
                 if x >= right {
                     break;
                 }
-                buf.set_cell(Position::new(x, y), ch, row_style);
+                buf.set_cell(Position::new(x, y), digits[k] as char, row_style);
                 x = x.saturating_add(1);
             }
 
