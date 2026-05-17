@@ -53,6 +53,16 @@ use rstui_core::buffer::Cell;
 use rstui_core::geometry::{Position, Size};
 use rstui_core::style::{Color, Modifier};
 
+/// Begin Synchronized Update (DECSET ?2026h). A terminal that supports the
+/// mode buffers everything until the matching end and presents it atomically,
+/// eliminating mid-frame tearing/flicker; terminals that don't support it
+/// ignore the unknown private mode harmlessly, so it is emitted
+/// unconditionally (no capability round-trip). Adopted from opentui's
+/// lazy-per-frame wrap and Textual's `?2026` usage.
+const BEGIN_SYNC: &[u8] = b"\x1b[?2026h";
+/// End Synchronized Update (DECSET ?2026l) — present the buffered frame.
+const END_SYNC: &[u8] = b"\x1b[?2026l";
+
 /// A [`Backend`] that renders rstui cells to a terminal via crossterm.
 ///
 /// Wraps any [`Write`]: a real terminal handle in production
@@ -107,6 +117,13 @@ impl<W: Write> Backend for CrosstermBackend<W> {
         let mut last_pos: Option<Position> = None;
 
         for (pos, cell) in cells {
+            // Lazily open a synchronized update on the first changed cell, so
+            // the whole repaint is presented atomically. Doing it here (not in
+            // `flush`) keeps the invariant below: an empty diff never enters
+            // this loop, so it still produces *zero* bytes.
+            if last_pos.is_none() {
+                self.writer.write_all(BEGIN_SYNC)?;
+            }
             // `Print` advances the cursor one column, so a `MoveTo` is only
             // needed when this cell is not immediately right of the last one.
             // `checked_add` keeps the adjacency test overflow-safe at u16::MAX.
@@ -141,6 +158,8 @@ impl<W: Write> Backend for CrosstermBackend<W> {
                 SetBackgroundColor(CtColor::Reset),
                 SetAttribute(CtAttribute::Reset),
             )?;
+            // Close the synchronized update opened on the first cell.
+            self.writer.write_all(END_SYNC)?;
         }
         Ok(())
     }
@@ -311,6 +330,15 @@ mod tests {
         }
     }
 
+    /// Wrap an expected per-frame body in the synchronized-output markers the
+    /// backend now emits around every non-empty diff (DECSET ?2026).
+    fn synced(body: Vec<u8>) -> Vec<u8> {
+        let mut v = BEGIN_SYNC.to_vec();
+        v.extend(body);
+        v.extend_from_slice(END_SYNC);
+        v
+    }
+
     #[test]
     fn empty_diff_emits_zero_bytes() {
         let mut backend = CrosstermBackend::new(Vec::new());
@@ -341,7 +369,7 @@ mod tests {
                 SetAttribute(CtAttribute::Reset),
             )
         });
-        assert_eq!(backend.writer(), &expected);
+        assert_eq!(backend.writer(), &synced(expected));
     }
 
     #[test]
@@ -373,7 +401,7 @@ mod tests {
                 SetAttribute(CtAttribute::Reset),
             )
         });
-        assert_eq!(backend.writer(), &expected);
+        assert_eq!(backend.writer(), &synced(expected));
     }
 
     #[test]
@@ -401,7 +429,45 @@ mod tests {
                 SetAttribute(CtAttribute::Reset),
             )
         });
-        assert_eq!(backend.writer(), &expected);
+        assert_eq!(backend.writer(), &synced(expected));
+    }
+
+    #[test]
+    fn non_empty_frame_is_wrapped_in_synchronized_output() {
+        // A non-empty diff must open with BSU (?2026h) and close with ESU
+        // (?2026l) so the terminal presents the repaint atomically (no
+        // mid-frame tearing). The markers bracket the *entire* frame,
+        // including the trailing SGR reset.
+        let c = cell('z', Color::Reset, Color::Reset, Modifier::EMPTY);
+        let mut backend = CrosstermBackend::new(Vec::new());
+        backend.draw([(Position::new(0, 0), &c)]).unwrap();
+
+        let out = backend.writer();
+        assert!(
+            out.starts_with(BEGIN_SYNC),
+            "frame must open with \\x1b[?2026h, got {out:?}"
+        );
+        assert!(
+            out.ends_with(END_SYNC),
+            "frame must close with \\x1b[?2026l, got {out:?}"
+        );
+        // Exactly one wrap (markers are not re-emitted per cell).
+        assert_eq!(
+            out.windows(BEGIN_SYNC.len())
+                .filter(|w| *w == BEGIN_SYNC)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn empty_frame_is_not_wrapped_in_synchronized_output() {
+        // The "idle frame = zero bytes" invariant must survive the wrap: an
+        // empty diff opens no synchronized update at all.
+        let mut backend = CrosstermBackend::new(Vec::new());
+        let empty: Vec<(Position, &Cell)> = Vec::new();
+        backend.draw(empty).unwrap();
+        assert!(backend.writer().is_empty());
     }
 
     /// A writer that distinguishes bytes written from explicit flushes, so the
