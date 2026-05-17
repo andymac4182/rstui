@@ -128,51 +128,62 @@ fn frame(src: &str, w: u16, h: u16) -> String {
     out
 }
 
+/// The iconic subset rendered as the final on-screen "hero" wall — one of
+/// every visually distinct shape (graph, lifelines, compartments, commit
+/// lanes, proportional bars, an indented tree) sized to a normal terminal.
+const HERO: &[&str] = &[
+    "flowchart",
+    "sequenceDiagram",
+    "classDiagram",
+    "gitGraph",
+    "pie",
+    "mindmap",
+];
+
 fn main() {
-    // The gallery wall: every diagram type tiled into one screen, each framed
-    // and titled by its header keyword — the hero shot proving one widget
-    // renders all of Mermaid.
-    const COLS: u16 = 3;
-    let rows = DIAGRAMS.len().div_ceil(COLS as usize) as u16;
-    let (cell_w, cell_h) = (50u16, 11u16);
+    // Per-type smoke: every fixture renders deterministically (rendered
+    // twice, byte-identical) and routes to its own renderer rather than the
+    // legacy "missing graph header" fallback — asserted (a regression panics
+    // this example) and condensed to one line so the hero wall below is the
+    // whole screen the GIF freezes on.
+    for (label, src) in DIAGRAMS {
+        let (a, b) = (frame(src, 60, 16), frame(src, 60, 16));
+        assert!(a == b, "{label}: non-deterministic render");
+        assert!(
+            !a.contains("missing graph header"),
+            "{label}: unrouted (fell through to the flowchart placeholder)"
+        );
+    }
+    // An unrecognised header still degrades to the long-standing placeholder,
+    // never a panic — the backward-compatible floor.
+    let unknown = frame("notADiagram\n  x", 40, 1);
+    assert!(unknown.contains("missing graph header"), "lost the legacy floor");
+    println!(
+        "✓ all {} Mermaid diagram types render deterministically; unknown → placeholder\n",
+        DIAGRAMS.len()
+    );
+
+    // The hero wall LAST, so it is the frame the GIF freezes on: a 2×3 grid
+    // of the iconic diagram shapes, each framed and titled by its header
+    // keyword — one widget rendering all of Mermaid.
+    const COLS: u16 = 2;
+    let rows = HERO.len().div_ceil(COLS as usize) as u16;
+    let (cell_w, cell_h) = (48u16, 11u16);
     let (sw, sh) = (cell_w * COLS, cell_h * rows);
+    let lookup = |label: &str| DIAGRAMS.iter().find(|(l, _)| *l == label).map(|(_, s)| *s);
 
     let mut term = Terminal::new(TestBackend::new(sw, sh)).expect("TestBackend is infallible");
     term.draw(|f| {
-        for (i, (label, src)) in DIAGRAMS.iter().enumerate() {
+        for (i, label) in HERO.iter().enumerate() {
+            let Some(src) = lookup(label) else { continue };
             let cx = (i as u16 % COLS) * cell_w;
             let cy = (i as u16 / COLS) * cell_h;
             f.render_widget(
-                Mermaid::new(*src).block(Block::bordered().title(*label)),
+                Mermaid::new(src).block(Block::bordered().title(*label)),
                 Rect::new(cx, cy, cell_w, cell_h),
             );
         }
     })
     .expect("TestBackend is infallible");
     print!("{}", term.backend());
-
-    // Per-type smoke: each fixture renders deterministically (rendered twice,
-    // byte-identical) and routes to its own renderer rather than the legacy
-    // "missing graph header" fallback — the contract the dispatcher holds.
-    println!("\n── per-type determinism ──");
-    for (label, src) in DIAGRAMS {
-        let a = frame(src, 60, 16);
-        let b = frame(src, 60, 16);
-        let det = if a == b {
-            "deterministic"
-        } else {
-            "NON-DETERMINISTIC"
-        };
-        let routed = if a.contains("missing graph header") {
-            "UNROUTED"
-        } else {
-            "routed"
-        };
-        println!("  {label:<20} {det:<17} {routed}");
-    }
-
-    // An unrecognised header still degrades to the long-standing placeholder,
-    // never a panic — the backward-compatible floor.
-    let unknown = frame("notADiagram\n  x", 40, 1);
-    println!("\nunknown header → {}", unknown.trim_end());
 }

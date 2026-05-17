@@ -70,11 +70,21 @@ Diff::new(src: &str)
 
 ![Mermaid demo](media/mermaid_demo.gif)
 
-A Mermaid flowchart-subset parser that lays out a **deterministic**
-box-and-arrow diagram (no layout engine, no float jitter — same input, same
-diagram, every time).
+One read-only widget that renders **any** Mermaid diagram. It dispatches on
+the header keyword to a hand-written per-type parser + **deterministic**
+integer layout (no layout engine, no float jitter — same source, same
+picture, every time): `flowchart`/`graph` (the original bus-routed
+box-and-arrow renderer), `sequenceDiagram`, `classDiagram`,
+`stateDiagram-v2`, `erDiagram`, `journey`, `gantt`, `pie`, `quadrantChart`,
+`requirementDiagram`, `gitGraph`, `mindmap`, `timeline`, `sankey-beta`,
+`xychart-beta`, `block-beta`, `packet-beta`, `kanban`, `architecture-beta`,
+`radar-beta`, the `C4*` family, and `zenuml`. An unrecognised header
+degrades to a legible placeholder, never a panic; non-flowchart types share
+one `Surface` toolkit and approximate non-textual shapes honestly (a radar
+is a polygon of spokes, a mindmap a left-rooted bracket tree). Zero new
+dependencies — every parser is line-oriented and lenient.
 
-- **Companion types:** `MermaidError`, `MermaidTheme`, `MermaidGraph` (AST), [`Link`](#link)
+- **Companion types:** `MermaidError`, `MermaidTheme`, `MermaidGraph` (flowchart AST), [`Link`](#link)
 - **State model:** pure projection of caller-owned Mermaid source + optional focused link.
 
 ```rust
