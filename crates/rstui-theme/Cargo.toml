@@ -1,0 +1,31 @@
+[package]
+name = "rstui-theme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Semantic colour themes for the rstui TUI framework — a faithful port of every gpui-component theme."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Workspace sibling. `version` + `path` per the publishability convention
+# (a bare path dep makes a crate unpublishable); kept equal to the workspace
+# version by the `crate_dep_versions_match_workspace` xtask guard. Only the
+# `Color`/`Style` primitives are needed — no terminal or runtime coupling.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
+# The theme files are gpui-component's own JSON schema; serde parses them and
+# the same spec resolves user-supplied theme JSON at runtime. `derive` for the
+# config structs; no_std-friendly defaults mirror the other rstui serde users.
+serde = { version = "1", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+
+[[example]]
+name = "theme_gallery"
+path = "examples/theme_gallery.rs"
