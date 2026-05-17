@@ -245,9 +245,38 @@ impl Selection {
     /// `ScrollView` reads [`ScrollState::offset`](crate::scroll::ScrollState::offset).
     #[must_use]
     pub fn contains(&self, pos: Position) -> bool {
-        let Some((start, end)) = self.ordered() else {
-            return false;
-        };
+        self.span().is_some_and(|s| s.contains(pos))
+    }
+
+    /// The selection as a frame-scoped [`SelectionSpan`] projector, or
+    /// `None` when empty (CM-1). A widget computes this **once** per frame
+    /// and tests every cell against the returned value, instead of paying
+    /// `ordered()`'s `Option` destructure + tuple compare *per cell* that
+    /// [`contains`](Self::contains) — now a thin shim over it — would. The
+    /// shared definition keeps the stream semantics from drifting.
+    #[must_use]
+    pub fn span(&self) -> Option<SelectionSpan> {
+        self.ordered()
+            .map(|(start, end)| SelectionSpan { start, end })
+    }
+}
+
+/// A frame-scoped, `Copy` projection of a non-empty [`Selection`]: resolve
+/// the ordered endpoints once via [`Selection::span`], then test many cells
+/// with [`contains`](SelectionSpan::contains) without re-deriving them per
+/// cell — the per-cell highlight check a widget runs at render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionSpan {
+    start: Position,
+    end: Position,
+}
+
+impl SelectionSpan {
+    /// Row-major-terminal-stream membership — identical semantics to
+    /// [`Selection::contains`], with the ordered endpoints already resolved.
+    #[must_use]
+    pub fn contains(self, pos: Position) -> bool {
+        let (start, end) = (self.start, self.end);
         if pos.y < start.y || pos.y > end.y {
             false
         } else if start.y == end.y {
