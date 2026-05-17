@@ -44,7 +44,9 @@
 //!   column widths.
 //! - [`data_table`]: [`DataTable`] — the comprehensive interactive grid:
 //!   sortable/filterable/groupable, mouse-hit-testable, virtualized for fast
-//!   scroll, with optional per-column in-cell editing. A pure projection of a
+//!   scroll, with any per-column cell control ([`CellField`]: text, checkbox,
+//!   switch, dropdown — or any widget via [`cell_rect`](DataTable::cell_rect)).
+//!   A pure projection of a
 //!   caller-owned [`DataTableState`] (composing
 //!   [`ScrollState`](rstui_core::ScrollState)) and a reducer-run
 //!   [`project`](data_table::project) pipeline — the spreadsheet pane to
@@ -394,7 +396,8 @@ pub use card::Card;
 pub use checkbox::Checkbox;
 pub use command_palette::CommandPalette;
 pub use data_table::{
-    DataColumn, DataRow, DataTable, DataTableHit, DataTableState, SortDirection, VisualRow,
+    CellField, CellSelectState, DataColumn, DataRow, DataTable, DataTableHit, DataTableState,
+    SortDirection, VisualRow, cell_truthy,
 };
 pub use description_list::{DescriptionList, DescriptionRow};
 pub use diff::{Diff, DiffLayout, DiffTheme};
