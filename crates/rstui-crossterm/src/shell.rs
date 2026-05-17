@@ -215,7 +215,10 @@ where
     // repeated `run_app` calls never stack listeners.
     crate::signal::install_signal_restore_hook();
 
-    let backend = CrosstermBackend::new(io::stdout());
+    // Detect the real terminal's colour fidelity so a truecolor theme
+    // degrades to 256/16/none instead of emitting escapes it cannot parse.
+    let backend = CrosstermBackend::new(io::stdout())
+        .with_color_level(CrosstermBackend::<io::Stdout>::detect_color_level());
     // One panic-safe ownership chain: Terminal -> TerminalGuard ->
     // CrosstermBackend -> Stdout. The guard enters the modes here and restores
     // them when `run` drops the terminal, on success or panic.
@@ -274,7 +277,10 @@ where
     install_panic_restore_hook();
     crate::signal::install_signal_restore_hook();
 
-    let backend = CrosstermBackend::new(io::stdout());
+    // Detect the real terminal's colour fidelity so a truecolor theme
+    // degrades to 256/16/none instead of emitting escapes it cannot parse.
+    let backend = CrosstermBackend::new(io::stdout())
+        .with_color_level(CrosstermBackend::<io::Stdout>::detect_color_level());
     let guard = TerminalGuard::with_options(backend, options).map_err(RunError::Backend)?;
     let mut events = crate::event_source_async::CrosstermAsyncEventSource::new();
 

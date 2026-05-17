@@ -112,7 +112,7 @@ pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Alignment, Constraint, Direction, Layout};
 pub use scroll::ScrollState;
 pub use selection::{Selection, selected_text};
-pub use style::{Color, Modifier, Style};
+pub use style::{Color, ColorLevel, Modifier, Style};
 pub use stylize::{Styled, Stylize};
 pub use terminal::{CompletedFrame, Frame, Terminal};
 pub use text::{Line, Span, Text};
