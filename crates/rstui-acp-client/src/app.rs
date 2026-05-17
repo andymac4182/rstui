@@ -697,6 +697,7 @@ impl ChatApp {
             open: false,
         });
         self.follow = true;
+        self.cap_transcript();
     }
 
     fn toast(&mut self, text: impl Into<String>) {
@@ -725,11 +726,42 @@ impl ChatApp {
             open: true,
         });
         self.follow = true;
+        self.cap_transcript();
     }
 
     fn close_open_entry(&mut self) {
         if let Some(last) = self.transcript.last_mut() {
             last.open = false;
+        }
+    }
+
+    /// Caps retained transcript history (APP-1).
+    ///
+    /// `transcript` is fed by every system line, agent turn, user prompt and
+    /// tool/plan anchor and was never trimmed — unbounded memory over a long
+    /// session, and it multiplied the per-frame re-derivation in `view`. The
+    /// cap is deliberately generous (well past any test, so snapshots are
+    /// unchanged); when exceeded, the oldest quarter is dropped in one shift
+    /// so trimming is amortized O(1), and a one-line sentinel marks the cut.
+    /// Tool/plan lookups are keyed by id (a separate append-only map), not by
+    /// transcript index, so a front trim is safe.
+    fn cap_transcript(&mut self) {
+        const CAP: usize = 4000;
+        const SENTINEL: &str = "── earlier history truncated ──";
+        if self.transcript.len() <= CAP {
+            return;
+        }
+        let drop = self.transcript.len() - CAP * 3 / 4;
+        self.transcript.drain(0..drop);
+        if self.transcript.first().map(|e| e.text.as_str()) != Some(SENTINEL) {
+            self.transcript.insert(
+                0,
+                Entry {
+                    role: Role::System,
+                    text: SENTINEL.to_owned(),
+                    open: false,
+                },
+            );
         }
     }
 
@@ -783,6 +815,7 @@ impl ChatApp {
             text: text.clone(),
             open: false,
         });
+        self.cap_transcript();
         self.streaming = true;
         if let Some(driver) = &self.driver {
             driver.send(DriverCmd::Prompt(text.clone()));
