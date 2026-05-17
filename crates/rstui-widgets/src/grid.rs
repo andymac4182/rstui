@@ -204,9 +204,23 @@ impl<'a> Grid<'a> {
     /// "just give me cell (r, c)" call site.
     #[must_use]
     pub fn cell(&self, area: Rect, row: usize, column: usize) -> Option<Rect> {
-        self.split(area)
-            .get(row)
-            .and_then(|cols| cols.get(column))
+        // GRID-1: resolve only the one band, then that band's columns —
+        // not the whole `Vec<Vec<Rect>>`. The old `self.split(area)` ran a
+        // horizontal solve (cloning `self.columns`) for *every* band just to
+        // read one cell, so a caller filling an R×C grid via `cell()` paid
+        // O(R) wasted horizontal solves + clones per call. Behaviour is
+        // identical (same vertical solve, same band's horizontal solve).
+        if self.rows.is_empty() || self.columns.is_empty() {
+            return None;
+        }
+        let bands = Layout::new(Direction::Vertical, self.rows.clone())
+            .spacing(self.row_spacing)
+            .split(self.inner(area));
+        let band = *bands.get(row)?;
+        Layout::new(Direction::Horizontal, self.columns.clone())
+            .spacing(self.column_spacing)
+            .split(band)
+            .get(column)
             .copied()
     }
 }
