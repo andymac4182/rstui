@@ -442,29 +442,33 @@ impl Widget for Table<'_> {
                     break;
                 }
                 let row_base = style.patch(row.style);
+                // T1: build each cell's Paragraph ONCE (one Line clone) and
+                // reuse the same instance for the height measure *and* the
+                // render. The two-pass shape (measure every cell → render all
+                // at the shared row_h) previously deep-cloned every visible
+                // cell's `Line` (Vec<Span> + Cow) TWICE per frame; stashing
+                // the Paragraphs halves that to one clone/cell. The extra
+                // per-row Vec is column-count sized (tiny, bounded).
+                let mut paras: Vec<Paragraph<'_>> = Vec::with_capacity(row.cells.len());
                 let mut row_h: u16 = 1;
                 for (cell, col) in row.cells.iter().zip(&column_rects) {
-                    let h = u16::try_from(
-                        Paragraph::new(cell.clone())
-                            .wrap(Wrap { trim: false })
-                            .line_count(col.width),
-                    )
-                    .unwrap_or(u16::MAX)
-                    .max(1);
+                    let p = Paragraph::new(cell.clone()).wrap(Wrap { trim: false });
+                    let h = u16::try_from(p.line_count(col.width))
+                        .unwrap_or(u16::MAX)
+                        .max(1);
                     row_h = row_h.max(h);
+                    paras.push(p);
                 }
                 let row_h = row_h.min(data_bottom.saturating_sub(y));
                 let is_selected = selected == Some(idx);
 
-                for (cell, col) in row.cells.iter().zip(&column_rects) {
+                for (p, col) in paras.into_iter().zip(&column_rects) {
                     let cell_w = col.width.min(inner.right().saturating_sub(col.x));
                     let cell_area = Rect::new(col.x, y, cell_w, row_h);
                     // Paragraph cascades base → line(cell) → span itself, so
-                    // the table → row base is enough here.
-                    Paragraph::new(cell.clone())
-                        .wrap(Wrap { trim: false })
-                        .style(row_base)
-                        .render(cell_area, buf);
+                    // the table → row base is enough here. `p` already has
+                    // `wrap` set (built above) — same config as before.
+                    p.style(row_base).render(cell_area, buf);
                 }
 
                 if is_selected {
