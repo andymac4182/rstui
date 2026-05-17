@@ -50,14 +50,36 @@ validation path for each change.
 > - **Batch G long tail** also done, all byte-identical no-alloc stamping:
 >   `pagination` PA-1, `breadcrumb` W1-02 (drop `Vec<Crumb>`+enum),
 >   `help_overlay` HELP-1 (`Kbd::cluster_width`, no per-entry clone),
->   `grid` GRID-1 (`cell()` solves one band, not the whole grid).
+>   `grid` GRID-1 (`cell()` solves one band, not the whole grid),
+>   `gauge` GAUGE-1 (no default-label `format!`).
+> - **Batch I**: APP-1 transcript cap (generous, sentinel).
+> - **Batch J (BN02/BN03)**: bench scenarios landed — `edit/textarea/
+>   insert`, `selection/extract`, and `widget/{list,table,tree,paragraph,
+>   markdown}/render`. **These produced the decisive empirical ranking:**
 >
-> **26 measured, gate-green, byte-identical slices total** — the *entire*
-> portion of this plan implementable safely and byte-identically is now on
-> `origin/main`. **What remains is categorically different and is, by
-> design, the only work left** — none of it a quick byte-identical slice:
-> - **Tier-2 architectural** (highest remaining value; a dedicated
->   multi-slice, API-additive/-breaking, ADR-gated program): caller-owned
+> | `widget/*/render` min (160×48) | |
+> |---|---|
+> | `tree` | ~19 µs (the clean windowed exemplar) |
+> | `table` | ~32 µs |
+> | `list` | ~34 µs |
+> | `paragraph` | ~59 µs (post-PG-1; wraps the window) |
+> | **`markdown`** | **~1.49 ms** |
+>
+> Markdown render is **~100× the next-heaviest widget and ~120× a
+> full-frame `Buffer::diff`** (it re-parses + re-lays-out the whole
+> CommonMark source every render — MD-1). At 60 fps one Markdown pane is
+> ~9% of the entire frame budget. **This makes MD-1 (caller-owned
+> `Markdown` parse/layout cache) empirically the single highest-value
+> remaining optimization, by two orders of magnitude.**
+>
+> **~29 measured, gate-green slices total** (the byte-identical set + the
+> additive bench + APP-1's generous cap). **The remainder is now
+> empirically ranked, not just risk-classified** — none a quick
+> byte-identical slice:
+> - **Tier-2 architectural — now headed by MD-1** (`Markdown` cache:
+>   ~1.49 ms→~visible-rows; the #1 remaining win by 100×), then
+>   `Diff`/`Mermaid` re-parse, `Paragraph`/`Toast` PG-2; a dedicated
+>   multi-slice, API-additive/-breaking, ADR-gated program: caller-owned
 >   cached layout models for `Markdown`/`Diff`/`Mermaid` re-parse,
 >   `Paragraph`/`Toast` PG-2 single-source count-only path, borrowed
 >   `List`/`Table`/`Stepper`/`Tabs` constructors, plugin-host PROTO-3 `Cow`
