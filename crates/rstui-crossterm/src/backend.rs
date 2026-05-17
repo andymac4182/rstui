@@ -24,6 +24,20 @@
 //! so it does not. The uniform contract also makes the queue-vs-flush boundary
 //! directly testable (see `queues_until_flushed`).
 //!
+//! ## One `write` per frame, not one per escape
+//!
+//! crossterm keeps **no internal buffer**: `queue!(writer, …)` writes each
+//! literal/interpolated fragment straight to the wrapped writer, so a single
+//! styled cell is a handful of `write_all`s and a full frame is tens of
+//! thousands — every one a syscall candidate, and a locked one when the
+//! writer is `io::Stdout` (whose `LineWriter` never flushes on newline-free
+//! TUI output). [`draw`](Backend::draw) therefore queues the whole frame into
+//! a backend-owned `Vec<u8>` (the `extend_from_slice` path — no syscalls, no
+//! locks), then issues **one** `write_all` of the assembled frame. The scratch
+//! buffer is cleared, not reallocated, between frames, so steady state is zero
+//! allocation. An empty diff still produces zero bytes (nothing is queued, so
+//! nothing is written) — the idle-frame invariant survives.
+//!
 //! ## Minimal output
 //!
 //! [`draw`](Backend::draw) consumes the [`Buffer`](rstui_core::Buffer) diff and
@@ -81,6 +95,10 @@ pub struct CrosstermBackend<W: Write> {
     /// [`Color::degrade`]d to this before mapping, so a truecolor theme never
     /// emits `38;2` escapes a 256/16-colour terminal cannot parse.
     color: ColorLevel,
+    /// Per-frame assembly buffer: [`draw`](Backend::draw) queues the whole
+    /// frame's ANSI here, then issues one `write_all` of it. Cleared (capacity
+    /// retained) each frame, so steady state allocates nothing.
+    frame: Vec<u8>,
 }
 
 impl<W: Write> CrosstermBackend<W> {
@@ -93,6 +111,7 @@ impl<W: Write> CrosstermBackend<W> {
         Self {
             writer,
             color: ColorLevel::TrueColor,
+            frame: Vec::new(),
         }
     }
 
@@ -156,13 +175,21 @@ impl<W: Write> Backend for CrosstermBackend<W> {
         // `self.writer` is borrowed mutably below.
         let level = self.color;
 
+        // Assemble the whole frame in the reused scratch buffer. `queue!` into
+        // a `Vec<u8>` is `extend_from_slice` — no syscall, no stdout lock —
+        // versus crossterm writing every fragment straight through to the
+        // device. One `write_all` of `self.frame` at the end replaces tens of
+        // thousands of per-fragment writes. `clear` keeps the allocation.
+        self.frame.clear();
+
         for (pos, cell) in cells {
             // Lazily open a synchronized update on the first changed cell, so
             // the whole repaint is presented atomically. Doing it here (not in
             // `flush`) keeps the invariant below: an empty diff never enters
-            // this loop, so it still produces *zero* bytes.
+            // this loop, so `self.frame` stays empty and *zero* bytes are
+            // written.
             if last_pos.is_none() {
-                self.writer.write_all(BEGIN_SYNC)?;
+                self.frame.extend_from_slice(BEGIN_SYNC);
             }
             // `Print` advances the cursor one column, so a `MoveTo` is only
             // needed when this cell is not immediately right of the last one.
@@ -170,12 +197,12 @@ impl<W: Write> Backend for CrosstermBackend<W> {
             let adjacent =
                 matches!(last_pos, Some(p) if p.y == pos.y && p.x.checked_add(1) == Some(pos.x));
             if !adjacent {
-                queue!(self.writer, MoveTo(pos.x, pos.y))?;
+                queue!(self.frame, MoveTo(pos.x, pos.y))?;
             }
             last_pos = Some(pos);
 
             if cell.modifier != modifier {
-                write_modifier_diff(modifier, cell.modifier, &mut self.writer)?;
+                write_modifier_diff(modifier, cell.modifier, &mut self.frame)?;
                 modifier = cell.modifier;
             }
             // Degrade to the terminal's real fidelity *first*, then run the
@@ -189,11 +216,11 @@ impl<W: Write> Backend for CrosstermBackend<W> {
             let dbg = cell.bg.degrade(level);
             if dfg != fg || dbg != bg {
                 let colors = CtColors::new(to_crossterm_color(dfg), to_crossterm_color(dbg));
-                queue!(self.writer, SetColors(colors))?;
+                queue!(self.frame, SetColors(colors))?;
                 fg = dfg;
                 bg = dbg;
             }
-            queue!(self.writer, Print(cell.symbol))?;
+            queue!(self.frame, Print(cell.symbol))?;
         }
 
         // Leave the terminal in a clean state for whatever is drawn next — but
@@ -201,13 +228,15 @@ impl<W: Write> Backend for CrosstermBackend<W> {
         // per-frame loop) must produce zero bytes.
         if last_pos.is_some() {
             queue!(
-                self.writer,
+                self.frame,
                 SetForegroundColor(CtColor::Reset),
                 SetBackgroundColor(CtColor::Reset),
                 SetAttribute(CtAttribute::Reset),
             )?;
             // Close the synchronized update opened on the first cell.
-            self.writer.write_all(END_SYNC)?;
+            self.frame.extend_from_slice(END_SYNC);
+            // The single device write for the entire frame.
+            self.writer.write_all(&self.frame)?;
         }
         Ok(())
     }
