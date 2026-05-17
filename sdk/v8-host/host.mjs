@@ -18,8 +18,38 @@
 
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { resolve as resolvePath } from "node:path";
+import { resolve as resolvePath, dirname } from "node:path";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+
+// ---- --harden: relaunch under Node's built-in Permission Model --------
+// Zero-dependency capability sandbox (see sdk/RUNTIME_DECISION.md): the
+// re-exec'd host+plugin can read only the plugin/SDK dirs and CANNOT
+// fs-write, spawn child processes, use workers, or load native addons.
+// (Network is not gated by Node yet — use an OS sandbox if required.)
+if (
+  process.argv.includes("--harden") &&
+  process.env.RSTUI_HARDENED !== "1"
+) {
+  const pa = process.argv[2];
+  const pluginDir = pa
+    ? dirname(resolvePath(process.cwd(), pa))
+    : process.cwd();
+  const sdkDir = resolvePath(import.meta.dirname, "../ts");
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--permission",
+      `--allow-fs-read=${pluginDir}`,
+      `--allow-fs-read=${sdkDir}`,
+      `--allow-fs-read=${import.meta.dirname}`,
+      process.argv[1],
+      ...process.argv.slice(2).filter((a) => a !== "--harden"),
+    ],
+    { stdio: "inherit", env: { ...process.env, RSTUI_HARDENED: "1" } },
+  );
+  process.exit(r.status ?? 1);
+}
 
 // ---- JSON-RPC plumbing ------------------------------------------------
 
