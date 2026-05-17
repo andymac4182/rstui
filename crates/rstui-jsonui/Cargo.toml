@@ -20,16 +20,11 @@ name = "rstui_jsonui"
 path = "src/lib.rs"
 
 [dependencies]
-# The primitives, the widget set, and the AI-app widgets an agent UI may
-# embed (ADR 0017). `version` + `path` per the publishability convention.
+# The primitives and the widget set an agent UI projects through (ADR
+# 0017). `version` + `path` per the publishability convention.
 rstui-core = { path = "../rstui-core", version = "0.0.1" }
 rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
-rstui-ai = { path = "../rstui-ai", version = "0.0.1" }
 # A2UI / json-render documents are JSON; serde_json is the parse surface.
-serde = { version = "1", default-features = false, features = [
-    "std",
-    "derive",
-] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]

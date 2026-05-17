@@ -805,11 +805,9 @@ dependencies = [
 name = "rstui-jsonui"
 version = "0.0.1"
 dependencies = [
- "rstui-ai",
  "rstui-core",
  "rstui-runtime",
  "rstui-widgets",
- "serde",
  "serde_json",
 ]
 

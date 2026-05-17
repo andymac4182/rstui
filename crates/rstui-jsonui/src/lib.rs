@@ -17,7 +17,7 @@
 //!
 //! Both formats parse to their own document and then **project** to a
 //! single [`tree::UiNode`] — a resolved, concrete, immediate-mode
-//! renderable that maps to `rstui-widgets`/`rstui-ai` draw calls. There
+//! renderable that maps to `rstui-widgets` draw calls. There
 //! is no retained widget tree (ADR 0012): the parsed document plus the
 //! caller-owned [`value::DataModel`] is re-projected and re-walked every
 //! frame, so an agent UI is just more caller-owned state in the existing
