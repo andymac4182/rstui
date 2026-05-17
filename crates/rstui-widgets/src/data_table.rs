@@ -474,9 +474,15 @@ pub enum DataTableHit {
 /// 4. `Esc` → [`cancel_edit`](Self::cancel_edit) (no write-back).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DataTableState {
-    sort: Option<(usize, SortDirection)>,
+    /// Ordered sort keys (primary first). Empty = unsorted. Within a group
+    /// these order the rows; ungrouped they order the whole table.
+    sort: Vec<(usize, SortDirection)>,
     filter: String,
+    /// The grouping column — chosen **independently** of the sort keys.
     group_by: Option<usize>,
+    /// The order the *groups themselves* are listed in (tier 1); the sort
+    /// keys then order rows *within* each group (tier 2).
+    group_dir: SortDirection,
     collapsed: Vec<String>,
     selected: Option<usize>,
     vertical: ScrollState,
@@ -491,30 +497,69 @@ impl DataTableState {
         Self::default()
     }
 
-    // ---- sorting ----
+    // ---- sorting (ordered multi-key; primary first) ----
 
-    /// The active `(column, direction)`, or `None`.
+    /// The **primary** sort `(column, direction)`, or `None` — the
+    /// back-compatible single-key view (the header arrow, the simple
+    /// "sorted by" readout). Use [`sort_keys`](Self::sort_keys) for the
+    /// full ordered list.
     #[must_use]
     pub fn sort(&self) -> Option<(usize, SortDirection)> {
-        self.sort
+        self.sort.first().copied()
     }
 
-    /// Cycles the sort on a header click: `col` unsorted → Ascending →
-    /// Descending → unsorted; clicking a *different* column starts it
-    /// Ascending. The standard tri-state header toggle.
+    /// All sort keys in priority order (primary first). Empty = unsorted.
+    /// [`project`] orders rows by these in turn — *within* each group when
+    /// grouping (tier 2), or the whole table when not.
+    #[must_use]
+    pub fn sort_keys(&self) -> &[(usize, SortDirection)] {
+        &self.sort
+    }
+
+    /// Cycles the **primary** sort on a header click: `col` unsorted →
+    /// Ascending → Descending → unsorted; a *different* column starts it
+    /// Ascending. The standard tri-state header toggle; it replaces the key
+    /// list with this single key (multi-key is set explicitly via
+    /// [`set_sort_keys`](Self::set_sort_keys)/[`push_sort`](Self::push_sort)).
     pub fn toggle_sort(&mut self, column: usize) {
-        self.sort = match self.sort {
+        self.sort = match self.sort.first().copied() {
             Some((c, SortDirection::Ascending)) if c == column => {
-                Some((column, SortDirection::Descending))
+                vec![(column, SortDirection::Descending)]
             }
-            Some((c, SortDirection::Descending)) if c == column => None,
-            _ => Some((column, SortDirection::Ascending)),
+            Some((c, SortDirection::Descending)) if c == column => Vec::new(),
+            _ => vec![(column, SortDirection::Ascending)],
         };
     }
 
-    /// Sets (or clears) the sort directly.
+    /// Sets (or clears) the sort as a **single** key (back-compatible).
     pub fn set_sort(&mut self, sort: Option<(usize, SortDirection)>) {
-        self.sort = sort;
+        self.sort = sort.into_iter().collect();
+    }
+
+    /// Replaces the full ordered key list (primary first) — multi-tier
+    /// sort, e.g. from the group/sort config panel.
+    pub fn set_sort_keys<I>(&mut self, keys: I)
+    where
+        I: IntoIterator<Item = (usize, SortDirection)>,
+    {
+        self.sort = keys.into_iter().collect();
+    }
+
+    /// Appends a secondary (then tertiary, …) sort key after the existing
+    /// ones; a no-op repeat of the same column is de-duplicated to its
+    /// latest direction so the panel can toggle a key without growing the
+    /// list.
+    pub fn push_sort(&mut self, column: usize, direction: SortDirection) {
+        if let Some(slot) = self.sort.iter_mut().find(|(c, _)| *c == column) {
+            slot.1 = direction;
+        } else {
+            self.sort.push((column, direction));
+        }
+    }
+
+    /// Clears every sort key.
+    pub fn clear_sort(&mut self) {
+        self.sort.clear();
     }
 
     // ---- filtering ----
@@ -543,9 +588,30 @@ impl DataTableState {
         self.group_by
     }
 
-    /// Groups by `column` (or `None` to ungroup).
+    /// Groups by `column` (or `None` to ungroup) — chosen **independently**
+    /// of the sort keys.
     pub fn set_group_by(&mut self, column: Option<usize>) {
         self.group_by = column;
+    }
+
+    /// The order the *groups* are listed in (tier 1) — independent of the
+    /// sort keys, which order rows *within* a group (tier 2).
+    #[must_use]
+    pub fn group_direction(&self) -> SortDirection {
+        self.group_dir
+    }
+
+    /// Sets the group-listing order (tier 1).
+    pub fn set_group_direction(&mut self, direction: SortDirection) {
+        self.group_dir = direction;
+    }
+
+    /// Flips the group-listing order Ascending ⇄ Descending.
+    pub fn toggle_group_direction(&mut self) {
+        self.group_dir = match self.group_dir {
+            SortDirection::Ascending => SortDirection::Descending,
+            SortDirection::Descending => SortDirection::Ascending,
+        };
     }
 
     /// Whether the group with this key is collapsed.
@@ -689,23 +755,30 @@ impl DataTableState {
 }
 
 /// Flattens the caller's source rows into the `[VisualRow]` the widget
-/// renders, applying the [`DataTableState`] pipeline **filter → sort → group
-/// → collapse**. Pure, deterministic, and total — the reducer calls this once
-/// per data/spec change (the [`Tree`](crate::Tree) flatten precedent), never
-/// the widget per frame.
+/// renders, applying the [`DataTableState`] pipeline **filter → two-tier
+/// group/sort → collapse**. Pure, deterministic, and total — the reducer
+/// calls this once per data/spec change (the [`Tree`](crate::Tree) flatten
+/// precedent), never the widget per frame.
 ///
 /// - **Filter:** an empty [`filter`](DataTableState::filter) keeps every row;
 ///   otherwise a row is kept iff some cell's text contains the needle
 ///   (case-insensitive).
-/// - **Sort:** a [`sort`](DataTableState::sort) whose column is in range
-///   orders rows by that cell's plain text — a **stable**, deterministic,
-///   dependency-free lexicographic compare (typed/numeric comparators are a
-///   documented future additive). An out-of-range column is ignored.
-/// - **Group:** with an in-range [`grouped_by`](DataTableState::grouped_by)
-///   column, rows are stable-partitioned by [`DataRow::group`] (falling back
-///   to that column's text), each group preceded by a
-///   [`VisualRow::Group`]; a collapsed group contributes only its header.
-///   Ungrouped, every kept row is a [`VisualRow::Data`] in pipeline order.
+/// - **Two-tier order.** The grouping column
+///   ([`grouped_by`](DataTableState::grouped_by)) is chosen **independently**
+///   of the sort keys ([`sort_keys`](DataTableState::sort_keys)):
+///   - *Grouped* — rows are partitioned by [`DataRow::group`] (falling back
+///     to the group column's text); **tier 1** lists the *groups* by their
+///     key in [`group_direction`](DataTableState::group_direction); **tier
+///     2** orders the rows *within* each group by the ordered sort keys
+///     (primary first, each Ascending/Descending). Each group is preceded
+///     by a [`VisualRow::Group`]; a collapsed group contributes only its
+///     header.
+///   - *Ungrouped* — the whole kept set is ordered by the sort keys.
+///
+///   Every compare is a **stable**, deterministic, dependency-free
+///   lexicographic compare on the cell text (typed/numeric comparators
+///   remain a documented future additive); an out-of-range column is an
+///   inert key, so the projection is total.
 #[must_use]
 pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState) -> Vec<VisualRow> {
     // 1. Filter — case-insensitive substring across all cells.
@@ -720,23 +793,29 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
         })
         .collect();
 
-    // 2. Sort — stable, lexicographic on the chosen column's text. Only an
-    //    in-range column sorts; out of range is a total no-op.
-    if let Some((col, dir)) = state.sort {
-        if col < columns.len() {
-            kept.sort_by(|&a, &b| {
-                let ka = rows[a].cell(col).map(line_text).unwrap_or_default();
-                let kb = rows[b].cell(col).map(line_text).unwrap_or_default();
-                let ord = ka.cmp(&kb);
-                match dir {
-                    SortDirection::Ascending => ord,
-                    SortDirection::Descending => ord.reverse(),
-                }
-            });
+    // The multi-key row comparator (tier 2): each `(col, dir)` in priority
+    // order; the first non-equal column decides. Stable, so equal rows keep
+    // their source order. An out-of-range column compares as empty (a
+    // no-op key), so it is total.
+    let cmp_keys = |&a: &usize, &b: &usize| -> std::cmp::Ordering {
+        for &(col, dir) in state.sort_keys() {
+            let ka = rows[a].cell(col).map(line_text).unwrap_or_default();
+            let kb = rows[b].cell(col).map(line_text).unwrap_or_default();
+            let ord = match dir {
+                SortDirection::Ascending => ka.cmp(&kb),
+                SortDirection::Descending => kb.cmp(&ka),
+            };
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
         }
-    }
+        std::cmp::Ordering::Equal
+    };
 
-    // 3. Group + collapse — stable first-seen group order.
+    // Two-tier: when grouping, order the *groups* (tier 1, by group key in
+    // the caller-chosen `group_direction`) then the rows *within* each group
+    // (tier 2, the multi-key sort) — group column independent of sort keys.
+    // Ungrouped, just the multi-key sort over the whole table.
     match state.group_by {
         Some(col) if col < columns.len() => {
             let mut buckets: Vec<(String, Vec<usize>)> = Vec::new();
@@ -747,8 +826,15 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
                     None => buckets.push((key, vec![s])),
                 }
             }
+            // Tier 1: order the groups by their key.
+            buckets.sort_by(|(ka, _), (kb, _)| match state.group_direction() {
+                SortDirection::Ascending => ka.cmp(kb),
+                SortDirection::Descending => kb.cmp(ka),
+            });
             let mut out = Vec::with_capacity(buckets.len());
-            for (key, members) in buckets {
+            for (key, mut members) in buckets {
+                // Tier 2: sort rows within the group (stable multi-key).
+                members.sort_by(&cmp_keys);
                 let collapsed = state.is_collapsed(&key);
                 out.push(VisualRow::Group {
                     key,
@@ -761,10 +847,12 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
             }
             out
         }
-        _ => kept
-            .into_iter()
-            .map(|source| VisualRow::Data { source })
-            .collect(),
+        _ => {
+            kept.sort_by(&cmp_keys);
+            kept.into_iter()
+                .map(|source| VisualRow::Data { source })
+                .collect()
+        }
     }
 }
 
@@ -1571,6 +1659,108 @@ mod tests {
     }
 
     #[test]
+    fn two_tier_groups_ordered_by_key_dir_rows_within_by_sort_keys() {
+        // Group column (0) is independent of the sort key (1). Tier 1: the
+        // groups are listed by key in `group_direction`. Tier 2: rows
+        // *within* a group are ordered by the sort key.
+        let c = cols(); // 2 cols
+        let r = [
+            DataRow::new(["B", "2"]),
+            DataRow::new(["A", "3"]),
+            DataRow::new(["B", "1"]),
+            DataRow::new(["A", "1"]),
+        ];
+        let mut st = DataTableState::new();
+        st.set_group_by(Some(0)); // group by col 0
+        st.set_sort_keys([(1, SortDirection::Ascending)]); // sort rows by col 1
+        let v = project(&c, &r, &st);
+        // Tier1 ascending: group "A" then "B". Tier2: within A by col1 asc
+        // → src3("1") then src1("3"); within B → src2("1") then src0("2").
+        assert_eq!(
+            v,
+            vec![
+                VisualRow::Group {
+                    key: "A".into(),
+                    count: 2,
+                    collapsed: false
+                },
+                VisualRow::Data { source: 3 },
+                VisualRow::Data { source: 1 },
+                VisualRow::Group {
+                    key: "B".into(),
+                    count: 2,
+                    collapsed: false
+                },
+                VisualRow::Data { source: 2 },
+                VisualRow::Data { source: 0 },
+            ]
+        );
+
+        // Tier 1 only flips with the group direction (rows within unchanged).
+        st.set_group_direction(SortDirection::Descending);
+        let v = project(&c, &r, &st);
+        assert_eq!(
+            v[0],
+            VisualRow::Group {
+                key: "B".into(),
+                count: 2,
+                collapsed: false
+            }
+        );
+        assert_eq!(v[1], VisualRow::Data { source: 2 }); // B still col1-asc
+        assert_eq!(
+            v[3],
+            VisualRow::Group {
+                key: "A".into(),
+                count: 2,
+                collapsed: false
+            }
+        );
+    }
+
+    #[test]
+    fn multi_key_sort_breaks_ties_with_the_secondary_key() {
+        let c = cols();
+        let r = [
+            DataRow::new(["x", "2"]),
+            DataRow::new(["x", "1"]),
+            DataRow::new(["a", "9"]),
+        ];
+        let mut st = DataTableState::new();
+        st.set_sort_keys([(0, SortDirection::Ascending), (1, SortDirection::Ascending)]);
+        // col0: "a" < "x"; the two "x" rows tie on col0 → broken by col1.
+        assert_eq!(
+            project(&c, &r, &st),
+            vec![
+                VisualRow::Data { source: 2 }, // a,9
+                VisualRow::Data { source: 1 }, // x,1
+                VisualRow::Data { source: 0 }, // x,2
+            ]
+        );
+        // `sort()` stays the back-compatible primary view; `sort_keys` the
+        // full list.
+        assert_eq!(st.sort(), Some((0, SortDirection::Ascending)));
+        assert_eq!(st.sort_keys().len(), 2);
+    }
+
+    #[test]
+    fn group_column_is_independent_of_the_sort_column() {
+        // Group by col0, sort rows by col0 too is the *same* column — must
+        // still work — but the point: changing the sort key does not change
+        // the grouping column, and vice-versa.
+        let mut st = DataTableState::new();
+        st.set_group_by(Some(2));
+        st.toggle_sort(0); // primary sort col 0
+        assert_eq!(st.grouped_by(), Some(2));
+        assert_eq!(st.sort(), Some((0, SortDirection::Ascending)));
+        st.toggle_sort(1); // re-point the sort column
+        assert_eq!(st.grouped_by(), Some(2)); // grouping untouched
+        assert_eq!(st.sort(), Some((1, SortDirection::Ascending)));
+        st.set_group_by(Some(3)); // re-point grouping
+        assert_eq!(st.sort(), Some((1, SortDirection::Ascending))); // sort untouched
+    }
+
+    #[test]
     fn a_group_header_row_renders_a_marker_key_and_count() {
         let c = cols();
         let r = [
@@ -2097,7 +2287,14 @@ mod tests {
                 })
                 .collect();
 
-            match rng() % 12 {
+            let dir = |r: u64| {
+                if r % 2 == 0 {
+                    SortDirection::Ascending
+                } else {
+                    SortDirection::Descending
+                }
+            };
+            match rng() % 15 {
                 0 => st.toggle_sort((rng() % 5) as usize),
                 1 => st.set_filter(format!("n{}", rng() % 9)),
                 2 => st.clear_filter(),
@@ -2110,6 +2307,17 @@ mod tests {
                 9 => st.begin_edit((rng() >> 5) as usize % 50, (rng() % 5) as usize),
                 10 => {
                     let _ = st.commit_edit();
+                }
+                11 => st.set_sort_keys([
+                    ((rng() % 7) as usize, dir(rng())),
+                    ((rng() % 7) as usize, dir(rng())),
+                ]),
+                12 => st.push_sort((rng() % 7) as usize, dir(rng())),
+                13 => {
+                    st.toggle_group_direction();
+                    if rng() % 2 == 0 {
+                        st.clear_sort();
+                    }
                 }
                 _ => st = DataTableState::new(),
             }
