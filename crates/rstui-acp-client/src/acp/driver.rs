@@ -12,9 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sacp::schema::{
-    ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
+    ClientCapabilities, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
+    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    TextContent,
 };
 use sacp::{Agent, Client, ConnectionTo};
 use tokio::io::AsyncBufReadExt;
@@ -139,8 +140,16 @@ async fn run(
             sacp::on_receive_request!(),
         )
         .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
+            // ADR 0017: advertise (in the ACP client capabilities `_meta`)
+            // that this terminal client can render A2UI / json-render, so
+            // an agent may reply with a declarative UI document. A2UI
+            // negotiates via this metadata (`a2uiClientCapabilities`).
             let init = connection
-                .send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+                .send_request(
+                    InitializeRequest::new(ProtocolVersion::LATEST).client_capabilities(
+                        ClientCapabilities::new().meta(super::richui::render_capability_meta()),
+                    ),
+                )
                 .block_task()
                 .await?;
             let _ = loop_tx.send(AcpEvent::Connected(format!("{:?}", init.agent_info)));
@@ -249,6 +258,18 @@ fn describe_permission(request: &RequestPermissionRequest) -> (String, Vec<Permi
 
 /// Turns one `session/update` notification into transcript events, extracting
 /// text from the JSON form so it is robust to schema variant renames.
+/// Classifies one agent text block: a self-contained A2UI / json-render
+/// document becomes an [`AcpEvent::RichUi`] (rendered as a rich
+/// transcript entry); anything else is ordinary [`AcpEvent::AgentText`].
+/// Detection is conservative and total, so a streamed prose chunk (never
+/// a complete JSON doc) is unaffected.
+fn agent_text_event(text: String) -> AcpEvent {
+    match super::richui::detect(&text) {
+        Some(payload) => AcpEvent::RichUi(payload),
+        None => AcpEvent::AgentText(text),
+    }
+}
+
 fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
     // DRV-1: typed fast-path for the two highest-frequency streamed variants.
     // Agent message/thought chunks arrive token-by-token throughout every
@@ -263,7 +284,7 @@ fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
         SessionUpdate::AgentMessageChunk(ContentChunk {
             content: ContentBlock::Text(TextContent { text, .. }),
             ..
-        }) => return vec![AcpEvent::AgentText(text.clone())],
+        }) => return vec![agent_text_event(text.clone())],
         SessionUpdate::AgentThoughtChunk(ContentChunk {
             content: ContentBlock::Text(TextContent { text, .. }),
             ..
@@ -285,7 +306,7 @@ fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
     let content_text = obj.get("content").and_then(value_to_text);
 
     match kind {
-        "agent_message_chunk" => content_text.map(AcpEvent::AgentText).into_iter().collect(),
+        "agent_message_chunk" => content_text.map(agent_text_event).into_iter().collect(),
         "agent_thought_chunk" => content_text.map(AcpEvent::Thought).into_iter().collect(),
         "user_message_chunk" => Vec::new(),
         "tool_call" => {

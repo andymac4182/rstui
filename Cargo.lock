@@ -725,6 +725,7 @@ dependencies = [
  "rstui-acp-plugin-sdk",
  "rstui-core",
  "rstui-crossterm",
+ "rstui-jsonui",
  "rstui-keymap",
  "rstui-runtime",
  "rstui-theme",

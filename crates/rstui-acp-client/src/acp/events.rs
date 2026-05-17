@@ -2,6 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::richui::RichUiPayload;
+
 /// One streamed datum from the agent, folded into the transcript by the
 /// reducer.
 #[derive(Debug, Clone)]
@@ -14,6 +16,10 @@ pub enum AcpEvent {
     AgentText(String),
     /// A chunk of agent "thinking" (rendered dim, separate from the answer).
     Thought(String),
+    /// The agent sent a declarative UI document (A2UI / json-render)
+    /// instead of prose; the reducer folds it into the transcript as a
+    /// rendered rich entry (ADR 0017).
+    RichUi(RichUiPayload),
     /// A new tool call the agent initiated (ACP `tool_call`).
     ToolCall(ToolCallInfo),
     /// A progress/result update to an existing tool call

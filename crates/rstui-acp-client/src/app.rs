@@ -90,6 +90,11 @@ pub enum Role {
     Tool,
     /// A plan / todo update.
     Plan,
+    /// A declarative UI document the agent sent (A2UI / json-render),
+    /// rendered through `rstui-jsonui` (ADR 0017). `Entry::text` holds
+    /// the verbatim document source; the format is re-detected at render
+    /// (a pure projection — no retained UI tree).
+    RichUi,
     /// Client-generated system line.
     System,
 }
@@ -1808,6 +1813,19 @@ impl ChatApp {
             }
             AcpEvent::AgentText(t) => self.append_agent(Role::Agent, &t),
             AcpEvent::Thought(t) => self.append_agent(Role::Thought, &t),
+            AcpEvent::RichUi(payload) => {
+                // The agent replied with a declarative UI document; anchor
+                // it in stream order. The view re-projects it from `text`
+                // every frame through `rstui-jsonui` (pure projection).
+                self.close_open_entry();
+                self.transcript.push(Entry {
+                    role: Role::RichUi,
+                    text: payload.source,
+                    open: false,
+                    md_cache: None,
+                });
+                self.follow = true;
+            }
             AcpEvent::ToolCall(info) => {
                 if let Some(&i) = self.tool_index.get(&info.id) {
                     self.tool_calls[i] = info;

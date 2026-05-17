@@ -41,6 +41,10 @@ rstui-keymap = { path = "../rstui-keymap", version = "0.0.1" }
 rstui-runtime = { path = "../rstui-runtime", features = ["async"], version = "0.0.1" }
 rstui-crossterm = { path = "../rstui-crossterm", version = "0.0.1" }
 rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# The declarative agent-UI engine (A2UI + json-render); pulls `rstui-ai`
+# transitively. ADR 0017: the client advertises it can render these and
+# projects agent-sent UI documents into the transcript.
+rstui-jsonui = { path = "../rstui-jsonui", version = "0.0.1" }
 # All gpui-component themes + the reusable ThemePicker widget.
 rstui-theme = { path = "../rstui-theme", version = "0.0.1" }
 # The plugin SDK owns the JSON-RPC 2.0 wire + transports + author API; the

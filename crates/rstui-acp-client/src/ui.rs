@@ -525,6 +525,7 @@ fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
             Role::Thought => ("thinking", Color::DarkGray),
             Role::Tool => ("tool", Color::Yellow),
             Role::Plan => ("plan", Color::Magenta),
+            Role::RichUi => ("ui", Color::Blue),
             Role::System => ("·", Color::Gray),
         };
         out.push(Line::from(vec![Span::styled(
@@ -538,7 +539,15 @@ fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
         // parsed fresh here exactly as before — and a fresh parse is also
         // the fallback for any uncached entry, so output is byte-identical
         // while the per-frame whole-transcript re-parse is eliminated.
-        if entry.role == Role::Agent {
+        if entry.role == Role::RichUi {
+            // ADR 0017: re-project the agent's declarative UI document
+            // from its verbatim source every frame (pure projection — no
+            // retained tree), bounded so one document cannot dominate the
+            // transcript.
+            for line in crate::acp::render_rich_ui(&entry.text, MD_WIDTH, 40) {
+                out.push(line);
+            }
+        } else if entry.role == Role::Agent {
             let fresh;
             let md_lines: &[Line<'static>] = match &entry.md_cache {
                 Some(cached) => cached,
