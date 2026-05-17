@@ -64,6 +64,28 @@ use rstui_core::{Buffer, Line, Position, Rect, Style, Widget};
 /// glyph for `n` eighths.
 const EIGHTHS: [char; 8] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
 
+/// The eight **bottom**-aligned block elements, `1/8` … `8/8` filled — the
+/// vertical counterpart of [`EIGHTHS`] for a [`SliderOrientation::Vertical`]
+/// track that fills bottom-up (the same ramp `Sparkline`/`BarChart`'s vertical
+/// bars use, shared by intent not code). `EIGHTHS_VERTICAL[n - 1]` is `n`
+/// eighths.
+const EIGHTHS_VERTICAL: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// The axis a [`Slider`] runs along.
+///
+/// [`Horizontal`](Self::Horizontal) (the default) is the original behaviour
+/// unchanged: a left-to-right track. [`Vertical`](Self::Vertical) runs the
+/// track up a column, **filling bottom-up** with the same eighth-block
+/// sub-cell ramp.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SliderOrientation {
+    /// Left-to-right track (the unchanged default).
+    #[default]
+    Horizontal,
+    /// Bottom-to-top track.
+    Vertical,
+}
+
 /// A horizontal value selector rendered as a pure projection of a caller-owned
 /// [`value`](Self::value) within [`min`](Self::min)/[`max`](Self::max) and a
 /// [`focused`](Self::focused) `bool`.
@@ -107,6 +129,7 @@ pub struct Slider<'a> {
     value: f64,
     min: f64,
     max: f64,
+    orientation: SliderOrientation,
     focused: bool,
     label: Option<Line<'a>>,
     value_label: Option<Line<'a>>,
@@ -128,6 +151,7 @@ impl<'a> Slider<'a> {
             value: 0.0,
             min: 0.0,
             max: 1.0,
+            orientation: SliderOrientation::Horizontal,
             focused: false,
             label: None,
             value_label: None,
@@ -169,6 +193,15 @@ impl<'a> Slider<'a> {
     pub fn range(mut self, min: f64, max: f64) -> Self {
         self.min = min;
         self.max = max;
+        self
+    }
+
+    /// Sets the track axis (default [`SliderOrientation::Horizontal`], the
+    /// unchanged original behaviour). [`Vertical`](SliderOrientation::Vertical)
+    /// fills bottom-up with the same eighth-block sub-cell ramp.
+    #[must_use]
+    pub fn orientation(mut self, orientation: SliderOrientation) -> Self {
+        self.orientation = orientation;
         self
     }
 
@@ -305,6 +338,7 @@ impl Widget for Slider<'_> {
         }
         let fraction = self.fraction();
         let Slider {
+            orientation,
             focused,
             label,
             value_label,
@@ -317,6 +351,60 @@ impl Widget for Slider<'_> {
             thumb_symbol,
             ..
         } = self;
+
+        if orientation == SliderOrientation::Vertical {
+            // Vertical track, filling bottom-up with the same eighth-block
+            // sub-cell ramp (the proven horizontal metric, axis-flipped). An
+            // optional `label` takes the top row and `value_label` the bottom
+            // row, bracketing the track exactly as left/right do horizontally.
+            buf.set_style(area, style);
+            let left = area.left();
+            let right = area.right();
+            let mut track_top = area.top();
+            let mut track_bottom = area.bottom();
+            if let Some(label) = &label {
+                stamp_line(buf, label, left, track_top, right, style);
+                track_top = track_top.saturating_add(1).min(track_bottom);
+            }
+            if let Some(value_label) = &value_label {
+                let row = track_bottom.saturating_sub(1);
+                if row >= track_top {
+                    stamp_line(buf, value_label, left, row, right, style);
+                    track_bottom = row;
+                }
+            }
+            let track_height = track_bottom.saturating_sub(track_top);
+            if track_height > 0 {
+                let track_base = style.patch(track_style);
+                let thumb_base = track_base.patch(thumb_style);
+                let filled = f64::from(track_height) * fraction;
+                let full = filled.floor() as u16;
+                let eighths = ((filled - f64::from(full)) * 8.0).round() as u16;
+                let (thumb_pos, thumb_glyph) = if eighths > 0 && full < track_height {
+                    (full, EIGHTHS_VERTICAL[(eighths - 1) as usize])
+                } else {
+                    (full.min(track_height - 1), thumb_symbol)
+                };
+                for row in track_top..track_bottom {
+                    // 0 at the bottom-most track row so the bar grows upward.
+                    let from_bottom = track_bottom - 1 - row;
+                    let (glyph, cell_style) = if from_bottom == thumb_pos {
+                        (thumb_glyph, thumb_base)
+                    } else if from_bottom < full {
+                        ('█', track_base)
+                    } else {
+                        (track_symbol, track_base)
+                    };
+                    for x in left..right {
+                        buf.set_cell(Position::new(x, row), glyph, cell_style);
+                    }
+                }
+            }
+            if focused {
+                buf.set_style(area, focus_style);
+            }
+            return;
+        }
 
         let y = area.top();
         let left = area.left();
@@ -597,5 +685,68 @@ mod tests {
             .focused(true)
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    // ---- ADR 0012 §P2 additive: vertical orientation ----
+
+    fn v<'a>() -> Slider<'a> {
+        Slider::new().orientation(SliderOrientation::Vertical)
+    }
+
+    #[test]
+    fn a_vertical_slider_at_zero_parks_the_thumb_at_the_bottom() {
+        // Empty value ⇒ thumb on the bottom-most row, track above it.
+        assert_eq!(lines(v().value(0.0), 1, 4), "─\n─\n─\n●\n");
+    }
+
+    #[test]
+    fn a_vertical_slider_at_full_value_fills_the_whole_track() {
+        // Full value ⇒ filled bottom-up, thumb on the top row.
+        assert_eq!(lines(v().value(1.0), 1, 4), "●\n█\n█\n█\n");
+    }
+
+    #[test]
+    fn a_vertical_half_value_fills_the_lower_half() {
+        // range 0..100 @ 50 over a 10-tall track: 5 filled rows from the
+        // bottom, thumb at the boundary, empty rail above.
+        assert_eq!(
+            lines(v().range(0.0, 100.0).value(50.0), 1, 10),
+            "─\n─\n─\n─\n●\n█\n█\n█\n█\n█\n"
+        );
+    }
+
+    #[test]
+    fn a_vertical_slider_uses_the_vertical_eighth_ramp_between_cells() {
+        // One-cell track: round(0.5·8)=4 eighths ⇒ the bottom-block '▄'.
+        assert_eq!(lines(v().value(0.5), 1, 1), "▄\n");
+    }
+
+    #[test]
+    fn a_vertical_label_and_readout_bracket_the_track_top_and_bottom() {
+        // "V" on the top row, the track in the middle (thumb at the bottom
+        // for value 0), "0" on the bottom row — the horizontal label/readout
+        // idiom rotated.
+        let s = Slider::new()
+            .orientation(SliderOrientation::Vertical)
+            .value(0.0)
+            .label("V")
+            .value_label("0");
+        assert_eq!(lines(s, 1, 4), "V\n─\n●\n0\n");
+    }
+
+    #[test]
+    fn a_focused_vertical_slider_reads_as_one_bar_over_the_whole_area() {
+        let s = Slider::new()
+            .orientation(SliderOrientation::Vertical)
+            .value(0.5)
+            .focused(true)
+            .focus_style(Style::new().bg(Color::Blue));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 4));
+        s.render(buf.area(), &mut buf);
+        for y in 0..4 {
+            for x in 0..2 {
+                assert_eq!(buf.get(Position::new(x, y)).unwrap().bg, Color::Blue);
+            }
+        }
     }
 }
