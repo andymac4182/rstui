@@ -202,6 +202,32 @@
 //!   items packed across rows within the area with a configurable gap (the
 //!   `flex-wrap` pill-row); a pure layout projection with a `layout` accessor.
 //!
+//! The **observability** family — the metrics / traces / logs primitives an
+//! OpenTelemetry-style dashboard is built from, every one the same pure
+//! projection of caller-owned series the rest of the catalog is:
+//!
+//! - [`line_chart`]: [`LineChart`]/[`Series`]/[`AxisBounds`] — a multi-series
+//!   time-series XY plot with framed axes and a legend; the "metric over time"
+//!   panel [`Sparkline`] is the one-row glance of.
+//! - [`heatmap`]: [`Heatmap`] — a 2-D value grid mapped to a shade or colour
+//!   ramp (latency-over-time, per-service error density); a flat row-major
+//!   `&[f64]` + a column count, total on a short final row.
+//! - [`histogram`]: [`Histogram`]/[`HistogramBucket`]/[`Percentile`] — a
+//!   bucketed distribution with `p50`/`p95`/`p99` marker overlays, the
+//!   distribution sibling of categorical [`BarChart`] (the shared eighth ramp).
+//! - [`stat_panel`]: [`StatPanel`]/[`Trend`] — the single big KPI with a
+//!   caption, a trend delta, and an inline sparkline backdrop; the
+//!   observability tile [`Card`] generalizes to.
+//! - [`flame_graph`]: [`FlameGraph`]/[`FlameFrame`] — a flame/icicle graph of
+//!   a caller-owned **flattened** frame list (the [`Tree`] discipline) for
+//!   CPU / trace profiles.
+//! - [`trace_waterfall`]: [`TraceWaterfall`]/[`TraceSpan`] — a distributed
+//!   trace span waterfall on a shared time axis (the [`BarChart`] sub-cell
+//!   ramp), spans flattened in display order like [`Tree`].
+//! - [`log_stream`]: [`LogStream`]/[`LogRecord`]/[`LogLevel`]/[`LogPalette`] —
+//!   a structured, severity-coloured log viewer projecting a caller-owned
+//!   scroll `offset` exactly like [`List`].
+//!
 //! # Example
 //!
 //! ```
@@ -236,16 +262,21 @@ pub mod divider;
 pub mod drawer;
 pub mod editor;
 pub mod extmark;
+pub mod flame_graph;
 pub mod flow;
 pub mod form;
 pub mod gauge;
 pub mod grid;
+pub mod heatmap;
 pub mod help_overlay;
+pub mod histogram;
 pub mod input;
 pub mod kbd;
+pub mod line_chart;
 pub mod line_number_gutter;
 pub mod link;
 pub mod list;
+pub mod log_stream;
 pub mod markdown;
 pub mod masked_input;
 pub mod menu;
@@ -264,6 +295,7 @@ pub mod slider;
 pub mod sparkline;
 pub mod spinner;
 pub mod split_pane;
+pub mod stat_panel;
 pub mod status_bar;
 pub mod stepper;
 pub mod switch;
@@ -271,6 +303,7 @@ pub mod table;
 pub mod tabs;
 pub mod toast;
 pub mod tooltip;
+pub mod trace_waterfall;
 pub mod tree;
 
 pub use accordion::{Accordion, AccordionSection};
@@ -306,10 +339,15 @@ pub use align::{Align, VerticalAlignment};
 pub use avatar::Avatar;
 pub use date_picker::DatePicker;
 pub use drawer::{Drawer, DrawerSide};
+pub use flame_graph::{FlameFrame, FlameGraph};
 pub use flow::Flow;
 pub use grid::Grid;
+pub use heatmap::Heatmap;
 pub use help_overlay::{HelpEntry, HelpOverlay};
+pub use histogram::{Histogram, HistogramBucket, Percentile};
 pub use kbd::Kbd;
+pub use line_chart::{AxisBounds, LineChart, Series};
+pub use log_stream::{LogLevel, LogPalette, LogRecord, LogStream};
 pub use masked_input::MaskedInput;
 pub use mermaid::{Mermaid, MermaidError, MermaidTheme};
 pub use modal::Modal;
@@ -326,6 +364,7 @@ pub use slider::{Slider, SliderOrientation};
 pub use sparkline::Sparkline;
 pub use spinner::Spinner;
 pub use split_pane::SplitPane;
+pub use stat_panel::{StatPanel, Trend};
 pub use status_bar::StatusBar;
 pub use stepper::{Step, Stepper, StepperOrientation};
 pub use switch::Switch;
@@ -333,4 +372,5 @@ pub use table::{Row, Table, TableColumnFit};
 pub use tabs::Tabs;
 pub use toast::{Toast, ToastCorner, ToastLevel, ToastMessage};
 pub use tooltip::Tooltip;
+pub use trace_waterfall::{TraceSpan, TraceWaterfall};
 pub use tree::{Tree, TreeGuides, TreeItem};
