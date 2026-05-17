@@ -1,0 +1,88 @@
+# Kitchen sink
+
+`rstui-kitchen-sink` is one interactive full-screen app that exercises **every
+widget** across eight screens, with live keyboard + mouse, theming, overlays
+and animation. It is the fastest way to *see* the whole library, and a
+full-scale worked example of the [composition model](composition.md).
+
+```sh
+cargo run  -p rstui-kitchen-sink     # live, on your terminal
+cargo test -p rstui-kitchen-sink     # the same app, driven headless
+```
+
+![Kitchen sink](media/kitchen-sink-120x40.gif)
+
+> Regenerate this and the other resolutions with `cargo xtask record
+> kitchen-sink` (see [Recording](recording.md)).
+
+## It is just an `App`
+
+The kitchen sink follows the exact model the rest of the docs describe:
+
+- A `KitchenSink` model owns everything — `size`, the active `screen`, the
+  sidebar cursor, the focused `pane`, the open `overlay`, the animation
+  `tick`, the `theme`, the toast queue, the palette query, and each screen's
+  interactive state.
+- `on_event` maps input to a `Msg`; `update` is the only mutation point and
+  returns `Cmd::tick` to keep animation going; `view` is a pure projection.
+- It runs **two ways from one reducer**: live via
+  `rstui_crossterm::run_app` (alternate screen, raw mode, mouse/focus
+  capture, panic-safe restore) and headless via `Harness` with scripted
+  input (its CI tests). Same app, no changes — the rstui guarantee.
+
+## The eight screens
+
+| # | Screen | Widgets it shows |
+|---|--------|------------------|
+| 1 | Welcome | the global keymap + styled `Paragraph` |
+| 2 | Forms | `Input`, `Editor`, `Checkbox`, `Radio`, `Switch`, `Slider`, `Button`, `Form` |
+| 3 | Navigation | `List`, `Table`, `Tree`, `Menu`, `Tabs`, `Pagination`, `Stepper` |
+| 4 | Data | `BarChart`, `Gauge`, `Calendar`, `Diff`, `DescriptionList`, `Accordion` |
+| 5 | Feedback | `Alert`, `Badge`, `Spinner`, `Skeleton`, `Tooltip`, `Popover` |
+| 6 | Containers | `Block`, `Card`, `Grid`, `SplitPane`, `Divider`, `Align`, `ScrollView`, `Scrollbar` |
+| 7 | Rich Text | `Paragraph`, `Markdown`, `Mermaid` |
+| 8 | Colour Lab | ANSI / 256-indexed / RGB truecolor / modifiers |
+
+The global shell (`chrome.rs`) wraps every screen: a header (brand, title,
+theme + animation tick), a `Sidebar` rail, a `StatusBar` footer, and the
+overlay stack (`HelpOverlay`, `CommandPalette`, `Drawer`, quit `Modal`,
+`Toast` queue).
+
+## Keybindings
+
+| Key(s) | Action |
+|--------|--------|
+| `1`–`8` | Jump straight to a screen |
+| `Tab` | Toggle focus between the sidebar and the content pane |
+| `↑ ↓ ← →` | Navigate (sidebar selection or per-widget) |
+| `Enter` / `Space` | Activate / toggle / confirm |
+| `:` | Command palette — type to filter, `Enter` to jump |
+| `?` | Help overlay (the keymap) |
+| `g` | Settings drawer (toggle theme) |
+| `q` / `Esc` | Quit (opens a confirm modal; `y`/`Enter` confirms) |
+| typing | Into focused inputs; filters the palette |
+| mouse / scroll | Click hit-testing; wheel/PageUp-Down scrolling |
+
+## Resolution adaptive
+
+The model owns `size` (updated on `Event::Resize`) and the layout is
+recomputed every frame from the current area. Every widget clips or no-ops on
+oversized/tiny/zero areas — there are no panics at any size. That is why one
+identical walkthrough script renders correctly at every resolution:
+
+```sh
+cargo xtask record kitchen-sink
+# -> docs/media/kitchen-sink-{80x24,120x40,160x50,200x60}.gif (+ .mp4)
+```
+
+## Headless tests
+
+`crates/rstui-kitchen-sink/tests/kitchen_sink.rs` drives the same app through
+`Harness` and asserts on snapshots — it boots on Welcome with chrome rendered,
+every number key lands on the right screen, the palette filters, the drawer
+toggles, `q`→`y` quits, ticks + resize keep it running. The
+[VHS e2e smoke](recording.md#the-end-to-end-regression-gate) complements these
+by driving the *real* crossterm binary through the same kind of script.
+
+See also: [Architecture](architecture.md) · [Component library](widgets/README.md)
+· [`docs/composition.md`](composition.md).

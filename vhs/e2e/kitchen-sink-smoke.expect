@@ -1,0 +1,10 @@
+# Required substrings in the LAST captured frame of kitchen-sink-smoke.tape.
+# One marker per line; blank lines and lines starting with '#' are ignored.
+# `cargo xtask record e2e --check` fails if any marker is missing — i.e. the
+# real crossterm binary failed to boot, translate input, or render chrome.
+#
+# These literals come from the kitchen-sink test suite (stable, tick-counter
+# independent): the header brand, the navigated screen, the footer hint.
+rstui
+Forms
+palette

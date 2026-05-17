@@ -13,6 +13,10 @@
 //! - `bench` — build and run the `rstui-bench` hot-path benchmarks in
 //!   release. Deliberately *not* a `ci` gate so the fast loop stays fast
 //!   (ADR 0005); see `docs/benchmarking.md`.
+//! - `record` — regenerate the documentation media with VHS (widget GIFs,
+//!   the `gallery` hero, the kitchen sink at four resolutions, the e2e
+//!   smoke). Also *not* a `ci` gate (needs the VHS toolchain); see
+//!   `docs/recording.md`.
 //!
 //! Run via `cargo xtask <task>` (the alias is in `.cargo/config.toml`) or
 //! `cargo run -p xtask -- <task>`.
@@ -22,6 +26,7 @@ mod ci;
 mod merge_check;
 mod naming;
 mod publish_check;
+mod record;
 // Release-readiness drift guards: `#[test]`s only, so compiled solely under
 // test (no runtime task, no dead code in the shipped binary).
 #[cfg(test)]
@@ -50,6 +55,11 @@ Tasks:
   publish-check  `cargo package` every publishable crate as one set —
                release-packaging smoke test. NOT a ci gate (packaging,
                not building). See docs/development.md.
+  record [T] [--check]
+               Regenerate documentation media with VHS. T = all (default)
+               | widgets | gallery | kitchen-sink | e2e. `e2e --check`
+               fails on a missing marker. NOT a ci gate (needs the VHS
+               toolchain). See docs/recording.md.
   help         Show this message.";
 
 fn main() -> ExitCode {
@@ -64,6 +74,10 @@ fn main() -> ExitCode {
         }
         Some("merge-check") => merge_check::run(&workspace_root()),
         Some("publish-check") => publish_check::run(&workspace_root()),
+        Some("record") => {
+            let extra: Vec<String> = std::env::args().skip(2).collect();
+            record::run(&workspace_root(), &extra)
+        }
         Some("lint-names") | None => lint_names(),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
