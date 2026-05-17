@@ -112,6 +112,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // and kill().
 export async function startPlugin({ cmd, args, transport, wsPort }) {
   const lines = [];
+  const api = { onMessage: null };
+  const ingest = (obj) => {
+    lines.push(obj);
+    api.onMessage?.(obj);
+  };
   let child;
   let ws = null;
 
@@ -134,7 +139,7 @@ export async function startPlugin({ cmd, args, transport, wsPort }) {
     if (!ws) throw new Error(`ws connect failed: ${lastErr?.message}`);
     ws.onMessage = (m) => {
       try {
-        lines.push(JSON.parse(m));
+        ingest(JSON.parse(m));
       } catch {}
     };
   } else {
@@ -148,7 +153,7 @@ export async function startPlugin({ cmd, args, transport, wsPort }) {
         buf = buf.slice(i + 1);
         if (l) {
           try {
-            lines.push(JSON.parse(l));
+            ingest(JSON.parse(l));
           } catch {}
         }
       }
@@ -178,7 +183,17 @@ export async function startPlugin({ cmd, args, transport, wsPort }) {
       child.kill("SIGKILL");
     } catch {}
   };
-  return { child, lines, send, waitFor, kill, transport };
+  return {
+    child,
+    lines,
+    send,
+    waitFor,
+    kill,
+    transport,
+    set onMessage(fn) {
+      api.onMessage = fn;
+    },
+  };
 }
 
 export { sleep };
