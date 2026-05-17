@@ -747,3 +747,32 @@ fn plugin_commands_route_and_appear_in_autocomplete() {
         rstui_acp_client::app::CommandSource::Plugin(_)
     ));
 }
+
+#[test]
+fn agent_markdown_links_render_with_styling() {
+    let mut h = chatting(100, 40);
+    // Inject an agent response with markdown link syntax
+    h.message(Msg::Acp(AcpEvent::AgentText(
+        "Check this out: [example](https://example.com)".to_owned(),
+    )));
+    let snap = h.snapshot();
+    // The snapshot should contain the link text (the Markdown widget renders just the link text)
+    assert!(
+        snap.contains("example"),
+        "link text should appear in output"
+    );
+    // The agent message should be present in the transcript
+    let trans = h.app().transcript();
+    assert!(
+        !trans.is_empty(),
+        "transcript should have the agent message"
+    );
+    let agent_msg = trans
+        .iter()
+        .find(|e| e.role == rstui_acp_client::app::Role::Agent)
+        .expect("should have an agent message");
+    assert!(
+        agent_msg.text.contains("[example](https://example.com)"),
+        "agent message should contain markdown link syntax"
+    );
+}

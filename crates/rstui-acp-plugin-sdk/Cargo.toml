@@ -1,0 +1,27 @@
+[package]
+name = "rstui-acp-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# An SDK crate for *writing* rstui-acp-client plugins in Rust. It owns the
+# whole communications stack (JSON-RPC 2.0 framing + transport + dispatch),
+# so a plugin only writes handlers. publish=false: it ships with the app,
+# not as a standalone library (yet), like the other non-library crates.
+publish = false
+description = "Rust SDK for rstui-acp-client plugins: JSON-RPC 2.0 over stdio/websocket, transport-agnostic, the plugin writes only handlers."
+
+[lints]
+workspace = true
+
+[dependencies]
+# The only deps: a JSON codec. std-only otherwise (no async/tokio): a plugin
+# is a small synchronous process. Both are MIT/Apache (deny-allowed) and
+# already in the workspace graph via the client.
+serde = { version = "1", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }

@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-use super::protocol::{HostEvent, PluginAction, decode_action, encode_event};
+use rstui_acp_plugin_sdk::jsonrpc::Message;
+use rstui_acp_plugin_sdk::proto::message_to_plugin_action;
+use rstui_acp_plugin_sdk::{HostEvent, PluginAction, encode_event};
 
 /// One action from a named plugin, delivered to the reducer.
 #[derive(Debug, Clone)]
@@ -160,20 +162,25 @@ fn spawn_plugin(
                     if line.trim().is_empty() {
                         continue;
                     }
-                    match decode_action(&line) {
-                        Ok(action) => {
-                            if reader_tx
-                                .send(PluginEvent {
-                                    plugin: reader_name.clone(),
-                                    action,
-                                })
-                                .is_err()
-                            {
-                                break;
+                    match Message::decode_line(&line) {
+                        Ok(msg) => {
+                            // A JSON-RPC response (e.g. the `initialize` ack)
+                            // or a non-action message is not a UI action —
+                            // skip it, do not fail-close.
+                            if let Some(action) = message_to_plugin_action(&msg) {
+                                if reader_tx
+                                    .send(PluginEvent {
+                                        plugin: reader_name.clone(),
+                                        action,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
                             }
                         }
-                        // Fail-closed (ADR 0007): a malformed line ends the
-                        // plugin's influence rather than being skipped.
+                        // Fail-closed (ADR 0007): a malformed (non-JSON-RPC)
+                        // line ends the plugin's influence.
                         Err(_) => break,
                     }
                 }
@@ -197,38 +204,4 @@ fn spawn_plugin(
         let _ = child.kill().await;
     });
     tx
-}
-
-/// Plugin-side serve loop: read [`HostEvent`]s from stdin, hand each to
-/// `handler`, and write any [`PluginAction`]s it emits to stdout. Returns
-/// when stdin closes or a [`HostEvent::Shutdown`] is handled.
-///
-/// Reference plugins are tiny separate processes, so this uses only
-/// blocking std I/O — no async runtime in a plugin binary.
-pub fn serve<F>(mut handler: F)
-where
-    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
-{
-    use std::io::{BufRead, Write};
-
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(event) = super::protocol::decode_event(&line) else {
-            break;
-        };
-        let stop = matches!(event, HostEvent::Shutdown);
-        let mut emit = |action: PluginAction| {
-            let _ = stdout.write_all(super::protocol::encode_action(&action).as_bytes());
-            let _ = stdout.flush();
-        };
-        handler(event, &mut emit);
-        if stop {
-            break;
-        }
-    }
 }
