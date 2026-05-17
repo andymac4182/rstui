@@ -406,6 +406,45 @@ impl ShmChannel {
         Ok(())
     }
 
+    /// Extract one complete frame from the RX ring if a whole message is
+    /// already buffered; pure, non-blocking (no spin, no park). The sole
+    /// reader, so caching `tail` between calls is unnecessary.
+    fn poll_frame(&self) -> Option<Vec<u8>> {
+        let tail = self.at(self.rx.tail).load(Ordering::Relaxed);
+        let head = self.at(self.rx.head).load(Ordering::Acquire);
+        if head.wrapping_sub(tail) < 4 {
+            return None;
+        }
+        let lb = self.ring_take(self.rx.data, tail, 4);
+        let mlen = u64::from(u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]));
+        if head.wrapping_sub(tail) < 4 + mlen {
+            return None; // length arrived, body not yet
+        }
+        let body = self.ring_take(self.rx.data, tail + 4, mlen as usize);
+        self.at(self.rx.tail)
+            .store(tail + 4 + mlen, Ordering::Release);
+        Some(body)
+    }
+
+    /// `true` once either peer has closed (clean `Drop`) or the watchdog
+    /// detected an orphan/crash. Pair with [`try_recv`](Self::try_recv) in
+    /// a host poll loop to distinguish "nothing yet" from end-of-stream.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed()
+    }
+
+    /// Non-blocking receive: `Ok(Some(bytes))` if a whole message is
+    /// ready *now*, else `Ok(None)` (which here means "not ready", **not**
+    /// EOF — check [`is_closed`](Self::is_closed)). For an asymmetric host
+    /// driver that also pushes events and must not park.
+    ///
+    /// # Errors
+    /// Never returns `Err`; the signature mirrors [`recv`](Self::recv).
+    pub fn try_recv(&mut self) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.poll_frame())
+    }
+
     /// Receive one message, or `Ok(None)` at clean end-of-stream
     /// (peer closed / orphaned).
     ///
@@ -416,22 +455,14 @@ impl ShmChannel {
     /// # Errors
     /// Never returns `Err` for normal close — that is `Ok(None)`.
     pub fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let tail = self.at(self.rx.tail).load(Ordering::Relaxed);
         loop {
-            let head = self.at(self.rx.head).load(Ordering::Acquire);
-            if head.wrapping_sub(tail) >= 4 {
-                let lb = self.ring_take(self.rx.data, tail, 4);
-                let mlen = u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]) as u64;
-                if head.wrapping_sub(tail) >= 4 + mlen {
-                    let body = self.ring_take(self.rx.data, tail + 4, mlen as usize);
-                    self.at(self.rx.tail)
-                        .store(tail + 4 + mlen, Ordering::Release);
-                    return Ok(Some(body));
-                }
+            if let Some(body) = self.poll_frame() {
+                return Ok(Some(body));
             }
             if self.closed() {
                 return Ok(None);
             }
+            let tail = self.at(self.rx.tail).load(Ordering::Relaxed);
             // Scoped hot-spin window.
             let spin = Instant::now();
             let mut hot = true;

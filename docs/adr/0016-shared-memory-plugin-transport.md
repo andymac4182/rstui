@@ -1,6 +1,6 @@
 # ADR 0016: Shared-memory plugin transport (opt-in, Rust-only, spin)
 
-- **Status:** Proposed
+- **Status:** Accepted (shipped — phases 1–4 landed)
 - **Date:** 2026-05-17
 - **Deciders:** rstui maintainers
 - **Relates to:** [ADR 0003](0003-lint-and-code-quality-policy.md)
@@ -81,8 +81,9 @@ latency-critical. The spin is **scoped to each request→response
 exchange** (caller) plus a short post-message stay-hot window (callee),
 then both **park** — so a quiescent plugin uses ~0 % CPU.
 
-Implementation is **phased** (below); this ADR is `Proposed` and becomes
-`Accepted` on the go decision — the evidence already justifies it.
+Implementation was **phased** (below) and is now **shipped** — all four
+phases landed on `main`, each its own gated slice, stdio still the
+default.
 
 ## Evidence
 
@@ -141,16 +142,24 @@ Rust plugin — interactive/streaming plugins that would feel pipe jitter.
   must be cleaned up; a real SPSC ring with variable-length framing and
   backpressure replaces the prototype's single ping-pong slot.
 
-**Deferred (phased plan):**
+**Shipped (phased plan — all landed):**
 
 1. ✅ Prototype + measurement (this ADR's evidence).
-2. `rstui-acp-shm` crate: `MAP_SHARED` SPSC ring, length-framed,
-   peer-liveness, adaptive spin; isolated audited `unsafe`.
-3. `impl Transport for ShmTransport` + `serve_shm` + `serve_auto`
-   `--shm`/`RSTUI_PLUGIN_SHM`; `examples/rtt.rs` gains a shm row.
-4. Docs: SDK README + OPTIMISATION.md; the opt-in/CPU contract stated
-   at the call site.
+2. ✅ `rstui-acp-shm` crate: `MAP_SHARED` SPSC ring, length-framed,
+   peer-liveness watchdog, scoped adaptive spin → semaphore park;
+   isolated audited `unsafe` (the sole sanctioned `unsafe` crate).
+3. ✅ `transport::ShmTransport` + `serve_shm`/`serve_plugin_shm` +
+   `serve_auto` `--shm`/`RSTUI_PLUGIN_SHM` (precedence shm → uds → ws →
+   stdio); `examples/rtt.rs` has a shm row.
+4. ✅ Client host: a `--shm` token in a plugin's launch command opts it
+   in — the host owns the segment (creator) and drives it on a dedicated
+   thread (adaptive: hot during an exchange, 1 ms idle poll); the
+   default stdio path is byte-for-byte unchanged. Docs: SDK README +
+   OPTIMISATION.md.
 
-Each phase is its own gated slice; stdio remains the default throughout.
-If the go decision is "no", option 4 stands and this ADR is the record
-of why shm was evaluated and what it would have cost.
+**Measured end-to-end through the full SDK JSON-RPC stack** (M1 Pro,
+50 k iters, single in-flight): shm **p50 ≈ 1.3 µs, p95 ≈ 3.3 µs** vs
+stdio `--lp` p50 ≈ 10 µs / p95 ≈ 70 µs on the same run — ~8× lower p50,
+p95 decisively < 10 µs *including* serde. `ShmChannel` adds `try_recv`/
+`is_closed` for the asymmetric host driver. Each phase landed as its own
+gated slice; stdio remains the default.

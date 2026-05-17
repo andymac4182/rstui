@@ -100,8 +100,12 @@ The only ways to push p95 (and p99) under 10 µs:
    does **not** burn a core at realistic cadence. Designed, measured,
    recorded in [ADR 0016](../../docs/adr/0016-shared-memory-plugin-transport.md):
    opt-in, **Rust-plugin-only** (Node can't mmap without a native addon),
-   `unsafe` isolated to one audited crate, no new dependency. Phased
-   build, stdio stays the default.
+   `unsafe` isolated to one audited crate, no new dependency. **Shipped**
+   (ADR 0016 phases 1–4): `rstui-acp-shm` + SDK `serve_shm`/`serve_auto
+   --shm` + client opt-in (a `--shm` token in a plugin's launch command;
+   stdio stays the default, byte-for-byte unchanged). End-to-end through
+   the full SDK JSON-RPC stack it measured **p50 ≈ 1.3 µs / p95 ≈ 3.3 µs**
+   (vs stdio `--lp` ≈ 10 / 70 µs same run) — p95 < 10 µs *including* serde.
 
 Recommendation: **default stdio with `--lp` already meets "< 10 µs"
 for p50/typical** — ship that. Treat sub-10 µs *p95* as opt-in spin

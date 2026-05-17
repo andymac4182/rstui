@@ -122,6 +122,13 @@ fn spawn_plugin(
     cwd: std::path::PathBuf,
     ev_tx: std::sync::mpsc::Sender<PluginEvent>,
 ) -> tokio::sync::mpsc::UnboundedSender<HostEvent> {
+    // Opt-in (ADR 0016): a `--shm` token in the launch command routes
+    // this plugin over a shared-memory channel instead of stdio. The
+    // stdio path below is left byte-for-byte unchanged — shm is per-
+    // plugin, never the default, zero regression for existing plugins.
+    if command.split_whitespace().any(|t| t == "--shm") {
+        return spawn_plugin_shm(name, command, cwd, ev_tx);
+    }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     tokio::spawn(async move {
         let mut parts = command.split_whitespace();
@@ -202,6 +209,144 @@ fn spawn_plugin(
             }
         }
         let _ = child.kill().await;
+    });
+    tx
+}
+
+/// Shared-memory variant of [`spawn_plugin`] (ADR 0016). The host owns
+/// the segment (creator); the plugin attaches via the `--shm <path>` the
+/// SDK's `serve_auto` understands. A dedicated OS thread drives the
+/// synchronous [`ShmChannel`](rstui_acp_plugin_sdk::ShmChannel): it polls
+/// hot (busy, sub-µs pickup) for a short window after any activity and
+/// falls to a 1 ms poll when fully idle (≈0 % CPU). The transport itself
+/// is sub-µs; this only bounds the idle→active edge. Rust plugins only.
+fn spawn_plugin_shm(
+    name: String,
+    command: String,
+    cwd: std::path::PathBuf,
+    ev_tx: std::sync::mpsc::Sender<PluginEvent>,
+) -> tokio::sync::mpsc::UnboundedSender<HostEvent> {
+    use rstui_acp_plugin_sdk::ShmChannel;
+    use tokio::sync::mpsc::error::TryRecvError;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+    std::thread::spawn(move || {
+        let mut parts = command.split_whitespace();
+        let Some(program) = parts.next() else {
+            return;
+        };
+        // Drop any operator-supplied `--shm`/value; the host picks the path.
+        let mut args: Vec<String> = Vec::new();
+        let mut it = parts.peekable();
+        while let Some(t) = it.next() {
+            if t == "--shm" {
+                if it.peek().is_some_and(|n| !n.starts_with('-')) {
+                    it.next();
+                }
+                continue;
+            }
+            args.push(t.to_owned());
+        }
+        let sanitized = name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        let path =
+            std::env::temp_dir().join(format!("rstui-plug-{}-{sanitized}.shm", std::process::id()));
+        let path_s = path.to_string_lossy().into_owned();
+        let emit_log = |text: String| {
+            let _ = ev_tx.send(PluginEvent {
+                plugin: name.clone(),
+                action: PluginAction::Log { text },
+            });
+        };
+
+        let mut chan = match ShmChannel::create(&path_s) {
+            Ok(c) => c,
+            Err(err) => {
+                emit_log(format!("shm create failed for `{name}`: {err}"));
+                return;
+            }
+        };
+        let mut child = match std::process::Command::new(program)
+            .args(&args)
+            .arg("--shm")
+            .arg(&path_s)
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(err) => {
+                emit_log(format!("failed to spawn shm plugin `{command}`: {err}"));
+                return;
+            }
+        };
+
+        let stay_hot = std::time::Duration::from_millis(4);
+        let mut hot_until = std::time::Instant::now();
+        let mut shutting = false;
+        loop {
+            let mut did = false;
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => {
+                        did = true;
+                        let is_shutdown = matches!(ev, HostEvent::Shutdown);
+                        if chan.send(encode_event(&ev).as_bytes()).is_err() {
+                            shutting = true;
+                        }
+                        if is_shutdown {
+                            shutting = true;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        shutting = true;
+                        break;
+                    }
+                }
+            }
+            loop {
+                match chan.try_recv() {
+                    Ok(Some(bytes)) => {
+                        did = true;
+                        match std::str::from_utf8(&bytes)
+                            .ok()
+                            .and_then(|s| Message::decode_line(s).ok())
+                        {
+                            Some(msg) => {
+                                if let Some(action) = message_to_plugin_action(&msg)
+                                    && ev_tx
+                                        .send(PluginEvent {
+                                            plugin: name.clone(),
+                                            action,
+                                        })
+                                        .is_err()
+                                {
+                                    shutting = true;
+                                }
+                            }
+                            // Fail-closed (ADR 0007): malformed ends influence.
+                            None => shutting = true,
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            if chan.is_closed() || shutting {
+                break;
+            }
+            if did {
+                hot_until = std::time::Instant::now() + stay_hot;
+            } else if std::time::Instant::now() < hot_until {
+                std::hint::spin_loop();
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(chan); // unmaps + unlinks the segment and semaphores
     });
     tx
 }

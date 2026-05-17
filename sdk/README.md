@@ -2,18 +2,22 @@
 
 Plugins are **separate processes** that speak **JSON-RPC 2.0** (the same wire
 ACP and MCP use) to the client over a transport — **stdio, Unix-domain
-socket, or WebSocket**, with optional **length-prefixed binary framing**
-(`--lp`, a u32-BE length + JSON bytes — no newline scan) on the stdio/uds
-paths (same `Message`, different framing). The WebSocket server is
+socket, WebSocket, or shared memory**, with optional **length-prefixed binary
+framing** (`--lp`, a u32-BE length + JSON bytes — no newline scan) on the
+stdio/uds paths (same `Message`, different framing). The WebSocket server is
 dependency-free (hand-rolled RFC 6455: inline SHA-1/base64 handshake,
 masked/unmasked text frames) so the strict workspace dependency/`cargo deny`
-budget is untouched. A Rust plugin can pick its transport explicitly
-(`serve` = stdio, `serve_stdio_lp`, `serve_unix(path, lp, …)`,
-`serve_ws(addr, …)`) or just call `serve_auto(…)` and let `--uds`/`--ws`/
-`--lp` (or `RSTUI_PLUGIN_UDS`/`_WS`/`_LP`) choose; the TS SDK's `bridge()`
-mirrors the same selection and precedence. See `sdk/bench/OPTIMISATION.md`
-for the overhead analysis and the QUIC / protobuf / Cap'n Proto evaluation.
-Two SDKs, one wire:
+budget is untouched. **Shared memory** (`--shm <path>`, ADR 0016) is the
+lowest-latency local transport — flat sub-µs RTT via an mmap SPSC ring with
+scoped-spin/semaphore park — but is **opt-in and Rust-plugin-only** (Node
+can't `mmap` addon-free); all its `unsafe` is isolated in `rstui-acp-shm`.
+A Rust plugin can pick its transport explicitly (`serve` = stdio,
+`serve_stdio_lp`, `serve_unix(path, lp, …)`, `serve_ws(addr, …)`,
+`serve_shm(path, …)`) or just call `serve_auto(…)` and let
+`--shm`/`--uds`/`--ws`/`--lp` (or `RSTUI_PLUGIN_SHM`/`_UDS`/`_WS`/`_LP`)
+choose; the TS SDK's `bridge()` mirrors the same selection and precedence
+(minus shm). See `sdk/bench/OPTIMISATION.md` for the overhead analysis and
+the QUIC / protobuf / Cap'n Proto evaluation. Two SDKs, one wire:
 
 | SDK | Language | Role |
 |---|---|---|
