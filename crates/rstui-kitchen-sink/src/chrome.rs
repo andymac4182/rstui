@@ -6,18 +6,28 @@
 //! Each of those is a real catalog widget doing its real job, not a static
 //! sample — driving the app *is* the demo of the chrome.
 
-use rstui_core::{
-    Constraint, Layout, Line, Modifier, Position, Rect, Style, TextEdit, stylize::Stylize,
-};
+use rstui_core::{Constraint, Line, Modifier, Position, Rect, Style, TextEdit, stylize::Stylize};
 use rstui_runtime::Frame;
 use rstui_widgets::{
-    Block, BorderType, CommandPalette, Drawer, DrawerSide, HelpEntry, HelpOverlay, List, Modal,
-    Paragraph, Sidebar, SidebarItem, StatusBar, Toast, ToastCorner, ToastMessage, Wrap,
+    Block, BorderType, CommandPalette, Drawer, DrawerSide, HelpEntry, HelpOverlay, KeymapRow,
+    KeymapView, Modal, Paragraph, RowState, Sidebar, SidebarItem, StatusBar, Toast, ToastCorner,
+    ToastMessage,
 };
 
 use crate::keymap;
 use crate::screens::Screen;
 use crate::{KitchenSink, Overlay, Pane};
+
+/// Split a `keys_for` display string into [`KeymapView`] caps:
+/// `"⌘K / :"` → `["⌘K", ":"]`; the unbound sentinel `"—"` → `[]` (so the
+/// row reads disabled). The one adapter between `rstui-keymap` and the
+/// engine-agnostic widget.
+fn caps(keys: &str) -> Vec<String> {
+    if keys == "—" {
+        return Vec::new();
+    }
+    keys.split(" / ").map(str::to_owned).collect()
+}
 
 /// Raw screen-level keys the keymap deliberately doesn't own (they fall
 /// through to the focused screen) — appended to help for completeness.
@@ -300,65 +310,62 @@ fn view_drawer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     let inner = drawer.inner(area);
     frame.render_widget(drawer, area);
 
+    // The keymap manager is now the shared `KeymapView` widget (the same
+    // one git-review and acp-client use) — a pure projection of the *live*
+    // keymap, so a switch or a user remap is reflected immediately. The
+    // reducer still owns `drawer_sel` and the capture FSM (`rebind`); the
+    // widget only draws state and (when wired) reports the clicked row.
     let km = ks.keymaps().effective();
     let leader = km.leader.map_or_else(|| "—".to_string(), |c| c.display());
-    let [head, list_a, legend] = Layout::vertical([
-        Constraint::Length(4),
-        Constraint::Fill(1),
-        Constraint::Length(5),
-    ])
-    .areas(inner);
-
-    frame.render_widget(
-        Paragraph::new(format!(
-            "OS:      {}\nKeymap:  {}\nLeader:  {}\nTheme:   {}",
-            keymap::Keymaps::os_name(),
-            ks.keymaps().active_name(),
-            leader,
-            ks.theme_name(),
-        ))
-        .style(theme.body())
-        .wrap(Wrap { trim: true }),
-        head,
-    );
-
-    // The live action → keys table; `keys_for` reflects any user remap.
-    let items: Vec<Line> = keymap::Action::shown()
+    let sel = ks.drawer_sel();
+    let rows: Vec<KeymapRow> = keymap::Action::shown()
         .into_iter()
-        .map(|a| {
-            Line::from(vec![
-                format!("{:<18}", a.help()).fg(theme.text),
-                // The stable config id (Textual's binding id) — the key a
-                // user puts in a config file to remap this action.
-                format!("{:<16}", a.id()).fg(theme.dim),
-                km.keys_for(a).fg(theme.accent),
-            ])
+        .enumerate()
+        .map(|(i, a)| {
+            let keys = km.keys_for(a);
+            let state = if ks.rebind() == Some(a) {
+                RowState::Capturing
+            } else if i == sel {
+                RowState::Selected
+            } else if keys == "—" {
+                RowState::Disabled
+            } else {
+                RowState::Normal
+            };
+            KeymapRow::new(a.help(), caps(&keys))
+                .id(a.id())
+                .state(state)
         })
         .collect();
-    frame.render_widget(
-        List::new(items)
-            .selected(Some(ks.drawer_sel()))
-            .highlight_symbol("▶ ")
-            .highlight_style(theme.selection())
-            .style(theme.body()),
-        list_a,
+    let header = format!(
+        " {} · {} · leader {} · {}",
+        ks.keymaps().active_name(),
+        keymap::Keymaps::os_name(),
+        leader,
+        ks.theme_name(),
     );
-
-    let legend_text = if let Some(act) = ks.rebind() {
-        format!("● Press a key to bind\n  “{}”  (Esc cancels)", act.help())
+    let footer = if let Some(act) = ks.rebind() {
+        format!("● press a key to bind “{}” — Esc cancels", act.help())
     } else {
-        "↑↓ select · r/⏎ rebind · x disable\nc keymap · t dark/light · p theme picker · Esc close"
-            .to_string()
+        "↑↓ select · r/⏎ rebind · x disable · c keymap · t theme · Esc close".to_string()
     };
     frame.render_widget(
-        Paragraph::new(legend_text)
-            .style(if ks.rebind().is_some() {
+        KeymapView::new(&rows)
+            .header(Line::from(header).style(theme.heading()))
+            .footer(Line::from(footer).style(if ks.rebind().is_some() {
                 theme.accent_text()
             } else {
                 theme.caption()
-            })
-            .wrap(Wrap { trim: true }),
-        legend,
+            }))
+            .separator("")
+            .style(theme.body())
+            .label_style(Style::new().fg(theme.text))
+            .id_style(Style::new().fg(theme.dim))
+            .key_style(Style::new().fg(theme.accent))
+            .selected_style(theme.selection())
+            .capturing_style(theme.accent_text())
+            .disabled_style(Style::new().fg(theme.dim)),
+        inner,
     );
 }
 
