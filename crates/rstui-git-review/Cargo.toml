@@ -1,0 +1,34 @@
+[package]
+name = "rstui-git-review"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# An end-user application binary, not a crates.io library — `publish = false`
+# like the other non-library crates (`rstui-acp-client`, `rstui-bench`,
+# `rstui-smoke`, `xtask`). It shells out to the `git` binary at runtime; it
+# does not link any git library, so the dependency tree stays the framework's.
+publish = false
+description = "A full-screen git history review + code editing TUI built on rstui: step through every commit, read its diff with syntax highlighting, and edit the working tree — git is reached only as a Cmd-seam subprocess."
+
+[lints]
+workspace = true
+
+# `src/main.rs` is the auto-discovered `rstui-git-review` binary; `src/lib.rs`
+# holds the deterministically Harness-testable App + git layer.
+[lib]
+name = "rstui_git_review"
+path = "src/lib.rs"
+
+[dependencies]
+# rstui workspace siblings. `version` + `path` per the workspace
+# publishability convention (a bare path dep makes a crate unpublishable);
+# kept equal to the workspace version by the xtask release guard. This app is
+# synchronous — git runs in a `Cmd::perform` closure off the render loop — so
+# it does NOT need the `async` runtime feature the ACP client opts into.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
+rstui-runtime = { path = "../rstui-runtime", version = "0.0.1" }
+rstui-crossterm = { path = "../rstui-crossterm", version = "0.0.1" }
+rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }

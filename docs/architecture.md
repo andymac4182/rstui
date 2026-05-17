@@ -75,6 +75,7 @@ surface to justify it.
 | `rstui-crossterm` | crossterm `Backend` + `EventSource` + panic-safe lifecycle, `run_app` | `rstui-core`, `rstui-runtime`, crossterm | [Runtime](runtime.md#crossterm-the-live-terminal) |
 | `rstui-plugin-host` | Capability model, manifest, policy, frame protocol, host mediation, plugin SDK | *nothing*, no `unsafe` | [Plugin system](plugins.md) |
 | `rstui-acp-client` | A full-screen ACP chat client with a TUI plugin layer | the above | [ACP client](acp-client.md) |
+| `rstui-git-review` | A full-screen git history review + code editing app (git is a `Cmd`-seam subprocess) | core, runtime, crossterm, widgets | [git review](git-review.md) |
 | `rstui-kitchen-sink` | The interactive showcase of every widget | the above | [Kitchen sink](kitchen-sink.md) |
 | `rstui-bench` / `xtask` | Non-gating benchmarks; workspace automation | — | [development.md](development.md) / [benchmarking.md](benchmarking.md) |
 

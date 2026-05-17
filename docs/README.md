@@ -43,6 +43,7 @@ fits what you are doing.
 | [`rstui-crossterm`](runtime.md#crossterm-the-live-terminal) | The crossterm-backed terminal driver — the only external dependency, isolated here |
 | [`rstui-plugin-host`](plugins.md) | Dependency-free permissioned plugin host: plugins run as separate OS processes, deny-by-default |
 | [`rstui-acp-client`](acp-client.md) | A full-screen Agent Client Protocol chat client built on the framework |
+| [`rstui-git-review`](git-review.md) | A full-screen git history review + code editing app — git reached only as a `Cmd`-seam subprocess; the worked proof of [code-review-and-editing.md](code-review-and-editing.md) |
 | [`rstui-theme`](theming.md) | Optional: every gpui-component theme as a terminal-ready palette + `Style` constructors |
 | `rstui-kitchen-sink` | The interactive full-screen showcase exercising every widget — see [Kitchen sink](kitchen-sink.md) |
 | `rstui-bench` / `xtask` | The non-gating benchmark harness and workspace automation (`cargo xtask ci`, `record`) |

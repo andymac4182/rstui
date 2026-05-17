@@ -767,6 +767,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-git-review"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+ "rstui-crossterm",
+ "rstui-runtime",
+ "rstui-widgets",
+]
+
+[[package]]
 name = "rstui-keymap"
 version = "0.0.1"
 dependencies = [
