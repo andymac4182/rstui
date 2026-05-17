@@ -756,9 +756,9 @@ impl<'a> Mermaid<'a> {
     /// (screen coordinates, the same `area` passed to [`render`](Widget::render)),
     /// or `None`.
     ///
-    /// The mouse half of activation — a reducer turns a click into a
-    /// [`LinkActivation`](crate::link::LinkActivation):
-    /// `m.link_at(pos, area).and_then(|i| m.links().get(i).map(|l| l.activate(i)))`.
+    /// The mouse half of activation as a raw index. Prefer
+    /// [`link_activation_at`](Self::link_activation_at), which returns the
+    /// resolved [`LinkActivation`](crate::link::LinkActivation) in one call.
     #[must_use]
     pub fn link_at(&self, position: Position, area: Rect) -> Option<usize> {
         self.link_regions(area).into_iter().find_map(|r| {
@@ -767,6 +767,22 @@ impl<'a> Mermaid<'a> {
                 position.y >= r.rect.y && position.y < r.rect.y.saturating_add(r.rect.height);
             (in_x && in_y).then_some(r.index)
         })
+    }
+
+    /// Resolve a click `position` straight to the
+    /// [`LinkActivation`](crate::link::LinkActivation) (index + owned `href`)
+    /// of the `click`-directive node it activates, or `None`.
+    /// Hit-test and `href` come from the same parse of the same immutable
+    /// source, so the index/`links()` desync the raw
+    /// [`link_at`](Self::link_at) pattern invites cannot happen.
+    #[must_use]
+    pub fn link_activation_at(
+        &self,
+        position: Position,
+        area: Rect,
+    ) -> Option<crate::link::LinkActivation> {
+        let index = self.link_at(position, area)?;
+        self.links().get(index).map(|link| link.activate(index))
     }
 }
 
@@ -3051,6 +3067,31 @@ mod tests {
             Mermaid::new("graph TD\nA --> B").link_at(Position::new(1, 1), area),
             None
         );
+    }
+
+    #[test]
+    fn link_activation_at_resolves_a_clicked_node_to_its_href() {
+        let src = "graph TD\nA[Start] --> B[Stop]\nclick A \"u1\"\nclick B \"u2\"";
+        let m = Mermaid::new(src);
+        let area = Rect::new(0, 0, 24, 11);
+        let regions = m.link_regions(area);
+        let inside_a = Position::new(regions[0].rect.x + 1, regions[0].rect.y + 1);
+        let inside_b = Position::new(regions[1].rect.x + 1, regions[1].rect.y + 1);
+
+        assert_eq!(
+            m.link_activation_at(inside_a, area),
+            Some(m.links()[0].activate(0))
+        );
+        assert_eq!(
+            m.link_activation_at(inside_b, area),
+            Some(m.links()[1].activate(1))
+        );
+        assert_eq!(m.link_activation_at(Position::new(0, 0), area), None);
+        // No-desync: href tracks the resolved index.
+        if let Some(act) = m.link_activation_at(inside_b, area) {
+            assert_eq!(act.href, m.links()[act.index].href);
+            assert_eq!(act.index, 1);
+        }
     }
 
     #[test]

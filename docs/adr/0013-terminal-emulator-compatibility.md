@@ -90,7 +90,7 @@ Recorded so the research is actionable, not lost. Roughly priority order:
 | B2 | `modifyOtherKeys` (`ESC[>4;2m`/`;0m`) fallback when Kitty absent (tmux) | PI | materially better modified-key fidelity under tmux/old xterm |
 | B3 | tmux/screen **DCS passthrough** wrapping for any outgoing capability query / OSC 52 (`ESC P tmux; … ESC \`, ESC-doubled) | opentui/OpenCode | required or the multiplexer eats queries / clipboard |
 | B4 | Partial-chunk-safe stdin escape reassembler with idle-flush + WezTerm `\x1b\x1b[` Esc guard + X10-mouse incomplete guard | PI/OpenCode | only if rstui ever parses raw stdin itself (currently delegated to crossterm — verify it does this) |
-| B5 | OSC 8 hyperlinks (`ESC]8;;uri ST text ESC]8;; ST`) for the `Link` widget, **gated** on capability + tmux-off (fallback `text (url)`) | Rich/PI | prevents disappearing URLs |
+| B5 | OSC 8 hyperlinks — see the concrete cross-crate design in [Link activation](#link-activation-rstui-vs-textual) below; **gated** on capability + tmux-off (fallback `text (url)`) | Rich/PI | terminal-native click/copy; prevents disappearing URLs |
 | B6 | OSC 52 clipboard (`ESC]52;c;b64 BEL`) + tmux passthrough + native-CLI fallback | OpenCode | copy-over-SSH |
 | B7 | OSC 11 background query for true light/dark theme adaptation, **WSL-guarded** + timeout (HSL-lightness < 0.5 heuristic) | OpenCode | known hang on WSL |
 | B8 | Leave-sequence hardening: also emit `ESC[0m` + show cursor + `ESC[0 q` (default cursor shape) at teardown start | opentui | defensive vs. panic mid-frame |
@@ -132,3 +132,52 @@ also surfaced and fixed a real defect: `draw`'s running-state minimisation
 now tracks the **degraded** colour, so a colour that degrades to default no
 longer emits a redundant `SetColors` (at `NoColor`, zero colour escapes).
 New ADR-0013 control-code work must extend that contract test.
+
+## Link activation: rstui vs Textual
+
+How Textual makes a link clickable, and rstui's immediate-mode equivalent.
+
+**Textual has two distinct mechanisms.** (1) *Terminal-native* OSC 8: Rich
+renders `Style(link=URI)` as `ESC]8;id={id};{URI}ESC\ {text} ESC]8;;ESC\`
+— an auto `id` groups a multi-cell/wrapped span so the *terminal* underlines
+and Cmd/Ctrl-click-opens it; the empty `ESC]8;;ESC\` closes the run.
+(2) *In-app* `[@click=action]` markup: the action string is attached to each
+character span's `Style.meta`; on `MouseDown` Textual walks its **retained
+DOM** (`get_widget_at`), reads the per-cell `style.meta` at the click offset
+from the widget's `Strip`, parses the action and dispatches via
+`run_action`. A markdown link bubbles a `Markdown.LinkClicked(href)`
+message — Textual itself does **not** open a browser; the app handler does.
+
+**rstui is immediate-mode: no retained DOM, no per-cell meta map.** The
+equivalent of mechanism (2) is the reducer hit-testing the click against the
+same area it rendered into. That path now exists and is *locked*:
+`Markdown::link_activation_at(pos, area) -> Option<LinkActivation>` (and the
+same on `Mermaid`) resolves a click to `{index, href}` from a *single* parse
+of the immutable source — eliminating the `link_at` + `links()[i]`
+index-desync foot-gun the old two-call pattern invited. The full
+`Event::Mouse → link_activation_at → href` pipeline is regression-locked by
+`crates/rstui-smoke/tests/link_click_e2e.rs` (a real `App` under `Harness`).
+rstui, like Textual, surfaces the activation to the app (`LinkActivation`),
+never opening a URL itself.
+
+**What is still missing is mechanism (1)** — terminal-native OSC 8 (so a
+plain mouse click / copy works without app hit-testing). Concrete design
+(this is backlog B5, now specified, not vague):
+
+- `Cell` gains `link: Option<NonZeroU16>` — a per-frame interned hyperlink
+  id, 2 bytes, keeps `Cell` `Copy` and small (no `String` in the hot
+  buffer). `Buffer` holds the `id → href` table (a `Vec<Box<str>>`); a new
+  `Buffer::set_hyperlink(href) -> id` + the widget stamps cells with it
+  (`Markdown`/`Mermaid`/`Link` already know their hrefs + regions).
+- `Backend::draw` is given the table (extend the diff item, or pass the
+  buffer's link table alongside): when the running link id changes it emits
+  `ESC]8;id={id};{href}ESC\`, and `ESC]8;;ESC\` when it returns to `None`.
+  Closing on a *frame* boundary too, so an unclosed run never leaks.
+- **Capability-gated** exactly like colour (ADR 0013 §Decision): only when
+  the terminal advertises support; **disabled under tmux/screen** (they
+  swallow OSC 8 → invisible URLs), where the widget falls back to rendering
+  `text (url)`. Add the assertion to the control-code contract test.
+
+This is a multi-crate change to the hot `Cell`/`Buffer`/`Backend` path; it
+is deliberately deferred to its own slice rather than rushed, but the design
+is now fixed so it is mechanical to land.

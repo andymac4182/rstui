@@ -399,15 +399,46 @@ impl<'a> Markdown<'a> {
     /// coordinates, the same `area` passed to [`render`](Widget::render)), or
     /// `None`.
     ///
-    /// The mouse half of activation — a reducer turns a click into a
-    /// [`LinkActivation`](crate::link::LinkActivation):
-    /// `md.link_at(pos, area).and_then(|i| md.links().get(i).map(|l| l.activate(i)))`.
+    /// The mouse half of activation as a raw index. Prefer
+    /// [`link_activation_at`](Self::link_activation_at), which returns the
+    /// resolved [`LinkActivation`](crate::link::LinkActivation) in one call
+    /// (no caller-side index/`links()` desync).
     #[must_use]
     pub fn link_at(&self, position: Position, area: Rect) -> Option<usize> {
         self.link_regions(area).into_iter().find_map(|r| {
             let in_x = position.x >= r.rect.x && position.x < r.rect.x.saturating_add(r.rect.width);
             (in_x && position.y == r.rect.y).then_some(r.index)
         })
+    }
+
+    /// Resolve a click `position` straight to the
+    /// [`LinkActivation`](crate::link::LinkActivation) (index + owned `href`)
+    /// it activates, or `None` for plain text / outside.
+    ///
+    /// This is the one call a reducer needs for clickable links — the
+    /// immediate-mode equivalent of Textual's per-span click meta: the
+    /// hit-test and the `href` are taken from the *same* parse of the same
+    /// immutable source, so a stale index or a `link_at`/`links()` mismatch
+    /// (the foot-gun the raw [`link_at`](Self::link_at) + `links()[i]` pattern
+    /// invites) is structurally impossible.
+    ///
+    /// ```
+    /// use rstui_core::{Position, Rect};
+    /// use rstui_widgets::Markdown;
+    /// let md = Markdown::new("see [docs](https://rstui.dev) here");
+    /// let area = Rect::new(0, 0, 40, 3);
+    /// if let Some(act) = md.link_activation_at(Position::new(6, 0), area) {
+    ///     assert_eq!(act.href, "https://rstui.dev");
+    /// }
+    /// ```
+    #[must_use]
+    pub fn link_activation_at(
+        &self,
+        position: Position,
+        area: Rect,
+    ) -> Option<crate::link::LinkActivation> {
+        let index = self.link_at(position, area)?;
+        self.links().get(index).map(|link| link.activate(index))
     }
 }
 
@@ -2808,6 +2839,41 @@ mod tests {
             .link_at(Position::new(6, 0), area)
             .and_then(|i| md.links().get(i).map(|l| l.activate(i)));
         assert_eq!(act, Some(md.links()[1].activate(1)));
+    }
+
+    #[test]
+    fn link_activation_at_resolves_in_one_call_with_no_desync() {
+        let md = Markdown::new("[a](1) and [bb](2)");
+        let area = Rect::new(0, 0, 12, 1);
+
+        // One call resolves a hit straight to (index, href).
+        assert_eq!(
+            md.link_activation_at(Position::new(0, 0), area),
+            Some(md.links()[0].activate(0))
+        );
+        assert_eq!(
+            md.link_activation_at(Position::new(7, 0), area),
+            Some(md.links()[1].activate(1))
+        );
+        // Plain text and a zero area yield nothing (total).
+        assert_eq!(md.link_activation_at(Position::new(3, 0), area), None);
+        assert_eq!(
+            md.link_activation_at(Position::new(0, 0), Rect::new(0, 0, 0, 0)),
+            None
+        );
+
+        // The no-desync contract: link_activation_at is exactly the manual
+        // link_at + links()[i] pattern, and href always matches its index.
+        for x in 0..12u16 {
+            let p = Position::new(x, 0);
+            let manual = md
+                .link_at(p, area)
+                .and_then(|i| md.links().get(i).map(|l| l.activate(i)));
+            assert_eq!(md.link_activation_at(p, area), manual, "x={x}");
+            if let Some(act) = md.link_activation_at(p, area) {
+                assert_eq!(act.href, md.links()[act.index].href, "href tracks index");
+            }
+        }
     }
 
     #[test]
