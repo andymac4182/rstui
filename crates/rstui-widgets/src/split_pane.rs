@@ -198,6 +198,62 @@ impl<'a> SplitPane<'a> {
     pub fn divider_rect(&self, area: Rect) -> Rect {
         split_regions(self.direction, self.constraint, self.inner(area)).1
     }
+
+    /// Whether `pos` is on the divider for `area`, within a **1-cell grab
+    /// tolerance** on the split axis.
+    ///
+    /// The forgiving hit-zone an app tests on mouse-down to begin a resize
+    /// drag — a 1-cell divider is hard to click exactly, so a press one cell
+    /// either side still counts. Always `false` when there is no room for a
+    /// divider (the [`divider_rect`](Self::divider_rect) is empty). The drag
+    /// itself is the reducer's concern; this is the *seam*, not the state
+    /// (see the reusable pointer-gesture recipe in `docs/composition.md`).
+    #[must_use]
+    pub fn contains_divider(&self, area: Rect, pos: Position) -> bool {
+        let d = self.divider_rect(area);
+        if d.is_empty() {
+            return false;
+        }
+        match self.direction {
+            Direction::Horizontal => pos.y >= d.y && pos.y < d.bottom() && pos.x.abs_diff(d.x) <= 1,
+            Direction::Vertical => pos.x >= d.x && pos.x < d.right() && pos.y.abs_diff(d.y) <= 1,
+        }
+    }
+
+    /// The first-pane [`Constraint`] that puts the divider under `pos`.
+    ///
+    /// Feed this straight back as the new
+    /// [`constraint`](Self::constraint) on every `MouseDrag` while a divider
+    /// drag is in progress, so the split tracks the pointer — the ready-made
+    /// generalisation of the bespoke pointer→ratio math an app would
+    /// otherwise re-derive (and get wrong at the edges).
+    ///
+    /// Pure and **total**: the pointer is clamped into the framed inner area
+    /// so neither pane can collapse below one cell, and an area with no room
+    /// for two panes + a divider returns the current
+    /// [`constraint`](Self::constraint) unchanged (a no-op). A
+    /// [`Length`](Constraint::Length) is returned, not a ratio, so repeated
+    /// drags are stable — a ratio re-derived from a clamped length and
+    /// re-applied jitters by a cell.
+    #[must_use]
+    pub fn resize_to(&self, area: Rect, pos: Position) -> Constraint {
+        let inner = self.inner(area);
+        let first = match self.direction {
+            Direction::Horizontal => {
+                if inner.width < 3 {
+                    return self.constraint;
+                }
+                pos.x.saturating_sub(inner.x).clamp(1, inner.width - 2)
+            }
+            Direction::Vertical => {
+                if inner.height < 3 {
+                    return self.constraint;
+                }
+                pos.y.saturating_sub(inner.y).clamp(1, inner.height - 2)
+            }
+        };
+        Constraint::Length(first)
+    }
 }
 
 impl Default for SplitPane<'_> {
@@ -442,5 +498,67 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
         SplitPane::new(Constraint::Length(2)).render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    #[test]
+    fn contains_divider_has_a_one_cell_grab_tolerance() {
+        let sp = SplitPane::new(Constraint::Length(3));
+        let area = Rect::new(0, 0, 10, 2);
+        assert_eq!(sp.divider_rect(area), Rect::new(3, 0, 1, 2));
+        // On the divider and one cell either side, anywhere down its height.
+        for x in [2, 3, 4] {
+            assert!(sp.contains_divider(area, Position::new(x, 0)));
+            assert!(sp.contains_divider(area, Position::new(x, 1)));
+        }
+        // Two cells away, or off the divider's span, misses.
+        assert!(!sp.contains_divider(area, Position::new(1, 0)));
+        assert!(!sp.contains_divider(area, Position::new(6, 0)));
+        assert!(!sp.contains_divider(area, Position::new(3, 5)));
+        // A wide area but a press well clear of the divider still misses.
+        let wide = Rect::new(0, 0, 40, 4);
+        assert!(!sp.contains_divider(wide, Position::new(30, 1)));
+    }
+
+    #[test]
+    fn resize_to_tracks_the_pointer_and_clamps_both_panes_open() {
+        let sp = SplitPane::new(Constraint::Length(5));
+        let area = Rect::new(0, 0, 20, 3); // no block ⇒ inner == area
+        // The divider follows the pointer's column.
+        assert!(matches!(
+            sp.resize_to(area, Position::new(8, 1)),
+            Constraint::Length(8)
+        ));
+        // Clamped so neither pane collapses: far left ⇒ 1, far right ⇒ w-2.
+        assert!(matches!(
+            sp.resize_to(area, Position::new(0, 1)),
+            Constraint::Length(1)
+        ));
+        assert!(matches!(
+            sp.resize_to(area, Position::new(99, 1)),
+            Constraint::Length(18)
+        ));
+        // Too small for two panes + a divider ⇒ unchanged (a no-op).
+        assert!(matches!(
+            sp.resize_to(Rect::new(0, 0, 2, 1), Position::new(1, 0)),
+            Constraint::Length(5)
+        ));
+    }
+
+    #[test]
+    fn resize_to_works_on_the_vertical_axis_too() {
+        let sp = SplitPane::vertical(Constraint::Length(2));
+        let area = Rect::new(0, 0, 4, 10);
+        assert!(matches!(
+            sp.resize_to(area, Position::new(1, 6)),
+            Constraint::Length(6)
+        ));
+        assert!(matches!(
+            sp.resize_to(area, Position::new(1, 99)),
+            Constraint::Length(8)
+        ));
+        // The grab tolerance works on the horizontal divider line too.
+        assert_eq!(sp.divider_rect(area), Rect::new(0, 2, 4, 1));
+        assert!(sp.contains_divider(area, Position::new(2, 3)));
+        assert!(!sp.contains_divider(area, Position::new(2, 5)));
     }
 }

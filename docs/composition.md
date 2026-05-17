@@ -186,6 +186,45 @@ Two worked, headless-tested references implement exactly this:
 Copy either: the seam is the same whether the host is the kitchen-sink
 shell routing to screens or an `App` handling `Event::Mouse` directly.
 
+### Mouse-resizable layout: the ready-made `SplitPane` seam
+
+You do **not** hand-roll the pointer→size math for a draggable split.
+[`SplitPane`](widgets/navigation-and-layout.md#splitpane) ships the seam —
+the divider geometry *and* the conversion — as pure accessors; the split
+position stays caller-owned model state (a `Constraint`):
+
+```rust
+// model: split: Constraint   (e.g. Constraint::Length(40))
+let sp = SplitPane::new(self.split).block(/* … */);
+let (left, right) = sp.split(area);            // render children into these
+// in update(), on Event::Mouse against the area `view` recorded:
+Down(p) if sp.contains_divider(area, p) => self.resizing = true,   // 1-cell grab tolerance
+Drag(p) if self.resizing => self.split = sp.resize_to(area, p),    // pure, clamped, total
+Up(_)   => self.resizing = false,
+```
+
+`resize_to` returns a clamped `Constraint::Length` (both panes stay ≥1
+cell; a too-small area is a no-op), so it is stable under repeated drags
+and total at any size. This is the generalisation of the bespoke divider
+math `rstui-git-review` used — new code should use this seam, not re-derive
+it.
+
+### Widget review: what is mouse-friendly, and how
+
+Every widget audited for pointer use. Widgets are pure projections, so
+"mouse-friendly" means **the widget exposes the pure geometry seam** an
+app's reducer needs (`Rect` accessors + a pointer→state converter); the
+reducer owns the drag/selection.
+
+| Class | Widgets | Seam |
+|---|---|---|
+| **Resizable (drag seam)** | `SplitPane` | `contains_divider` + `resize_to` (above) |
+| | `Scrollbar` / `ScrollView` | draggable thumb: `thumb_rect` + `position_at` (`*_scrollbar_rect` on `ScrollView`) |
+| **Pure layout** (resize = change its input `Constraint`s, plain model state) | `Layout` (core), `Grid`, `Align`, `Flow`, `Card`, `Block` | `split` / `cell` / `inner` `Rect` accessors |
+| **Pointer-navigable** (app hit-tests a `Rect` accessor; click/drag, not resize) | `Tabs`, `Accordion`, `Sidebar`, `List`, `Tree`, `Table`, `Menu`, `Select`, `Pagination`, `Stepper`, `DataTable`, `Calendar`/`DatePicker`, `Link`/`Markdown` (link regions), `Modal`/`Popover`/`Drawer` (`area`/`panel` focus accessors) | the screen maps a click to an index/region against the widget's geometry; full drag-and-drop uses the pointer-gesture recipe above |
+| **Decorative** (no pointer surface by design) | `Paragraph`, `Gauge`, `Badge`, `Spinner`, `Skeleton`, `Divider`, charts, `StatusBar`, `Toast`, `Kbd`, `Avatar` | — |
+| **Candidate follow-ups** (no seam yet) | `Grid` resizable rows/columns; `Drawer` drag-the-edge resize; `Table` column-resize drag | would each add a divider/edge `Rect` accessor + a pointer→`Constraint` converter, mirroring `SplitPane` |
+
 ## Totality
 
 Every widget clips or no-ops on a tiny, zero, or oversized area and on

@@ -97,7 +97,14 @@ SplitPane::new(Constraint) / ::horizontal(Constraint) / ::vertical(Constraint)
 .divider(char)
 .split(area: Rect) -> (Rect, Rect)
 .divider_rect(area: Rect) -> Rect
+// mouse-resize seam (pure; the reducer owns the drag):
+.contains_divider(area: Rect, pos: Position) -> bool   // 1-cell grab tolerance
+.resize_to(area: Rect, pos: Position) -> Constraint    // clamped Length, total
 ```
+
+Mouse-resize is a 3-line reducer — see the recipe + the full widget
+mouse-friendliness review in
+[composition.md](../composition.md#mouse-resizable-layout-the-ready-made-splitpane-seam).
 
 **Demo:** `cargo run -p rstui-widgets --example split_pane_demo`
 
