@@ -36,33 +36,34 @@ validation path for each change.
 > - **Batch I partial** acp-client APP-4: `tool_call` id→index map,
 >   per-frame O(toolEntries×toolCalls) → O(1).
 > - **Batch G partial** per-frame allocation removed:
->   `calendar` per-day `format!` (W1-01), `stepper` node `String`
->   (W5-STEP-2), `line_number_gutter` per-row `to_string` (GUT-1),
->   `avatar` `Vec<char>` (W1-03), **`table` T1** (each wrapped cell's
->   `Line` deep-cloned twice/frame → once), **`paragraph` PG-1**
->   (`compose_rows` early-exits at the visible window — was re-flowing the
->   whole document every frame; caps a cost shared by Toast/DescriptionList/
->   Table-wrap).
+>   `calendar` (W1-01), `stepper` (W5-STEP-2), `line_number_gutter`
+>   (GUT-1), `avatar` (W1-03), **`table` T1** (wrapped cell `Line`
+>   deep-cloned twice/frame → once), **`paragraph` PG-1** (`compose_rows`
+>   early-exits at the visible window — caps Toast/DescriptionList/
+>   Table-wrap), **the entire `block.clone()` cluster ×8** —
+>   `Block::render_ref(&self)` added + `data_table`/`diff`/`help_overlay`/
+>   `line_number_gutter`/`mermaid`/`markdown`/`stepper` borrow it,
+>   `date_picker` moves the block into `Calendar` (DP-1), **`editor`
+>   EDIT-1** (skip flat-index extmark scans when no extmarks).
 > - **Batch I partial** acp-client: APP-4 `tool_call` O(n²)→O(1);
->   **UI-3** `footer_segments` borrows instead of cloning the footer map
->   every frame; **APP-3** diagnostic `log` capped (was unbounded).
+>   **UI-3** `footer_segments` borrows; **APP-3** diagnostic `log` capped.
 >
-> 18 measured, gate-green, byte-identical slices total. **Remaining
-> backlog** (sequenced in the team task list / below), each its own
-> focused slice via the serial flow: Batch E **CM-3** (`TextArea`
-> `line_lens` — deferred: subtle 2-D cache, corrupts editing if wrong),
-> Batch I remainder (APP-1 transcript cap, DRV-1/2 typed `sacp` match),
-> Batch J (bench scenarios), the rest of Batch G — the
-> `block.clone()`→destructure cluster ×8 (needs per-widget restructuring
-> to dodge partial-move borrows; **not** mechanical), `table` T3/T5,
-> `paragraph` PG-2, `menu`/`sidebar`/`pagination`/`breadcrumb`/
-> `help_overlay`/`grid`/`editor` (minor bounded per-frame `Vec`s, path-
-> depth sized — low value vs. refactor risk), gauge GAUGE-1 (P3) — and
-> **Tier-2** (caller-owned cached layout models for
-> `Markdown`/`Diff`/`Mermaid`/`Paragraph`, `List`/`Table`/`Stepper`/`Tabs`
-> borrowed constructors, plugin-host PROTO-3 `Cow` payload, acp-client
-> UI-1/UI-2 per-`Entry` render memo — API-additive/-breaking, each needs
-> an ADR note). Landing is **serial from one isolated worktree**
+> **22 measured, gate-green, byte-identical slices total.** **Remaining
+> backlog** — and this is now, by design, only the work that should NOT be
+> rushed: **Tier-2** architectural caller-owned cached layout models
+> (`Markdown`/`Diff`/`Mermaid` re-parse + `Paragraph`/`Toast` PG-2
+> count-only — L-effort, single-source-of-truth, ADR-gated; the highest
+> remaining value but a dedicated multi-slice program), Batch E **CM-3**
+> (subtle 2-D `TextArea` cache — corrupts editing if wrong), Batch I
+> **APP-1** (transcript cap — behaviorally visible) / **DRV-1/2** (typed
+> `sacp` match — involved), Batch J (bench scenarios), and a minor P2/P3
+> long tail (`menu`/`sidebar`/`pagination`/`breadcrumb`/`help_overlay`/
+> `grid` — small path/window-sized per-frame `Vec`s where the restructure
+> risk now exceeds the bounded gain), gauge GAUGE-1 (P3). The remaining
+> **Tier-2** API surface — `List`/`Table`/`Stepper`/`Tabs` borrowed
+> constructors, plugin-host PROTO-3 `Cow` payload, acp-client UI-1/UI-2
+> per-`Entry` render memo — is API-additive/-breaking and each needs an
+> ADR note. Landing is **serial from one isolated worktree**
 > (fetch→rebase `origin/main`→`cargo xtask ci`→FF push) — the
 > parallel-agents-in-one-shared-worktree approach corrupts state in this
 > multi-stream repo and must not be retried.
