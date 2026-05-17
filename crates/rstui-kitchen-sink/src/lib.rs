@@ -74,6 +74,9 @@ pub(crate) enum Overlay {
     Palette,
     /// The settings [`Drawer`](rstui_widgets::Drawer) (`g`).
     Drawer,
+    /// The reusable [`rstui_theme::ThemePicker`] — browse every
+    /// gpui-component theme with live preview (`p` from the drawer).
+    ThemePicker,
     /// The quit-confirmation [`Modal`](rstui_widgets::Modal) (`q` / `Esc`).
     QuitConfirm,
 }
@@ -161,6 +164,12 @@ pub struct KitchenSink {
     /// or a gpui-component theme picked via `RSTUI_THEME`). Shown in the
     /// settings drawer so the live colour source is always visible.
     theme_name: String,
+    /// The reusable theme-picker state (catalogue + highlight + filter),
+    /// driven while [`Overlay::ThemePicker`] is open.
+    theme_picker: rstui_theme::ThemePickerState,
+    /// The `(palette, name)` to restore if the picker is cancelled with
+    /// `Esc` (so live preview never permanently changes the theme).
+    theme_restore: Option<(Theme, String)>,
     /// The live toast queue; [`update`](App::update) expires old entries.
     notices: Vec<Notice>,
     /// The command-palette query buffer (a real editable [`TextEdit`]).
@@ -222,6 +231,8 @@ impl KitchenSink {
             tick: 0,
             theme: Theme::new(Mode::Dark),
             theme_name: format!("rstui {}", Mode::Dark.label()),
+            theme_picker: rstui_theme::ThemePickerState::new(),
+            theme_restore: None,
             notices: Vec::new(),
             palette_query: TextEdit::new(),
             palette_row: 0,
@@ -268,6 +279,43 @@ impl KitchenSink {
             self.theme_name = t.name;
         }
         self
+    }
+
+    /// Apply a previously picker-saved theme ([`rstui_theme::Theme::write_choice`])
+    /// if one exists. `main.rs` calls this when `RSTUI_THEME` is unset, so a
+    /// theme chosen in the in-app picker survives a restart.
+    #[must_use]
+    pub fn load_saved_theme(self) -> Self {
+        match rstui_theme::Theme::read_choice(Self::theme_config_path()) {
+            Some(t) => self.with_theme(&t.name),
+            None => self,
+        }
+    }
+
+    /// Where the in-app picker persists the chosen theme name
+    /// (`$XDG_CONFIG_HOME` or `~/.config` → `rstui/kitchen-sink.theme`).
+    fn theme_config_path() -> std::path::PathBuf {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from(".rstui"));
+        base.join("rstui").join("kitchen-sink.theme")
+    }
+
+    /// Live-preview the highlighted picker theme by applying its palette to
+    /// the whole app (the `Esc` path restores the pre-picker palette from
+    /// [`theme_restore`](Self::theme_restore)).
+    fn preview_picked(&mut self) {
+        let pick = self
+            .theme_picker
+            .selected_theme()
+            .map(|t| (Theme::from_palette(&t.palette), t.name.clone()));
+        if let Some((theme, name)) = pick {
+            self.theme = theme;
+            self.theme_name = name;
+        }
     }
 
     /// Apply a user keymap choice: either the **name** of a built-in map
@@ -529,6 +577,12 @@ impl KitchenSink {
                         self.theme = Theme::new(self.theme.mode.toggled());
                         self.theme_name = format!("rstui {}", self.theme.mode.label());
                     }
+                    KeyCode::Char('p') => {
+                        // Open the reusable theme picker; remember the
+                        // current palette so Esc can restore it.
+                        self.theme_restore = Some((self.theme, self.theme_name.clone()));
+                        self.overlay = Overlay::ThemePicker;
+                    }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.drawer_sel = self.drawer_sel.saturating_sub(1);
                     }
@@ -557,6 +611,45 @@ impl KitchenSink {
                     _ => {}
                 }
             }
+            Overlay::ThemePicker => match code {
+                KeyCode::Esc => {
+                    // Cancel: restore the palette we had before opening.
+                    if let Some((t, n)) = self.theme_restore.take() {
+                        self.theme = t;
+                        self.theme_name = n;
+                    }
+                    self.overlay = Overlay::None;
+                }
+                KeyCode::Enter => {
+                    // Apply the highlighted theme (covers "Enter without
+                    // navigating first") and persist it for next run.
+                    self.preview_picked();
+                    if self.theme_picker.selected_theme().is_some() {
+                        let name = self.theme_name.clone();
+                        let _ = rstui_theme::Theme::write_choice(Self::theme_config_path(), &name);
+                        self.notify(ToastLevel::Info, format!("Theme saved → {name}"));
+                    }
+                    self.theme_restore = None;
+                    self.overlay = Overlay::None;
+                }
+                KeyCode::Up => {
+                    self.theme_picker.prev();
+                    self.preview_picked();
+                }
+                KeyCode::Down => {
+                    self.theme_picker.next();
+                    self.preview_picked();
+                }
+                KeyCode::Backspace => {
+                    self.theme_picker.pop_filter();
+                    self.preview_picked();
+                }
+                KeyCode::Char(c) => {
+                    self.theme_picker.push_filter(c);
+                    self.preview_picked();
+                }
+                _ => {}
+            },
             Overlay::Help => {
                 self.overlay = Overlay::None;
             }
@@ -893,6 +986,9 @@ impl KitchenSink {
     }
     pub(crate) fn theme_name(&self) -> &str {
         &self.theme_name
+    }
+    pub(crate) fn theme_picker(&self) -> &rstui_theme::ThemePickerState {
+        &self.theme_picker
     }
     pub(crate) fn fps_label(&self) -> String {
         self.fps.label()

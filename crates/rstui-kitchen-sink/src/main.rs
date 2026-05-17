@@ -29,10 +29,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     // theme (unknown names keep the built-in default). The seed size is
     // corrected by the first live `Event::Resize`; the terminal is already
     // restored by the time this returns, on success, error, or panic.
+    // `RSTUI_THEME` (an explicit override) wins; otherwise reload whatever
+    // the in-app theme picker last saved, so a picked theme survives a
+    // restart.
     let mut app = KitchenSink::new(Size::new(120, 40));
-    if let Ok(name) = std::env::var("RSTUI_THEME") {
-        app = app.with_theme(&name);
-    }
+    app = match std::env::var("RSTUI_THEME") {
+        Ok(name) => app.with_theme(&name),
+        Err(_) => app.load_saved_theme(),
+    };
     // `RSTUI_KEYMAP="Vim"` picks a built-in map by name; a path to a
     // keymap config file (`id = keys` lines, see docs/keymaps.md) remaps
     // individual actions. Same typo-safe seam as RSTUI_THEME — no rebuild,

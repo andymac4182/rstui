@@ -188,6 +188,7 @@ pub(crate) fn view_overlays(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect)
         Overlay::Help => view_help(ks, frame, area),
         Overlay::Palette => view_palette(ks, frame, area),
         Overlay::Drawer => view_drawer(ks, frame, area),
+        Overlay::ThemePicker => view_theme_picker(ks, frame, area),
         Overlay::QuitConfirm => view_quit_confirm(ks, frame, area),
     }
 
@@ -346,7 +347,8 @@ fn view_drawer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     let legend_text = if let Some(act) = ks.rebind() {
         format!("● Press a key to bind\n  “{}”  (Esc cancels)", act.help())
     } else {
-        "↑↓ select · r/⏎ rebind · x disable\nc next keymap · t theme · Esc close".to_string()
+        "↑↓ select · r/⏎ rebind · x disable\nc keymap · t dark/light · p theme picker · Esc close"
+            .to_string()
     };
     frame.render_widget(
         Paragraph::new(legend_text)
@@ -357,6 +359,32 @@ fn view_drawer(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
             })
             .wrap(Wrap { trim: true }),
         legend,
+    );
+}
+
+/// The theme picker — the reusable [`rstui_theme::ThemePicker`] in a centred
+/// [`Modal`]. The whole app is already painted in the highlighted theme
+/// (live preview), so the modal frame previews it too.
+fn view_theme_picker(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
+    let theme = ks.theme();
+    let modal = Modal::new()
+        .width(Constraint::Percentage(60))
+        .height(Constraint::Percentage(70))
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title(Line::from(" Theme picker ").style(theme.heading())),
+        )
+        .style(theme.body())
+        .backdrop_style(Style::new().fg(theme.dim));
+    let inner = modal.inner(area);
+    frame.render_widget(modal, area);
+    frame.render_widget(
+        rstui_theme::ThemePicker::new(ks.theme_picker())
+            .title("Browse · preview live")
+            .style(theme.body())
+            .highlight_style(theme.selection()),
+        inner,
     );
 }
 
