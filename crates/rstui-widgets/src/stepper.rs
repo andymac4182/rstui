@@ -198,14 +198,47 @@ impl<'a> Stepper<'a> {
         self.style.patch(state)
     }
 
-    /// The node glyph(s) for step `i`: a check when done, else its 1-based
-    /// number.
-    fn node(&self, i: usize) -> String {
+    /// Stamps step `i`'s node — a check glyph when done, else its 1-based
+    /// number — left-to-right from `x` on row `y`, clipped at `right`;
+    /// returns the new x. Writes the digits from a stack buffer, so there is
+    /// no per-step `String` allocation every frame (W5-STEP-2). `usize` is at
+    /// most 20 decimal digits, so `[u8; 20]` never overflows.
+    fn stamp_node(
+        &self,
+        buf: &mut Buffer,
+        i: usize,
+        mut x: u16,
+        y: u16,
+        right: u16,
+        st: Style,
+    ) -> u16 {
         if i < self.current {
-            CHECK.to_string()
-        } else {
-            (i + 1).to_string()
+            if x < right {
+                buf.set_cell(Position::new(x, y), CHECK, st);
+                x = x.saturating_add(1);
+            }
+            return x;
         }
+        let mut n = i + 1;
+        let mut digits = [0u8; 20];
+        let mut len = 0;
+        loop {
+            digits[len] = b'0' + (n % 10) as u8;
+            len += 1;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        while len > 0 {
+            len -= 1;
+            if x >= right {
+                break;
+            }
+            buf.set_cell(Position::new(x, y), digits[len] as char, st);
+            x = x.saturating_add(1);
+        }
+        x
     }
 }
 
@@ -249,13 +282,7 @@ impl Widget for Stepper<'_> {
                         }
                     }
                     let st = self.state_style(i);
-                    for ch in self.node(i).chars() {
-                        if x >= right {
-                            break 'row;
-                        }
-                        buf.set_cell(Position::new(x, y), ch, st);
-                        x = x.saturating_add(1);
-                    }
+                    x = self.stamp_node(buf, i, x, y, right, st);
                     if x >= right {
                         break 'row;
                     }
@@ -282,14 +309,7 @@ impl Widget for Stepper<'_> {
                         break;
                     }
                     let st = self.state_style(i);
-                    let mut x = inner.left();
-                    for ch in self.node(i).chars() {
-                        if x >= right {
-                            break;
-                        }
-                        buf.set_cell(Position::new(x, y), ch, st);
-                        x = x.saturating_add(1);
-                    }
+                    let mut x = self.stamp_node(buf, i, inner.left(), y, right, st);
                     if x < right {
                         buf.set_cell(Position::new(x, y), ' ', st);
                         x = x.saturating_add(1);
