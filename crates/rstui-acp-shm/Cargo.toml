@@ -1,0 +1,39 @@
+[package]
+name = "rstui-acp-shm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "Shared-memory SPSC transport for rstui-acp plugins: mmap ring + scoped-spin/semaphore park (ADR 0016). The sanctioned, audited unsafe boundary."
+
+# ADR 0016 / ADR 0003 §1: this crate is the *single* sanctioned `unsafe`
+# boundary. It deliberately does NOT do `[lints] workspace = true`, because
+# the workspace `[workspace.lints.rust] unsafe_code = "forbid"` would (by
+# design) make this crate's entire purpose — audited mmap/atomic/POSIX-
+# semaphore FFI — impossible. Every *other* workspace lint is replicated
+# here verbatim, so code quality is identical apart from that one axis, and
+# every `unsafe` block carries a `SAFETY:` justification reviewed as part
+# of this slice. No other crate gains `unsafe`.
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "allow"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+invalid_codeblock_attributes = "deny"
+unescaped_backticks = "warn"
+
+[lints.clippy]
+uninlined_format_args = "warn"
+needless_pass_by_value = "warn"
+
+[dependencies]
+# Only libc — already in the workspace lock (0.2.186, MIT/Apache, deny-
+# allowed) via crossterm, so this adds no new crate or licence. std-only
+# otherwise. No sem_timedwait/prctl/kqueue is used, so the same code runs
+# on Linux (CI) and macOS (dev).
+libc = "0.2"

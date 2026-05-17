@@ -745,6 +745,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-acp-shm"
+version = "0.0.1"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "rstui-bench"
 version = "0.0.1"
 dependencies = [
