@@ -44,15 +44,55 @@ const SEPARATOR: char = '›';
 /// The glyph a collapsed middle is shown as.
 const ELLIPSIS: char = '…';
 
-/// A token in the laid-out row: a path segment, a joiner, or the elided
-/// middle.
-enum Crumb {
-    /// The segment at this index in the caller's slice.
-    Segment(usize),
-    /// A ` {sep} ` joiner between two crumbs.
-    Joiner,
-    /// The single `…` standing in for the collapsed middle.
-    Ellipsis,
+/// Stamps `chars` left-to-right from `*x` on `row`, clipped at `right`;
+/// returns `false` once the right edge is reached so the caller stops. The
+/// breadcrumb stamp sequence is `render`'s tail, so the old `break 'row` is
+/// a `return`. No per-frame allocation (W1-02).
+fn bc_chars(
+    buf: &mut Buffer,
+    x: &mut u16,
+    row: u16,
+    right: u16,
+    chars: impl Iterator<Item = char>,
+    style: Style,
+) -> bool {
+    for ch in chars {
+        if *x >= right {
+            return false;
+        }
+        buf.set_cell(Position::new(*x, row), ch, style);
+        *x = x.saturating_add(1);
+    }
+    true
+}
+
+/// Stamps one path segment's `Line` with the breadcrumb cascade
+/// (base → line → span, `emph` patched last when present), clipped at
+/// `right`; same stop contract as [`bc_chars`].
+fn bc_segment(
+    buf: &mut Buffer,
+    x: &mut u16,
+    row: u16,
+    right: u16,
+    line: &Line<'_>,
+    base: Style,
+    emph: Option<Style>,
+) -> bool {
+    let line_base = base.patch(line.style);
+    for span in &line.spans {
+        let mut span_style = line_base.patch(span.style);
+        if let Some(e) = emph {
+            span_style = span_style.patch(e);
+        }
+        for ch in span.content.chars() {
+            if *x >= right {
+                return false;
+            }
+            buf.set_cell(Position::new(*x, row), ch, span_style);
+            *x = x.saturating_add(1);
+        }
+    }
+    true
 }
 
 /// A one-row path of segments joined by a separator glyph — a pure projection
@@ -178,60 +218,67 @@ impl Widget for Breadcrumb<'_> {
         // Lay out the row. The middle elides to a single `…` only when the
         // full path overflows *and* there is a middle to drop (≥ 3 segments);
         // anything still too wide is clipped at the right edge below.
-        let mut layout: Vec<Crumb> = Vec::new();
-        if full_w <= area.width as usize || n < 3 {
-            for i in 0..n {
-                if i > 0 {
-                    layout.push(Crumb::Joiner);
-                }
-                layout.push(Crumb::Segment(i));
-            }
-        } else {
-            layout.push(Crumb::Segment(0));
-            layout.push(Crumb::Joiner);
-            layout.push(Crumb::Ellipsis);
-            layout.push(Crumb::Joiner);
-            layout.push(Crumb::Segment(n - 1));
-        }
-
+        // Stamp the crumbs directly — no per-frame `Vec<Crumb>` scratch
+        // (W1-02). Two shapes: the full path, or the elided
+        // `seg0 › … › segN-1`. The stamp helpers return `false` (caller
+        // returns) on a right-edge clip, exactly the old `break 'row`.
         let sep_style = self.style.patch(self.separator_style);
         let mut x = left;
-        'row: for crumb in layout {
-            match crumb {
-                Crumb::Joiner => {
-                    for ch in joiner {
-                        if x >= right {
-                            break 'row;
-                        }
-                        buf.set_cell(Position::new(x, row), ch, sep_style);
-                        x = x.saturating_add(1);
-                    }
+        if full_w <= area.width as usize || n < 3 {
+            for i in 0..n {
+                if i > 0 && !bc_chars(buf, &mut x, row, right, joiner.into_iter(), sep_style) {
+                    return;
                 }
-                Crumb::Ellipsis => {
-                    if x >= right {
-                        break 'row;
-                    }
-                    buf.set_cell(Position::new(x, row), ELLIPSIS, sep_style);
-                    x = x.saturating_add(1);
-                }
-                Crumb::Segment(i) => {
-                    let line = &self.segments[i];
-                    let line_base = self.style.patch(line.style);
-                    for span in &line.spans {
-                        let mut span_style = line_base.patch(span.style);
-                        if i == emphasized {
-                            span_style = span_style.patch(self.emphasis_style);
-                        }
-                        for ch in span.content.chars() {
-                            if x >= right {
-                                break 'row;
-                            }
-                            buf.set_cell(Position::new(x, row), ch, span_style);
-                            x = x.saturating_add(1);
-                        }
-                    }
+                let emph = if i == emphasized {
+                    Some(self.emphasis_style)
+                } else {
+                    None
+                };
+                if !bc_segment(buf, &mut x, row, right, &self.segments[i], self.style, emph) {
+                    return;
                 }
             }
+        } else {
+            let emph0 = if emphasized == 0 {
+                Some(self.emphasis_style)
+            } else {
+                None
+            };
+            if !bc_segment(
+                buf,
+                &mut x,
+                row,
+                right,
+                &self.segments[0],
+                self.style,
+                emph0,
+            ) || !bc_chars(buf, &mut x, row, right, joiner.into_iter(), sep_style)
+                || !bc_chars(
+                    buf,
+                    &mut x,
+                    row,
+                    right,
+                    std::iter::once(ELLIPSIS),
+                    sep_style,
+                )
+                || !bc_chars(buf, &mut x, row, right, joiner.into_iter(), sep_style)
+            {
+                return;
+            }
+            let emph_last = if emphasized == n - 1 {
+                Some(self.emphasis_style)
+            } else {
+                None
+            };
+            let _ = bc_segment(
+                buf,
+                &mut x,
+                row,
+                right,
+                &self.segments[n - 1],
+                self.style,
+                emph_last,
+            );
         }
     }
 }
