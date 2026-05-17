@@ -271,7 +271,7 @@ impl<'a> DatePicker<'a> {
     }
 
     /// The embedded, configured [`Calendar`].
-    fn calendar(&self) -> Calendar<'a> {
+    fn calendar(self) -> Calendar<'a> {
         let mut cal = Calendar::new(self.year, self.month, self.day_count, self.weekday_of_first)
             .first_weekday(self.first_weekday)
             .selected(self.selected)
@@ -280,7 +280,7 @@ impl<'a> DatePicker<'a> {
             .weekday_style(self.weekday_style)
             .selected_style(self.selected_style)
             .today_style(self.today_style);
-        if let Some(block) = self.block.clone() {
+        if let Some(block) = self.block {
             cal = cal.block(block);
         }
         cal
