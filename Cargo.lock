@@ -775,6 +775,7 @@ dependencies = [
  "rstui-crossterm",
  "rstui-keymap",
  "rstui-runtime",
+ "rstui-theme",
  "rstui-widgets",
 ]
 

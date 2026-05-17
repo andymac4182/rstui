@@ -32,6 +32,8 @@ rstui-core = { path = "../rstui-core", version = "0.0.1" }
 rstui-runtime = { path = "../rstui-runtime", version = "0.0.1" }
 rstui-crossterm = { path = "../rstui-crossterm", version = "0.0.1" }
 rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# All gpui-component themes + the reusable ThemePicker widget.
+rstui-theme = { path = "../rstui-theme", version = "0.0.1" }
 # The shared keymap engine: git-review's commands are semantic Actions
 # resolved through it, so they are remappable + RSTUI_KEYMAP-configurable
 # (ADR 0015) — the same engine the kitchen sink and acp-client use.

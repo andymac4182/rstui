@@ -188,6 +188,15 @@ pub struct GitReview {
     /// A fatal load error — when set with no rows, the whole body is the
     /// error panel (graceful degrade outside a repo / when `git` is absent).
     error: Option<String>,
+    /// The active colour theme (any of the 36 gpui-component themes,
+    /// resolved from `RSTUI_THEME` / the saved choice / the default).
+    theme: crate::theme::GrTheme,
+    /// Reusable theme-picker state, driven while [`picking`](Self::picking).
+    theme_picker: rstui_theme::ThemePickerState,
+    /// The theme to restore if the picker is cancelled with `Esc`.
+    theme_restore: Option<crate::theme::GrTheme>,
+    /// `true` while the theme picker overlay is open.
+    picking: bool,
 }
 
 /// Everything that can happen: user intents from
@@ -263,6 +272,10 @@ impl GitReview {
             km_rebind: None,
             status: String::new(),
             error: None,
+            theme: crate::theme::startup_theme(),
+            theme_picker: rstui_theme::ThemePickerState::new(),
+            theme_restore: None,
+            picking: false,
         }
     }
 
@@ -389,6 +402,9 @@ impl GitReview {
             self.help = false; // Any key dismisses the cheat-sheet.
             return Cmd::none();
         }
+        if self.picking {
+            return self.theme_picker_key(code);
+        }
         if self.keymap_panel {
             return self.on_key_keymap(code, mods);
         }
@@ -466,6 +482,57 @@ impl GitReview {
         Cmd::none()
     }
 
+    /// Live-preview the highlighted picker theme by adopting its palette.
+    fn preview_theme(&mut self) {
+        let next = self
+            .theme_picker
+            .selected_theme()
+            .map(crate::theme::GrTheme::from_theme);
+        if let Some(t) = next {
+            self.theme = t;
+        }
+    }
+
+    /// Keys while the theme picker is open (opened with `p` in the keymap
+    /// panel): arrows preview, typing filters, `Enter` keeps + persists,
+    /// `Esc` restores the prior palette.
+    fn theme_picker_key(&mut self, code: KeyCode) -> Cmd<Msg> {
+        match code {
+            KeyCode::Esc => {
+                if let Some(prev) = self.theme_restore.take() {
+                    self.theme = prev;
+                }
+                self.picking = false;
+            }
+            KeyCode::Enter => {
+                self.preview_theme();
+                let name = self.theme.name.clone();
+                let _ = rstui_theme::Theme::write_choice(crate::theme::theme_config_path(), &name);
+                self.status = format!("theme saved → {name}");
+                self.theme_restore = None;
+                self.picking = false;
+            }
+            KeyCode::Up => {
+                self.theme_picker.prev();
+                self.preview_theme();
+            }
+            KeyCode::Down => {
+                self.theme_picker.next();
+                self.preview_theme();
+            }
+            KeyCode::Backspace => {
+                self.theme_picker.pop_filter();
+                self.preview_theme();
+            }
+            KeyCode::Char(c) => {
+                self.theme_picker.push_filter(c);
+                self.preview_theme();
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// The keymap settings panel ([`KeymapView`]): browse the live bindings
     /// and **capture a key to rebind** a command or disable it — proving the
     /// override path end to end, the same FSM the kitchen sink uses.
@@ -494,6 +561,13 @@ impl GitReview {
                 let act = COMMANDS[self.km_sel.min(last)].0;
                 self.keymaps.set_override(act, "none");
                 self.status = "disabled".to_owned();
+            }
+            KeyCode::Char('p') => {
+                // Open the reusable theme picker; remember the current
+                // palette so Esc can restore it.
+                self.theme_restore = Some(self.theme.clone());
+                self.picking = true;
+                self.keymap_panel = false;
             }
             _ => {}
         }
@@ -635,31 +709,6 @@ impl GitReview {
     }
 }
 
-/// A small, terminal-portable palette (the standard ANSI indices, valid at
-/// every colour level).
-mod palette {
-    use rstui_core::{Color, Style};
-
-    pub fn dim() -> Style {
-        Style::new().fg(Color::Indexed(8))
-    }
-    pub fn accent() -> Style {
-        Style::new().fg(Color::Indexed(4))
-    }
-    pub fn graph() -> Style {
-        Style::new().fg(Color::Indexed(6))
-    }
-    pub fn good() -> Style {
-        Style::new().fg(Color::Indexed(2))
-    }
-    pub fn bad() -> Style {
-        Style::new().fg(Color::Indexed(1))
-    }
-    pub fn selection() -> Style {
-        Style::new().fg(Color::Indexed(0)).bg(Color::Indexed(4))
-    }
-}
-
 impl GitReview {
     /// A framed pane block with `title`, highlighted when `focused`.
     fn pane<'t>(&self, title: impl Into<Line<'t>>, focused: bool) -> Block<'t> {
@@ -667,9 +716,9 @@ impl GitReview {
             .border_type(BorderType::Rounded)
             .title(title.into())
             .border_style(if focused {
-                palette::accent()
+                self.theme.accent()
             } else {
-                palette::dim()
+                self.theme.dim()
             })
     }
 
@@ -699,14 +748,14 @@ impl GitReview {
                         out.push((
                             Some(this),
                             Line::from(vec![
-                                Span::styled(format!("{} ", row.art), palette::graph()),
-                                Span::styled(format!("{} ", c.short), palette::accent()),
+                                Span::styled(format!("{} ", row.art), self.theme.graph()),
+                                Span::styled(format!("{} ", c.short), self.theme.accent()),
                                 Span::raw(subj),
                             ]),
                         ));
                     }
                     None => {
-                        out.push((None, Line::styled(row.art.clone(), palette::graph())));
+                        out.push((None, Line::styled(row.art.clone(), self.theme.graph())));
                     }
                 }
             }
@@ -723,8 +772,8 @@ impl GitReview {
                     (
                         Some(ord),
                         Line::from(vec![
-                            Span::styled(format!("{} ", c.short), palette::accent()),
-                            Span::styled(format!("{} ", c.date), palette::dim()),
+                            Span::styled(format!("{} ", c.short), self.theme.accent()),
+                            Span::styled(format!("{} ", c.date), self.theme.dim()),
                             Span::raw(subj),
                         ]),
                     )
@@ -749,7 +798,7 @@ impl GitReview {
             List::new(lines)
                 .selected(Some(sel_disp))
                 .offset(sel_disp.saturating_sub(3))
-                .highlight_style(palette::selection())
+                .highlight_style(self.theme.selection())
                 .block(self.pane(title, self.focus == Focus::History && !self.filtering)),
             area,
         );
@@ -839,7 +888,7 @@ impl GitReview {
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let gutter = LineNumberGutter::new(1, self.editor.row_count())
-                .style(palette::dim())
+                .style(self.theme.dim())
                 .min_number_width(3);
             let text_rect = gutter.inner(inner);
             frame.render_widget(gutter, inner);
@@ -848,7 +897,7 @@ impl GitReview {
                 Editor::new(&self.editor)
                     .focused(true)
                     .scroll((crow.saturating_sub(4), 0))
-                    .cursor_style(palette::selection()),
+                    .cursor_style(self.theme.selection()),
                 text_rect,
             );
             return;
@@ -871,7 +920,10 @@ impl GitReview {
             } else {
                 "no commits match the filter"
             };
-            frame.render_widget(Paragraph::new(msg).style(palette::dim()).block(block), area);
+            frame.render_widget(
+                Paragraph::new(msg).style(self.theme.dim()).block(block),
+                area,
+            );
         } else {
             let d = Diff::new(self.diff.as_str())
                 .syntax(true)
@@ -884,17 +936,17 @@ impl GitReview {
     /// The bottom status strip.
     fn view_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let repo = self.repo.display().to_string();
-        let left = Line::styled(format!(" {repo} · ⎇ {} ", self.branch), palette::accent());
+        let left = Line::styled(format!(" {repo} · ⎇ {} ", self.branch), self.theme.accent());
         let center: Line = if self.filtering {
-            Line::styled(format!(" filter: {}_ ", self.filter), palette::good())
+            Line::styled(format!(" filter: {}_ ", self.filter), self.theme.good())
         } else if !self.status.is_empty() {
-            Line::styled(format!(" {} ", self.status), palette::good())
+            Line::styled(format!(" {} ", self.status), self.theme.good())
         } else if self.mode == Mode::Edit {
-            Line::styled("type to edit · Ctrl-S save · Esc back", palette::dim())
+            Line::styled("type to edit · Ctrl-S save · Esc back", self.theme.dim())
         } else {
             Line::styled(
                 "[ ]: commit · s: side-by-side · t: top/left · \\: tree · /: filter · ?: help",
-                palette::dim(),
+                self.theme.dim(),
             )
         };
         let n = self.visible().len();
@@ -914,7 +966,7 @@ impl GitReview {
             StatusBar::new()
                 .left(left)
                 .center(center)
-                .right(Line::styled(pos, palette::dim())),
+                .right(Line::styled(pos, self.theme.dim())),
             area,
         );
     }
@@ -1007,7 +1059,7 @@ impl App for GitReview {
                          Open rstui-git-review inside a git working tree, or pass one:\n  \
                          rstui-git-review path/to/repo\n\nPress q to quit."
                     ))
-                    .style(palette::bad())
+                    .style(self.theme.bad())
                     .block(self.pane(" git-review ", true)),
                     body,
                 );
@@ -1064,7 +1116,7 @@ impl App for GitReview {
             frame.render_widget(
                 HelpOverlay::new(&entries)
                     .block(self.pane(" Keys ", true))
-                    .key_style(palette::accent())
+                    .key_style(self.theme.accent())
                     .style(Style::new()),
                 area,
             );
@@ -1080,22 +1132,51 @@ impl App for GitReview {
             let footer = if self.km_rebind.is_some() {
                 "● press a key to bind — Esc cancels".to_owned()
             } else {
-                "↑↓/jk select · ⏎/r rebind · x disable · Esc close".to_owned()
+                "↑↓/jk select · ⏎/r rebind · x disable · p theme · Esc close".to_owned()
             };
             frame.render_widget(
                 KeymapView::new(&rows)
                     .block(self.pane(" Keymap ", true))
-                    .header(Line::styled(header, palette::accent()))
-                    .footer(Line::styled(footer, palette::dim()))
+                    .header(Line::styled(header, self.theme.accent()))
+                    .footer(Line::styled(footer, self.theme.dim()))
                     .separator("")
                     .style(Style::new())
                     .label_style(Style::new())
-                    .id_style(palette::dim())
-                    .key_style(palette::accent())
-                    .selected_style(palette::selection())
-                    .capturing_style(palette::good())
-                    .disabled_style(palette::dim()),
+                    .id_style(self.theme.dim())
+                    .key_style(self.theme.accent())
+                    .selected_style(self.theme.selection())
+                    .capturing_style(self.theme.good())
+                    .disabled_style(self.theme.dim()),
                 area,
+            );
+        }
+
+        if self.picking {
+            // The whole reviewer is already painted in the highlighted
+            // theme (live preview), so this panel previews it too.
+            let a = frame.area();
+            let w = ((u32::from(a.width) * 3 / 5) as u16)
+                .clamp(28, 72)
+                .min(a.width);
+            let h = ((u32::from(a.height) * 7 / 10) as u16)
+                .clamp(8, 30)
+                .min(a.height);
+            let rect = Rect::new(
+                a.x + a.width.saturating_sub(w) / 2,
+                a.y + a.height.saturating_sub(h) / 2,
+                w,
+                h,
+            );
+            frame.buffer_mut().set_style(rect, self.theme.base());
+            let block = self.pane(format!(" Theme — {} ", self.theme.name), true);
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            frame.render_widget(
+                rstui_theme::ThemePicker::new(&self.theme_picker)
+                    .title("Browse · preview live")
+                    .style(self.theme.base())
+                    .highlight_style(self.theme.selection()),
+                inner,
             );
         }
     }
