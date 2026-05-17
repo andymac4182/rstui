@@ -1,0 +1,36 @@
+[package]
+name = "rstui-jsonui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Additive declarative agent-UI engine (A2UI + json-render). `publish =
+# false` until the API settles (ADR 0017); the serde_json dependency keeps
+# it out of the release-packaging surface for now.
+publish = false
+description = "A declarative agent-driven UI engine for rstui: parses Google A2UI and Vercel json-render JSON documents and renders them through the rstui widget set as a pure projection of a caller-owned data model — no retained tree."
+
+[lints]
+workspace = true
+
+[lib]
+name = "rstui_jsonui"
+path = "src/lib.rs"
+
+[dependencies]
+# The primitives, the widget set, and the AI-app widgets an agent UI may
+# embed (ADR 0017). `version` + `path` per the publishability convention.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
+rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+rstui-ai = { path = "../rstui-ai", version = "0.0.1" }
+# A2UI / json-render documents are JSON; serde_json is the parse surface.
+serde = { version = "1", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+rstui-runtime = { path = "../rstui-runtime" }

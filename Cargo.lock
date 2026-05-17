@@ -753,6 +753,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-ai"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+ "rstui-runtime",
+ "rstui-widgets",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rstui-bench"
 version = "0.0.1"
 dependencies = [
@@ -787,6 +798,18 @@ dependencies = [
  "rstui-runtime",
  "rstui-theme",
  "rstui-widgets",
+]
+
+[[package]]
+name = "rstui-jsonui"
+version = "0.0.1"
+dependencies = [
+ "rstui-ai",
+ "rstui-core",
+ "rstui-runtime",
+ "rstui-widgets",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

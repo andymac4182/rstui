@@ -1,0 +1,40 @@
+[package]
+name = "rstui-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Additive AI-app widget set + shared message model + streaming markdown.
+# `publish = false` until the API settles (ADR 0017); the serde_json
+# dependency also keeps it out of the release-packaging surface for now,
+# the same posture as `rstui-acp-client`.
+publish = false
+description = "AI-application widget set for rstui: the AI SDK message/part model, a streaming-markdown view (incomplete-markdown repair over the rstui Markdown/Mermaid renderers), and the ai-elements vocabulary (tool cards, reasoning, prompt composer, citations, …) as pure projections."
+
+[lints]
+workspace = true
+
+[lib]
+name = "rstui_ai"
+path = "src/lib.rs"
+
+[dependencies]
+# The dependency-free primitives (Widget, Buffer, geometry, style, text)
+# and the concrete widget set this crate composes (ADR 0002 / ADR 0017).
+# `version` + `path` per the workspace publishability convention.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
+rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# The AI message model and tool input/output are JSON; serde(_json) is the
+# one heavier dependency this layer is allowed (ADR 0017), not in core.
+serde = { version = "1", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Examples drive the widgets through the Elm runtime + headless Harness,
+# exactly like `rstui-widgets`' examples (acyclic dev-only edge).
+rstui-runtime = { path = "../rstui-runtime" }
