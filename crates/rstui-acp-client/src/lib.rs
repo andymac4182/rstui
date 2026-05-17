@@ -67,11 +67,19 @@ impl Config {
     }
 }
 
-/// The reference plugin binary names shipped in this crate's `src/bin/`.
-pub const REFERENCE_PLUGINS: [&str; 3] = [
-    "rstui-acp-plugin-powerline",
-    "rstui-acp-plugin-btw",
-    "rstui-acp-plugin-ask-user",
+/// The reference plugin binary names shipped in this crate's `src/bin/`,
+/// auto-discovered next to the client when no `--plugin` is given. Each is a
+/// distinct, offline, std-only demonstration of one extension surface
+/// (footer / status / sidebar panel / slash command / overlay / toast).
+pub const REFERENCE_PLUGINS: &[&str] = &[
+    "rstui-acp-plugin-powerline", // powerline footer (agent · dir · vibe · clock)
+    "rstui-acp-plugin-btw",       // private side-notes + live panel
+    "rstui-acp-plugin-ask-user",  // structured ask-user overlay
+    "rstui-acp-plugin-session",   // session stopwatch + turn/prompt counters
+    "rstui-acp-plugin-git",       // git branch / dirty + changed-files panel
+    "rstui-acp-plugin-history",   // automatic prompt-history panel
+    "rstui-acp-plugin-pomodoro",  // focus countdown timer
+    "rstui-acp-plugin-fortune",   // developer-fortune toast per turn
 ];
 
 /// Resolves the plugin launch commands.
