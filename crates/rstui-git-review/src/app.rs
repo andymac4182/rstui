@@ -2,10 +2,10 @@
 //! pure projection of it, `update` is the only mutator, and every `git`
 //! invocation is a [`Cmd::perform`] effect that runs off the render loop.
 //!
-//! The scroll/offsets are deliberately *pure functions of the selection and
-//! the caret* computed in `view` (the commit list follows `sel`, the editor
-//! follows the cursor) — no stored offsets, no interior mutability — except
-//! the diff's vertical scroll, which is genuine independent user state.
+//! Layout/diff/graph/filter are all plain caller-owned model state the pure
+//! `view` reads; the scroll/offsets are pure functions of the selection and
+//! the caret (no stored offsets, no interior mutability) — only the diff's
+//! vertical scroll is genuine independent user state.
 
 use std::path::PathBuf;
 
@@ -32,10 +32,19 @@ enum Mode {
 /// Which pane consumes vertical-motion keys in [`Mode::Review`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
-    /// The commit list owns `↑/↓`/`j`/`k`.
-    Commits,
+    /// The history list owns `↑/↓`/`j`/`k`.
+    History,
     /// The diff owns `↑/↓`/`PgUp`/`PgDn` (scroll the patch).
     Detail,
+}
+
+/// Where the history list sits relative to the detail pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Orient {
+    /// History on the left, detail on the right (a tall commit column).
+    Left,
+    /// History on top, detail below (a wide commit strip).
+    Top,
 }
 
 /// The full-screen git history review + code editing application.
@@ -47,7 +56,9 @@ enum Focus {
 pub struct GitReview {
     repo: PathBuf,
     rev: Option<String>,
-    commits: Vec<Commit>,
+    /// `git log` rows (commit + connector rows, newest first).
+    rows: Vec<crate::LogRow>,
+    /// Selected commit *ordinal* within the currently visible (filtered) set.
     sel: usize,
     branch: String,
     /// The selected commit's patch text (empty while a load is in flight).
@@ -58,13 +69,25 @@ pub struct GitReview {
     files: Vec<(String, String)>,
     mode: Mode,
     focus: Focus,
+    /// `git log --graph` ASCII DAG on (the visual commit tree).
+    graph: bool,
+    /// The diff is rendered side-by-side instead of unified.
+    diff_split: bool,
+    /// History pane position.
+    orient: Orient,
+    /// History pane size as a percent of the body (resizable, clamped).
+    split_pct: u16,
+    /// Case-insensitive commit filter (empty = show everything).
+    filter: String,
+    /// The filter input row currently owns the keyboard.
+    filtering: bool,
     editor: TextArea,
     edit_path: Option<String>,
     edit_dirty: bool,
     help: bool,
     /// A transient one-line message (a save result, a soft error).
     status: String,
-    /// A fatal load error — when set with no commits, the whole body is the
+    /// A fatal load error — when set with no rows, the whole body is the
     /// error panel (graceful degrade outside a repo / when `git` is absent).
     error: Option<String>,
 }
@@ -73,7 +96,7 @@ pub struct GitReview {
 /// [`on_event`](App::on_event) and the results of `git` [`Cmd`]s.
 #[derive(Debug)]
 pub enum Msg {
-    /// The initial `git log` + branch load resolved.
+    /// A `git log` (history) load resolved.
     Loaded(Result<Loaded, String>),
     /// `git show -p <sha>` resolved for `sha`.
     Diff {
@@ -111,7 +134,7 @@ impl GitReview {
         Self {
             repo: config.repo,
             rev: config.rev,
-            commits: Vec::new(),
+            rows: Vec::new(),
             sel: 0,
             branch: "?".to_owned(),
             diff: String::new(),
@@ -119,7 +142,13 @@ impl GitReview {
             diff_scroll: 0,
             files: Vec::new(),
             mode: Mode::Review,
-            focus: Focus::Commits,
+            focus: Focus::History,
+            graph: true,
+            diff_split: false,
+            orient: Orient::Left,
+            split_pct: 34,
+            filter: String::new(),
+            filtering: false,
             editor: TextArea::new(),
             edit_path: None,
             edit_dirty: false,
@@ -129,9 +158,44 @@ impl GitReview {
         }
     }
 
+    /// Does `c` match the active filter (case-insensitive, any of
+    /// sha/short/subject/author/date)?
+    fn matches(&self, c: &Commit) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        let q = self.filter.to_lowercase();
+        c.short.to_lowercase().contains(&q)
+            || c.sha.to_lowercase().contains(&q)
+            || c.subject.to_lowercase().contains(&q)
+            || c.author.to_lowercase().contains(&q)
+            || c.date.contains(&q)
+    }
+
+    /// Row indices of the visible commits (commit rows passing the filter),
+    /// in display order — the spine every selection/nav computation uses.
+    fn visible(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.commit.as_ref().is_some_and(|c| self.matches(c)))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// The currently selected commit, if any.
     fn current(&self) -> Option<&Commit> {
-        self.commits.get(self.sel)
+        let vis = self.visible();
+        vis.get(self.sel)
+            .and_then(|&i| self.rows[i].commit.as_ref())
+    }
+
+    /// Re-run `git log` (history) off the render loop, honoring `graph`.
+    fn reload_history(&self) -> Cmd<Msg> {
+        let repo = self.repo.clone();
+        let rev = self.rev.clone();
+        let graph = self.graph;
+        Cmd::perform(move || Msg::Loaded(crate::load(&repo, rev.as_deref(), graph)))
     }
 
     /// Load the selected commit's patch + changed-files list off the render
@@ -140,16 +204,15 @@ impl GitReview {
         self.diff.clear();
         self.files.clear();
         self.diff_scroll = 0;
-        let Some(commit) = self.current() else {
+        let Some(sha) = self.current().map(|c| c.sha.clone()) else {
             self.detail_for = None;
             return Cmd::none();
         };
-        let sha = commit.sha.clone();
         self.detail_for = Some(sha.clone());
         let repo_a = self.repo.clone();
         let repo_b = self.repo.clone();
         let sha_a = sha.clone();
-        let sha_b = sha.clone();
+        let sha_b = sha;
         Cmd::batch([
             Cmd::perform(move || Msg::Diff {
                 sha: sha_a.clone(),
@@ -162,13 +225,14 @@ impl GitReview {
         ])
     }
 
-    /// Move the commit selection by `delta` rows and reload its detail.
+    /// Move the commit selection by `delta` (over the visible set) and
+    /// reload its detail.
     fn select(&mut self, delta: isize) -> Cmd<Msg> {
-        if self.commits.is_empty() {
+        let n = self.visible().len();
+        if n == 0 {
             return Cmd::none();
         }
-        let last = self.commits.len() - 1;
-        let next = (self.sel as isize + delta).clamp(0, last as isize) as usize;
+        let next = (self.sel as isize + delta).clamp(0, n as isize - 1) as usize;
         if next == self.sel {
             return Cmd::none();
         }
@@ -176,20 +240,54 @@ impl GitReview {
         self.reload_detail()
     }
 
-    /// Handle one key press given the current mode/focus.
+    /// Re-clamp the selection after the visible set changed (a filter edit)
+    /// and reload the now-selected commit.
+    fn after_filter_change(&mut self) -> Cmd<Msg> {
+        let n = self.visible().len();
+        self.sel = if n == 0 { 0 } else { self.sel.min(n - 1) };
+        self.reload_detail()
+    }
+
+    /// Handle one key press given the current mode/overlay.
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Cmd<Msg> {
         // Ctrl+C always quits, every mode (the universal terminal reflex).
         if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             return Cmd::quit();
         }
         if self.help {
-            // Any key dismisses the cheat-sheet.
-            self.help = false;
+            self.help = false; // Any key dismisses the cheat-sheet.
             return Cmd::none();
+        }
+        if self.filtering {
+            return self.on_key_filter(code);
         }
         match self.mode {
             Mode::Edit => self.on_key_edit(code, mods),
             Mode::Review => self.on_key_review(code),
+        }
+    }
+
+    /// Keys while the filter input row is focused.
+    fn on_key_filter(&mut self, code: KeyCode) -> Cmd<Msg> {
+        match code {
+            KeyCode::Esc => {
+                self.filter.clear();
+                self.filtering = false;
+                self.after_filter_change()
+            }
+            KeyCode::Enter => {
+                self.filtering = false;
+                Cmd::none()
+            }
+            KeyCode::Backspace => {
+                self.filter.pop();
+                self.after_filter_change()
+            }
+            KeyCode::Char(c) => {
+                self.filter.push(c);
+                self.after_filter_change()
+            }
+            _ => Cmd::none(),
         }
     }
 
@@ -252,15 +350,38 @@ impl GitReview {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return Cmd::quit(),
             KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('/') => {
+                self.filtering = true;
+                self.status = "filter: type to narrow · Enter keep · Esc clear".to_owned();
+            }
+            KeyCode::Char('s') => self.diff_split = !self.diff_split,
+            KeyCode::Char('t') => {
+                self.orient = match self.orient {
+                    Orient::Left => Orient::Top,
+                    Orient::Top => Orient::Left,
+                };
+            }
+            KeyCode::Char('-') => self.split_pct = self.split_pct.saturating_sub(4).max(15),
+            KeyCode::Char('=') | KeyCode::Char('+') => {
+                self.split_pct = (self.split_pct + 4).min(75);
+            }
+            KeyCode::Char('\\') => {
+                self.graph = !self.graph;
+                self.status = if self.graph {
+                    "graph tree on".to_owned()
+                } else {
+                    "graph tree off".to_owned()
+                };
+                return self.reload_history();
+            }
             KeyCode::Tab => {
                 self.focus = match self.focus {
-                    Focus::Commits => Focus::Detail,
-                    Focus::Detail => Focus::Commits,
+                    Focus::History => Focus::Detail,
+                    Focus::Detail => Focus::History,
                 };
             }
             KeyCode::Char('e') => {
                 if let Some((_, path)) = self.files.first() {
-                    let path = path.clone();
                     let repo = self.repo.clone();
                     let p = path.clone();
                     return Cmd::perform(move || Msg::Opened {
@@ -275,11 +396,11 @@ impl GitReview {
             KeyCode::Char('g') => return self.select(isize::MIN / 2),
             KeyCode::Char('G') => return self.select(isize::MAX / 2),
             KeyCode::Down | KeyCode::Char('j') => match self.focus {
-                Focus::Commits => return self.select(1),
+                Focus::History => return self.select(1),
                 Focus::Detail => self.diff_scroll = self.diff_scroll.saturating_add(1),
             },
             KeyCode::Up | KeyCode::Char('k') => match self.focus {
-                Focus::Commits => return self.select(-1),
+                Focus::History => return self.select(-1),
                 Focus::Detail => self.diff_scroll = self.diff_scroll.saturating_sub(1),
             },
             KeyCode::PageDown => self.diff_scroll = self.diff_scroll.saturating_add(15),
@@ -287,8 +408,6 @@ impl GitReview {
             KeyCode::Home if self.focus == Focus::Detail => self.diff_scroll = 0,
             _ => {}
         }
-        // Never scroll past the patch text (Diff is total past the end, but
-        // this keeps the scrollbar honest).
         let max = self.diff.lines().count() as u16;
         if self.diff_scroll > max {
             self.diff_scroll = max;
@@ -307,6 +426,9 @@ mod palette {
     }
     pub fn accent() -> Style {
         Style::new().fg(Color::Indexed(4))
+    }
+    pub fn graph() -> Style {
+        Style::new().fg(Color::Indexed(6))
     }
     pub fn good() -> Style {
         Style::new().fg(Color::Indexed(2))
@@ -332,29 +454,67 @@ impl GitReview {
             })
     }
 
-    /// The commit list pane.
-    fn view_commits(&self, frame: &mut Frame<'_>, area: Rect) {
-        let rows: Vec<Line> = self
-            .commits
-            .iter()
-            .map(|c| {
-                let subj: String = c.subject.chars().take(72).collect();
-                Line::from(vec![
-                    Span::styled(format!("{} ", c.short), palette::accent()),
-                    Span::styled(format!("{} ", c.date), palette::dim()),
-                    Span::raw(subj),
-                ])
-            })
-            .collect();
-        let title = format!(" Commits {} · {} ", self.commits.len(), self.branch);
+    /// The history pane: the `git log --graph` DAG (or a plain/filtered
+    /// list), the selected commit highlighted.
+    fn view_history(&self, frame: &mut Frame<'_>, area: Rect) {
+        let vis = self.visible();
+        let graph_mode = self.graph && self.filter.is_empty();
+
+        let (lines, sel_disp): (Vec<Line>, usize) = if graph_mode {
+            // Every physical row, art included; selection maps to the
+            // display row of the sel-th visible commit.
+            let mut out = Vec::with_capacity(self.rows.len());
+            let mut ord = 0usize;
+            let mut disp = 0usize;
+            for (i, row) in self.rows.iter().enumerate() {
+                match &row.commit {
+                    Some(c) => {
+                        if ord == self.sel {
+                            disp = i;
+                        }
+                        ord += 1;
+                        let subj: String = c.subject.chars().take(64).collect();
+                        out.push(Line::from(vec![
+                            Span::styled(format!("{} ", row.art), palette::graph()),
+                            Span::styled(format!("{} ", c.short), palette::accent()),
+                            Span::raw(subj),
+                        ]));
+                    }
+                    None => out.push(Line::styled(row.art.clone(), palette::graph())),
+                }
+            }
+            (out, disp)
+        } else {
+            // Plain (graph off, or a filter is narrowing): one row per
+            // visible commit, no art.
+            let out: Vec<Line> = vis
+                .iter()
+                .map(|&i| {
+                    let c = self.rows[i].commit.as_ref().expect("visible ⇒ commit");
+                    let subj: String = c.subject.chars().take(64).collect();
+                    Line::from(vec![
+                        Span::styled(format!("{} ", c.short), palette::accent()),
+                        Span::styled(format!("{} ", c.date), palette::dim()),
+                        Span::raw(subj),
+                    ])
+                })
+                .collect();
+            (out, self.sel.min(vis.len().saturating_sub(1)))
+        };
+
+        let mut title = format!(" Commits {} · {}", vis.len(), self.branch);
+        if !self.filter.is_empty() {
+            title.push_str(&format!(" · /{}", self.filter));
+        } else if self.graph {
+            title.push_str(" · tree");
+        }
+        title.push(' ');
         frame.render_widget(
-            List::new(rows)
-                .selected(Some(self.sel))
-                // Pure scroll: keep the selection on screen with a 3-row lead,
-                // for any pane height — no stored offset, no geometry.
-                .offset(self.sel.saturating_sub(3))
+            List::new(lines)
+                .selected(Some(sel_disp))
+                .offset(sel_disp.saturating_sub(3))
                 .highlight_style(palette::selection())
-                .block(self.pane(title, self.focus == Focus::Commits)),
+                .block(self.pane(title, self.focus == Focus::History && !self.filtering)),
             area,
         );
     }
@@ -372,7 +532,6 @@ impl GitReview {
                 .min_number_width(3);
             let text_rect = gutter.inner(inner);
             frame.render_widget(gutter, inner);
-            // Pure: the viewport follows the caret with a 4-row lead.
             let (crow, _) = self.editor.cursor();
             frame.render_widget(
                 Editor::new(&self.editor)
@@ -386,26 +545,28 @@ impl GitReview {
 
         let title = match self.current() {
             Some(c) => {
-                let subj: String = c.subject.chars().take(60).collect();
-                format!(" {} · {} — {} ", c.short, c.date, subj)
+                let subj: String = c.subject.chars().take(56).collect();
+                let kind = if self.diff_split { "◫" } else { "≡" };
+                format!(" {kind} {} · {} — {} ", c.short, c.date, subj)
             }
             None => " (no commit) ".to_owned(),
         };
         let block = self.pane(title, self.focus == Focus::Detail);
         if self.diff.is_empty() {
-            let msg = self
-                .current()
-                .map(|_| "loading patch…")
-                .unwrap_or("no commits to review");
+            let msg = if self.current().is_some() {
+                "loading patch…"
+            } else if self.filter.is_empty() {
+                "no commits to review"
+            } else {
+                "no commits match the filter"
+            };
             frame.render_widget(Paragraph::new(msg).style(palette::dim()).block(block), area);
         } else {
-            frame.render_widget(
-                Diff::new(self.diff.as_str())
-                    .syntax(true)
-                    .scroll(self.diff_scroll)
-                    .block(block),
-                area,
-            );
+            let d = Diff::new(self.diff.as_str())
+                .syntax(true)
+                .scroll(self.diff_scroll);
+            let d = if self.diff_split { d.side_by_side() } else { d };
+            frame.render_widget(d.block(block), area);
         }
     }
 
@@ -413,17 +574,20 @@ impl GitReview {
     fn view_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let repo = self.repo.display().to_string();
         let left = Line::styled(format!(" {repo} · ⎇ {} ", self.branch), palette::accent());
-        let center: Line = if !self.status.is_empty() {
+        let center: Line = if self.filtering {
+            Line::styled(format!(" filter: {}_ ", self.filter), palette::good())
+        } else if !self.status.is_empty() {
             Line::styled(format!(" {} ", self.status), palette::good())
         } else if self.mode == Mode::Edit {
             Line::styled("type to edit · Ctrl-S save · Esc back", palette::dim())
         } else {
             Line::styled(
-                "[ / ]: prev/next commit · Tab: focus · e: edit file · ?: help · q: quit",
+                "[ ]: commit · s: side-by-side · t: top/left · \\: tree · /: filter · ?: help",
                 palette::dim(),
             )
         };
-        let pos = if self.commits.is_empty() {
+        let n = self.visible().len();
+        let pos = if n == 0 {
             " 0/0 ".to_owned()
         } else {
             let mode = if self.mode == Mode::Edit {
@@ -431,7 +595,9 @@ impl GitReview {
             } else {
                 "REVIEW"
             };
-            format!(" {}/{} · {mode} ", self.sel + 1, self.commits.len())
+            let split = if self.diff_split { " ◫" } else { "" };
+            let tree = if self.graph { " ⫶" } else { "" };
+            format!(" {}/{n} · {mode}{split}{tree} ", self.sel + 1)
         };
         frame.render_widget(
             StatusBar::new()
@@ -447,9 +613,7 @@ impl App for GitReview {
     type Message = Msg;
 
     fn init(&mut self) -> Cmd<Msg> {
-        let repo = self.repo.clone();
-        let rev = self.rev.clone();
-        Cmd::perform(move || Msg::Loaded(crate::load(&repo, rev.as_deref())))
+        self.reload_history()
     }
 
     fn on_event(&self, event: Event) -> Option<Msg> {
@@ -460,13 +624,15 @@ impl App for GitReview {
     fn update(&mut self, message: Msg) -> Cmd<Msg> {
         match message {
             Msg::Loaded(Ok(loaded)) => {
-                self.commits = loaded.commits;
+                self.rows = loaded.rows;
                 self.branch = loaded.branch;
-                self.sel = 0;
+                let n = self.visible().len();
+                self.sel = if n == 0 { 0 } else { self.sel.min(n - 1) };
                 self.error = None;
                 self.reload_detail()
             }
             Msg::Loaded(Err(e)) => {
+                self.rows.clear();
                 self.error = Some(e);
                 Cmd::none()
             }
@@ -518,7 +684,7 @@ impl App for GitReview {
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
         // Fatal load failure with nothing to show: the body is one panel.
-        if self.commits.is_empty() {
+        if self.rows.is_empty() {
             if let Some(err) = &self.error {
                 frame.render_widget(
                     Paragraph::new(format!(
@@ -535,19 +701,34 @@ impl App for GitReview {
             }
         }
 
-        let list_w = ((u32::from(area.width) * 32 / 100) as u16).clamp(24, 52);
-        let [list_a, detail_a] =
-            Layout::horizontal([Constraint::Length(list_w), Constraint::Fill(1)]).areas(body);
-        self.view_commits(frame, list_a);
+        // The resizable, re-orientable split (Layout clamps an oversized
+        // length to the area, so this is total at any terminal size).
+        let pct = u32::from(self.split_pct);
+        let [list_a, detail_a] = match self.orient {
+            Orient::Left => {
+                let w = ((u32::from(body.width) * pct / 100) as u16).clamp(8, 90);
+                Layout::horizontal([Constraint::Length(w), Constraint::Fill(1)]).areas(body)
+            }
+            Orient::Top => {
+                let h = ((u32::from(body.height) * pct / 100) as u16).clamp(3, 40);
+                Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body)
+            }
+        };
+        self.view_history(frame, list_a);
         self.view_detail(frame, detail_a);
         self.view_status(frame, status);
 
         if self.help {
             let entries = [
-                HelpEntry::new(["[", "]"], "Previous / next commit"),
+                HelpEntry::new(["[", "]"], "Previous / next commit (or p / n)"),
                 HelpEntry::new(["j", "k"], "Move selection / scroll the patch"),
                 HelpEntry::new(["g", "G"], "Jump to newest / oldest commit"),
-                HelpEntry::new(["Tab"], "Switch focus: commit list ⇄ patch"),
+                HelpEntry::new(["Tab"], "Switch focus: history ⇄ patch"),
+                HelpEntry::new(["s"], "Toggle side-by-side / unified diff"),
+                HelpEntry::new(["t"], "Move history pane: left ⇄ top"),
+                HelpEntry::new(["-", "="], "Resize the history / diff split"),
+                HelpEntry::new(["\\"], "Toggle the visual commit tree (graph)"),
+                HelpEntry::new(["/"], "Filter commits (Enter keep · Esc clear)"),
                 HelpEntry::new(["e"], "Edit the commit's first changed file"),
                 HelpEntry::new(["Ctrl", "S"], "Save the edited file (Edit mode)"),
                 HelpEntry::new(["Esc"], "Leave Edit / close this help"),

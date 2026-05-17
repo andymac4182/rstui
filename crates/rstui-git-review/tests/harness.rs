@@ -221,3 +221,103 @@ fn tiny_terminal_is_a_safe_no_op() {
         "recovers when resized back"
     );
 }
+
+/// Build a throwaway repo with one commit per `subjects` entry (each adds a
+/// distinct file), newest last. Returns the repo dir (caller cleans up).
+fn fixture(subjects: &[&str]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "rgr-fx-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    git_in(&dir, &["init", "-q"]);
+    for (i, subj) in subjects.iter().enumerate() {
+        std::fs::write(dir.join(format!("f{i}.txt")), format!("{subj}\n")).expect("seed");
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", subj]);
+    }
+    dir
+}
+
+#[test]
+fn graph_tree_renders_and_filter_narrows() {
+    let dir = fixture(&["alpha apple", "beta banana", "gamma grape"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    let s = h.snapshot();
+    assert!(s.contains("Commits 3"), "all 3 commits load:\n{s}");
+    assert!(
+        s.contains('*'),
+        "the git --graph DAG art (`*`) is drawn:\n{s}"
+    );
+
+    // Filter to just the "beta" commit.
+    h.handle(ch('/'));
+    for c in "beta".chars() {
+        h.handle(ch(c));
+    }
+    let s = h.snapshot();
+    assert!(
+        s.contains("Commits 1"),
+        "the filter narrows to one commit:\n{s}"
+    );
+    // Esc clears the filter → all commits return.
+    h.handle(key(KeyCode::Esc));
+    assert!(
+        h.snapshot().contains("Commits 3"),
+        "Esc clears the filter back to all commits"
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn side_by_side_toggle_flips_the_diff_layout() {
+    let dir = fixture(&["only commit"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    assert!(
+        h.snapshot().contains('≡'),
+        "the detail title shows the unified marker by default"
+    );
+    h.handle(ch('s'));
+    assert!(
+        h.snapshot().contains('◫'),
+        "`s` switches to the side-by-side marker"
+    );
+    h.handle(ch('s'));
+    assert!(h.snapshot().contains('≡'), "`s` toggles back to unified");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn orientation_resize_and_graph_toggle_never_panic() {
+    let dir = fixture(&["c1", "c2"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    for ev in [
+        ch('t'), // history → top
+        ch('-'), // shrink split
+        ch('-'),
+        ch('='),  // grow split
+        ch('t'),  // history → left
+        ch('\\'), // graph off (reloads history)
+        ch('\\'), // graph on
+    ] {
+        h.handle(ev);
+        assert!(h.is_running(), "layout/graph toggles must not quit");
+    }
+    assert!(
+        h.snapshot().contains("Commits 2"),
+        "still renders the history after every toggle:\n{}",
+        h.snapshot()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

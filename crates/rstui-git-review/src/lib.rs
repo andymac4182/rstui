@@ -47,11 +47,23 @@ pub struct Commit {
     pub date: String,
 }
 
+/// One physical row of `git log` output. With the graph on, `git` emits the
+/// ASCII DAG: commit rows carry the `art` *and* a [`Commit`]; pure connector
+/// rows (`|/`, `|\`, `| |`) carry only `art` and no commit, so the visual
+/// tree is preserved while navigation still moves commit-to-commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRow {
+    /// The leading graph-art column (empty when the graph is off).
+    pub art: String,
+    /// The commit on this row, or `None` for a pure connector row.
+    pub commit: Option<Commit>,
+}
+
 /// What [`init`](rstui_runtime::App::init)'s first load resolves to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Loaded {
-    /// Newest-first commit list.
-    pub commits: Vec<Commit>,
+    /// Newest-first rows (commit + connector rows, in `git log` order).
+    pub rows: Vec<LogRow>,
     /// Current branch (or a short HEAD) for the status bar.
     pub branch: String,
 }
@@ -125,41 +137,67 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// `git log` → newest-first [`Commit`]s, plus the current branch. Fields are
-/// joined with US (`\x1f`) so a subject containing any normal punctuation
-/// still parses; rows are newline-separated.
+/// `git log` → newest-first [`LogRow`]s, plus the current branch.
+///
+/// With `graph` on, `git log --graph` draws the commit DAG; each physical
+/// line is one [`LogRow`]. The format begins with US (`\x1f`) so a commit
+/// line is `<art>\x1f<H>\x1f<h>\x1f<s>\x1f<an>\x1f<ad>` and a pure connector
+/// line has no `\x1f` at all — splitting on the first US cleanly separates
+/// the graph art from the (optional) commit fields, and a subject with any
+/// normal punctuation still parses.
 ///
 /// # Errors
 ///
-/// Propagates the `git` helper's error when the directory is not a repository, `git`
-/// is absent, or the revision range is invalid.
-pub fn load(repo: &Path, rev: Option<&str>) -> Result<Loaded, String> {
-    let mut args: Vec<&str> = vec![
-        "log",
-        "--no-color",
-        "--date=short",
-        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ad",
+/// Propagates the `git` helper's error when the directory is not a
+/// repository, `git` is absent, or the revision range is invalid.
+pub fn load(repo: &Path, rev: Option<&str>, graph: bool) -> Result<Loaded, String> {
+    let mut args: Vec<&str> = vec!["log", "--no-color", "--date=short"];
+    if graph {
+        args.push("--graph");
+    }
+    args.extend_from_slice(&[
+        "--pretty=format:%x1f%H%x1f%h%x1f%s%x1f%an%x1f%ad",
         "-n",
         "400",
-    ];
+    ]);
     if let Some(r) = rev {
         args.push(r);
     }
     let raw = git(repo, &args)?;
-    let commits: Vec<Commit> = raw
-        .lines()
-        .filter_map(|line| {
-            let mut f = line.split('\u{1f}');
-            Some(Commit {
-                sha: f.next()?.to_owned(),
-                short: f.next()?.to_owned(),
-                subject: f.next().unwrap_or_default().to_owned(),
-                author: f.next().unwrap_or_default().to_owned(),
-                date: f.next().unwrap_or_default().to_owned(),
-            })
-        })
-        .collect();
-    if commits.is_empty() {
+    let mut rows: Vec<LogRow> = Vec::new();
+    let mut any_commit = false;
+    for line in raw.lines() {
+        if let Some((art, rest)) = line.split_once('\u{1f}') {
+            let mut f = rest.split('\u{1f}');
+            let mut next = || f.next().unwrap_or_default().to_owned();
+            let sha = next();
+            if sha.is_empty() {
+                rows.push(LogRow {
+                    art: art.to_owned(),
+                    commit: None,
+                });
+                continue;
+            }
+            any_commit = true;
+            rows.push(LogRow {
+                art: art.to_owned(),
+                commit: Some(Commit {
+                    sha,
+                    short: next(),
+                    subject: next(),
+                    author: next(),
+                    date: next(),
+                }),
+            });
+        } else {
+            // A pure connector row (`|/`, `|\`, `| |`): keep it for the tree.
+            rows.push(LogRow {
+                art: line.to_owned(),
+                commit: None,
+            });
+        }
+    }
+    if !any_commit {
         return Err("no commits in range".to_owned());
     }
     let branch = git(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -167,7 +205,7 @@ pub fn load(repo: &Path, rev: Option<&str>) -> Result<Loaded, String> {
         .filter(|b| b != "HEAD" && !b.is_empty())
         .or_else(|| git(repo, &["rev-parse", "--short", "HEAD"]).ok())
         .unwrap_or_else(|| "?".to_owned());
-    Ok(Loaded { commits, branch })
+    Ok(Loaded { rows, branch })
 }
 
 /// The unified patch for one commit (`git show -p`), message stripped so the

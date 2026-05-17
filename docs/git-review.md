@@ -39,14 +39,39 @@ state. `git` runs in a `Cmd::perform` closure off the render loop, so a slow
 `git show` never freezes the UI; the headless `Harness` runs it inline, so the
 tests are deterministic.
 
+## Layout & views
+
+It is built to be flexible without any new widgets — every option is plain
+caller-owned state the pure `view` reads:
+
+- **Visual commit tree** — by default the history pane is the real
+  `git log --graph` DAG: `git` draws the lanes/merges, commit rows stay
+  selectable, pure connector rows (`|/`, `|\`) are shown but skipped by
+  navigation. `\` toggles it off for a flat list.
+- **Side-by-side diff** — `s` flips the [`Diff`](widgets/rich-rendering.md#diff)
+  between unified (`≡`) and split (`◫`).
+- **Re-orientable split** — `t` moves the history pane between the left
+  (a tall commit column) and the top (a wide commit strip).
+- **Resizable split** — `-` / `=` grow/shrink the history pane against the
+  diff (15–75 % of the body; `Layout` clamps it total at any size).
+- **Filter** — `/` narrows the history to commits whose
+  sha/subject/author/date match (case-insensitive); `Enter` keeps it, `Esc`
+  clears. While filtered the list is flat (the DAG of a subset is
+  meaningless).
+
 ## Keys
 
 | Key(s) | Action |
 |---|---|
 | `[` / `]`, `p` / `n` | Previous / next commit |
-| `j` / `k`, `↑` / `↓` | Move selection (list focus) or scroll the patch (diff focus) |
+| `j` / `k`, `↑` / `↓` | Move selection (history focus) or scroll the patch (diff focus) |
 | `g` / `G` | Newest / oldest commit |
-| `Tab` | Switch focus: commit list ⇄ patch |
+| `Tab` | Switch focus: history ⇄ patch |
+| `s` | Toggle side-by-side ⇄ unified diff |
+| `t` | Move the history pane: left ⇄ top |
+| `-` / `=` | Resize the history / diff split |
+| `\` | Toggle the visual commit tree (`git log --graph`) |
+| `/` | Filter commits (`Enter` keep · `Esc` clear) |
 | `e` | Edit the selected commit's first changed file |
 | `Ctrl-S` | Save the edited file to the working tree (Edit mode) |
 | `Esc` | Leave Edit mode / close help (in Review, `Esc`/`q` quits) |
@@ -58,5 +83,8 @@ tests are deterministic.
 deterministic `Harness`: it boots against *this* repository's real history,
 proves navigation/focus/help/tiny-terminal never panic or quit, and proves
 the edit→save round-trip end to end against a throwaway fixture repo
-(`git init` → edit → `Ctrl-S` → assert the working-tree bytes changed). See
-[Testing](testing.md) for the layered suite model.
+(`git init` → edit → `Ctrl-S` → assert the working-tree bytes changed). The
+new layout/views are covered on fixture repos too: the `git --graph` art
+renders, `/` narrows the history and `Esc` restores it, `s` flips the
+side-by-side marker, and the orientation/resize/graph toggles never panic.
+See [Testing](testing.md) for the layered suite model.
