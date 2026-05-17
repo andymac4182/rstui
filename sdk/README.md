@@ -62,25 +62,39 @@ await definePlugin({
 });
 ```
 
-Run it via the **V8 host** (`sdk/v8-host`):
+A TS plugin is **just a process** speaking the wire — same as a Rust
+plugin. The SDK has a built-in stdio bridge, so **no V8 host is needed**:
 
 ```sh
-rstui-acp-client --plugin "node sdk/v8-host/host.mjs ./my-plugin.mjs"
+# Plain process (uniform with Rust plugins):
+rstui-acp-client --plugin "node ./my-plugin.mjs"
+# …or bun ./my-plugin.ts (native TS, no build step)
 ```
 
-- **Default (supported, verified):** the host runs the plugin **in this
-  Node process** — same bridge + JSON-RPC wire, but **not** a V8 isolate
-  (a stderr line says so). The full pipeline (handshake, commands, modal
-  round-trip, shutdown) is covered by the smoke test.
-- **`--sandbox` (experimental, _not_ yet verified):** runs the plugin in
-  a `secure-exec` V8 isolate (deny-by-default host fs/network; only an
-  in-memory VFS), implemented to secure-exec's documented
-  `createInMemoryFileSystem`/`bindings` pattern. Known open issues before
-  this can be relied on: the in-isolate bindings global, ESM-vs-CJS module
-  form for the mounted SDK/plugin, and whether secure-exec's bounded
-  `run()` supports a long-lived host-driven event loop. Requires
-  `npm i secure-exec`. Treat as a work-in-progress, not production V8
-  isolation yet.
+**Recommended hardening — zero dependencies (Node Permission Model):**
+
+```sh
+rstui-acp-client --plugin "node --permission --allow-fs-read=. ./my-plugin.mjs"
+```
+
+This denies fs-write / child-process / workers / native addons. Network is
+not gated by Node yet — run under an OS sandbox (`sandbox-exec`,
+container) if network isolation is required (operator concern, ADR 0007).
+
+The optional **V8 host** (`sdk/v8-host`) adds a `--harden` convenience
+(re-execs under the Permission Model for you) and an opt-in, **experimental
+`--sandbox`** that runs the plugin in a `secure-exec` V8 isolate:
+
+```sh
+rstui-acp-client --plugin "node sdk/v8-host/host.mjs --harden ./my-plugin.mjs"
+rstui-acp-client --plugin "node sdk/v8-host/host.mjs --sandbox ./my-plugin.mjs"  # experimental
+```
+
+**Why this design (not secure-exec by default): see
+[`RUNTIME_DECISION.md`](./RUNTIME_DECISION.md).** `--sandbox` is a
+work-in-progress (secure-exec is pre-1.0, native, and its bounded `run()`
+fights our long-lived loop); the supported path is the process model +
+Node permissions.
 
 ## Verify
 

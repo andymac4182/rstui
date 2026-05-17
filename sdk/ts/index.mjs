@@ -6,14 +6,125 @@
 // PluginAction JSON. Under secure-exec these are sandbox `bindings`; in the
 // host's dev fallback they are plain functions — the SDK is identical.
 
+// Plugin → host method per action `type` (matches the Rust SDK proto).
+const ACTION_METHOD = {
+  register_command: "commands/register",
+  register_keybinding: "ui/registerKeybinding",
+  set_status: "ui/setStatus",
+  footer: "ui/footer",
+  panel: "ui/panel",
+  note: "ui/note",
+  log: "ui/log",
+  ask_user: "ui/askUser",
+  modal: "ui/modal",
+};
+
+// A built-in stdio JSON-RPC bridge, so a plugin run as a plain process
+// (`node plugin.mjs`, `bun plugin.ts`) IS a plugin — no V8 host needed,
+// uniform with native Rust plugins (see sdk/RUNTIME_DECISION.md).
+function makeStdioBridge() {
+  const p = globalThis.process;
+  const queue = [];
+  let waiting = null;
+  let done = false;
+  const push = (s) => {
+    if (waiting) {
+      const w = waiting;
+      waiting = null;
+      w(s);
+    } else {
+      queue.push(s);
+    }
+  };
+  const finish = () => {
+    done = true;
+    if (waiting) {
+      const w = waiting;
+      waiting = null;
+      w(null);
+    }
+  };
+  const onLine = (line) => {
+    const s = line.trim();
+    if (!s) return;
+    let msg;
+    try {
+      msg = JSON.parse(s);
+    } catch {
+      return;
+    }
+    if (msg.method === undefined) return; // a response
+    if (msg.method === "initialize" && msg.id !== undefined) {
+      p.stdout.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { ok: true, apiVersion: "1" } })}\n`,
+      );
+    }
+    if (msg.params && typeof msg.params === "object") {
+      push(JSON.stringify(msg.params));
+      if (msg.params.type === "shutdown") finish();
+    }
+  };
+  // Use node:readline (same as the V8 host) — it reliably drains stdin
+  // including bytes a launcher buffered before this listener attached
+  // (real launchers, incl. the rstui client, send `initialize`
+  // immediately on spawn). `process.getBuiltinModule` keeps this
+  // synchronous and adds no static `node:` import (so the SDK still
+  // loads cleanly inside a non-Node sandbox, where this path is unused).
+  const rl = p
+    .getBuiltinModule("node:readline")
+    .createInterface({ input: p.stdin });
+  rl.on("line", onLine);
+  rl.on("close", finish);
+  return {
+    emit(actionJson) {
+      let a;
+      try {
+        a = JSON.parse(actionJson);
+      } catch {
+        return;
+      }
+      const method = ACTION_METHOD[a.type];
+      if (!method) return;
+      p.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params: a })}\n`);
+    },
+    next() {
+      if (queue.length > 0) return Promise.resolve(queue.shift());
+      if (done) return Promise.resolve(null);
+      return new Promise((res) => {
+        waiting = res;
+      });
+    },
+    // We *are* the whole process here, so once the loop ends (shutdown or
+    // EOF) close stdin/readline and exit — otherwise the open stdin handle
+    // keeps Node alive forever. (The injected V8-host bridge has no close;
+    // the host owns that process's lifecycle.)
+    close() {
+      try {
+        rl.close();
+      } catch {
+        /* already closed */
+      }
+      p.exit(0);
+    },
+  };
+}
+
 function bridge() {
-  const b = globalThis.__rstuiHost;
-  if (!b || typeof b.next !== "function" || typeof b.emit !== "function") {
-    throw new Error(
-      "rstui plugin SDK: no host bridge. Run this plugin via the rstui V8 host.",
-    );
+  const injected = globalThis.__rstuiHost;
+  if (
+    injected &&
+    typeof injected.next === "function" &&
+    typeof injected.emit === "function"
+  ) {
+    return injected; // running under the V8 host
   }
-  return b;
+  if (globalThis.process?.stdin && globalThis.process?.stdout) {
+    return makeStdioBridge(); // running as a plain process
+  }
+  throw new Error(
+    "rstui plugin SDK: no host bridge and no stdio — run this plugin as a " +
+      "process (node/bun) or via the rstui V8 host.",
+  );
 }
 
 export async function definePlugin(handlers) {
@@ -95,7 +206,7 @@ export async function definePlugin(handlers) {
       } catch (err) {
         host.log(`plugin onShutdown error: ${err?.message ?? err}`);
       }
-      return;
+      break;
     }
 
     // Dispatch WITHOUT blocking the pump: a handler may `await host.modal()`
@@ -126,6 +237,8 @@ export async function definePlugin(handlers) {
       host.log(`plugin handler error: ${err?.message ?? err}`),
     );
   }
+  // Loop ended (shutdown or EOF): let a standalone process exit.
+  b.close?.();
 }
 
 export default { definePlugin };
