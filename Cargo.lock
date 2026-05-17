@@ -772,6 +772,7 @@ version = "0.0.1"
 dependencies = [
  "rstui-core",
  "rstui-crossterm",
+ "rstui-keymap",
  "rstui-runtime",
  "rstui-widgets",
 ]

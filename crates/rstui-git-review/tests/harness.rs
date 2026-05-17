@@ -400,3 +400,59 @@ fn mouse_divider_drag_resizes_without_panic() {
     assert!(h.snapshot().contains("Commits 2"), "renders after the drag");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn keymap_panel_opens_navigates_rebinds_and_closes() {
+    let mut h = harness(repo_config());
+    // Ctrl+K opens the keymap settings panel (the new Action::Drawer).
+    h.handle(Event::from(KeyEvent::new(
+        KeyCode::Char('k'),
+        rstui_core::KeyModifiers::CONTROL,
+    )));
+    let s = h.snapshot();
+    assert!(
+        s.contains("Keymap") && s.contains("git.split"),
+        "the KeymapView panel renders the live bindings:\n{s}"
+    );
+    // Navigate, then capture-rebind the selected command; the panel owns
+    // these keys (they do not leak to the app underneath).
+    h.handle(ch('j'));
+    h.handle(ch('r')); // arm capture
+    assert!(
+        h.snapshot().contains("press a key"),
+        "the row is armed for capture:\n{}",
+        h.snapshot()
+    );
+    h.handle(key(KeyCode::F(5))); // the new binding
+    assert!(h.is_running(), "rebinding must not quit");
+    // Esc closes the panel (does not quit the app).
+    h.handle(key(KeyCode::Esc));
+    assert!(h.is_running(), "closing the panel must not quit");
+    assert!(
+        h.snapshot().contains("Commits"),
+        "back to the normal review screen:\n{}",
+        h.snapshot()
+    );
+}
+
+#[test]
+fn commands_route_through_the_keymap_and_motions_stay_raw() {
+    let dir = fixture(&["c1", "c2", "c3"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    // A command (`s` → side-by-side) resolves through the keymap…
+    h.handle(ch('s'));
+    assert!(
+        h.snapshot().contains('◫'),
+        "the `s` command toggled side-by-side via the keymap:\n{}",
+        h.snapshot()
+    );
+    // …and a raw motion (`]`/`[`) still steps commits with no keymap entry.
+    h.handle(ch(']'));
+    h.handle(ch('['));
+    assert!(h.is_running(), "motions stay raw and never quit");
+    assert!(h.snapshot().contains("Commits 3"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
