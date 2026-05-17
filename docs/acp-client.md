@@ -93,6 +93,25 @@ pressed key) are canonicalised through the shared
 and a pressed `Ctrl+G` meet in one vocabulary — the *same* engine the
 kitchen sink uses for its shell bindings.
 
+### Customisable keymap
+
+The client's **global commands** — quit (`Ctrl+C`/`Ctrl+Q`/`F10`), the
+help overlay (`F1`), and the keymap settings panel (`Ctrl+K`) — are
+semantic `Action`s resolved through the shared
+[`rstui-keymap`](keymaps.md) engine, *after* the plugin-chord layer (a
+plugin binding still wins) and before the screen dispatch. So they are
+remappable two ways: in-app via `Ctrl+K` — the shared
+[`KeymapView`](widgets/overlays-and-control.md#keymapview) widget (the
+exact one the kitchen sink and git-review use): select a row, `r`/`Enter`
+to capture a new key, `x` to disable; or a `RSTUI_KEYMAP=/path/to/keymap`
+config file (mirrors `RSTUI_THEME`, applied in `run()` — see
+[keymaps.md](keymaps.md)).
+
+The deeply contextual keys — the composer's text entry, the
+modal/permission/ask dialogs, the slash-completion popup — stay raw *by
+design*: ADR 0015 keeps the keymap shell-level, the same boundary the
+kitchen sink and git-review draw for text/motion keys.
+
 ### Reference plugins
 
 Self-contained binaries under `crates/rstui-acp-client/src/bin/`, each a

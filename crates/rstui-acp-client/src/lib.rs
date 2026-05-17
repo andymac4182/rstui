@@ -136,7 +136,14 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         LifecycleOptions::default(),
     )?;
     let mut events = TerminalEvents::new();
-    let app = ChatApp::new(config);
+    let mut app = ChatApp::new(config);
+    // `RSTUI_KEYMAP=<map name|/path/to/keymap>` remaps the global commands
+    // without a rebuild or the in-app panel — the same typo-safe seam as
+    // `RSTUI_THEME` (see docs/keymaps.md). Headless `Harness` tests build
+    // `ChatApp::new` directly, so they are unaffected.
+    if let Ok(km) = std::env::var("RSTUI_KEYMAP") {
+        app = app.with_keymap(&km);
+    }
 
     rstui_runtime::run_async(app, backend, &mut events).await?;
 

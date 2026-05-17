@@ -9,7 +9,7 @@
 
 use rstui_core::{Color, Constraint, Layout, Line, Position, Rect, Span, Style};
 use rstui_runtime::Frame;
-use rstui_widgets::{Block, List, ListItem, Markdown, Paragraph, Wrap};
+use rstui_widgets::{Block, KeymapView, List, ListItem, Markdown, Paragraph, Wrap};
 
 use crate::app::{ChatApp, Role, Screen};
 use crate::plugin::FooterSegment;
@@ -42,6 +42,8 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
         render_log(app, frame, area);
     } else if app.plugins_overlay() {
         render_plugins_overlay(app, frame, area);
+    } else if app.keymap_panel_open() {
+        render_keymap_panel(app, frame, area);
     }
     if let Some(perm) = app.pending_permission() {
         render_permission(perm, frame, area);
@@ -857,6 +859,40 @@ fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         }
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The keymap settings panel — the shared [`KeymapView`] widget (the exact
+/// one the kitchen sink and git-review use), a pure projection of the live
+/// keymap. The reducer owns the cursor + capture FSM; this only draws it.
+fn render_keymap_panel(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let rect = centered(area, area.width.min(60), area.height.clamp(8, 16));
+    let block = Block::bordered().title(" Keymap ");
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let rows = app.keymap_panel_rows();
+    let (map, os, capturing) = app.keymap_panel_status();
+    let footer = if capturing {
+        "● press a key to bind — Esc cancels".to_owned()
+    } else {
+        "↑↓/jk select · ⏎/r rebind · x disable · Esc close".to_owned()
+    };
+    frame.render_widget(
+        KeymapView::new(&rows)
+            .header(format!(" {map} · {os} — global commands, remappable"))
+            .footer(footer)
+            .separator("")
+            .style(t.base())
+            .label_style(t.base())
+            .id_style(t.dim_text())
+            .key_style(t.accent_text())
+            .selected_style(t.selection())
+            .capturing_style(t.accent_text())
+            .disabled_style(t.dim_text()),
+        inner,
+    );
 }
 
 fn render_log(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
