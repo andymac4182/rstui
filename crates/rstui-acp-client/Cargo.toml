@@ -1,0 +1,84 @@
+[package]
+name = "rstui-acp-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# An end-user application binary (+ reference plugin binaries), not a
+# crates.io library — `publish = false` like the other non-library crates
+# (`rstui-bench`, `rstui-smoke`, `xtask`). This also keeps the ACP
+# dependency tree (which raises this crate's effective Rust floor above the
+# framework MSRV) out of the release-packaging surface.
+publish = false
+description = "A full-screen Agent Client Protocol (ACP) chat client TUI built on rstui: registry-aware agent launch, streaming transcript, permission prompts, and a deny-by-default plugin extension layer."
+
+[lints]
+workspace = true
+
+# The full-screen ACP chat client. `src/main.rs` is auto-discovered as the
+# `rstui-acp-client` binary; the reference plugins under `src/bin/` are extra
+# binaries that speak the extension protocol (ADR 0007 separate-process model).
+[lib]
+name = "rstui_acp_client"
+path = "src/lib.rs"
+
+[dependencies]
+# rstui workspace siblings. `version` + `path` per the workspace publishability
+# convention (a bare path dep makes a crate unpublishable); kept equal to the
+# workspace version by the `crate_dep_versions_match_workspace` xtask guard.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
+# The async event loop (`run_async`, `AsyncEventSource`) is opt-in (ADR 0011);
+# ACP is inherently streaming + tokio, so this client needs it. One line with
+# `version` as the *last* key: the xtask release guard's per-line parser reads
+# everything after `version =` up to `}`, so a trailing `features` would be
+# swallowed into the pin (caught by `publishable_crate_internal_deps…`).
+rstui-runtime = { path = "../rstui-runtime", features = ["async"], version = "0.0.1" }
+rstui-crossterm = { path = "../rstui-crossterm", version = "0.0.1" }
+rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# NOTE: the plugin extension layer deliberately does *not* depend on
+# `rstui-plugin-host`. That crate's hooks are security capability-mediation
+# (`SessionStart`/`BeforeCapability`/`SessionEnd`); this client needs a *UI*
+# extension surface (footer/commands/ask-user) the host does not model, so it
+# ships its own separate-process protocol that *reuses ADR 0007's posture*
+# (deny-by-default, fail-closed) rather than that crate's API — keeping the
+# dependency set honest (no unused dep).
+
+# The Agent Client Protocol implementation (symposium-acp). Published on
+# crates.io as `sacp`; newline-delimited JSON-RPC 2.0 over the agent's stdio.
+sacp = "11"
+
+# tokio: `run_async` runs inside an ambient runtime, and the ACP driver owns
+# the agent child process + its stdio. Minimal feature set, all used.
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "sync",
+    "time",
+] }
+# `.compat()`/`.compat_write()` adapt tokio's AsyncRead/Write to the
+# futures-io `sacp::ByteStreams` expects.
+tokio-util = { version = "0.7", default-features = false, features = [
+    "compat",
+] }
+# Async terminal input: crossterm's `EventStream` (the `event-stream` feature),
+# translated through rstui-crossterm's public `from_crossterm`. Pinned to the
+# same 0.29 rstui-crossterm uses so cargo unifies to one crossterm.
+crossterm = { version = "0.29", default-features = false, features = [
+    "event-stream",
+] }
+# `StreamExt::next` for the crossterm `EventStream` (a `futures_core::Stream`).
+futures = { version = "0.3", default-features = false, features = ["std"] }
+# Registry JSON + the plugin extension wire protocol.
+serde = { version = "1", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Headless deterministic UI tests drive the app through rstui's `Harness`.
+rstui-runtime = { path = "../rstui-runtime", version = "0.0.1" }

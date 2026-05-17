@@ -66,8 +66,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # The MSRV promise (ADR 0003) protects the rstui *framework* crates so
+      # they stay broadly compilable. `rstui-acp-client` is an application
+      # binary that integrates the Agent Client Protocol via the `sacp` crate;
+      # `sacp` → `rmcp` → `darling 0.23` raises that crate's *effective* Rust
+      # floor to 1.88 (a transitive pin `sacp` owns; not lowerable without
+      # breaking it). Excluding only this app keeps the 1.85 guarantee exact
+      # and meaningful for every library crate the policy actually covers,
+      # without raising the whole-workspace MSRV (which would churn the pin +
+      # the `ci_msrv_matches_workspace_rust_version` invariant for all streams).
       - name: Check on MSRV
-        run: cargo check --workspace --all-targets --all-features
+        run: cargo check --workspace --exclude rstui-acp-client --all-targets --all-features
 
   # ADR 0003 §7 / Phase 3: the unused-dependency hygiene leg (reinforces
   # "do not add dependencies speculatively"). Separate job — needs an
