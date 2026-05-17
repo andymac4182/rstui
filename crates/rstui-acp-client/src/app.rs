@@ -272,6 +272,12 @@ pub struct ChatApp {
     todos: Vec<TodoEntry>,
     sidebar: SidebarMode,
     tool_calls: Vec<ToolCallInfo>,
+    /// `tool_call.id` → its index in `tool_calls` (APP-4). `tool_calls` is
+    /// strictly append-only (verified: only `push` + in-place patch, never
+    /// removed/reordered/cleared), so the index stays valid for the session.
+    /// `tool_call()` is read once per Tool transcript entry every frame; this
+    /// turns that O(toolEntries × toolCalls) per-frame scan into O(1).
+    tool_index: std::collections::HashMap<String, usize>,
     details: bool,
     panels: BTreeMap<String, (String, Vec<String>)>,
     show_plugins: bool,
@@ -318,6 +324,7 @@ impl ChatApp {
             todos: Vec::new(),
             sidebar: SidebarMode::Auto,
             tool_calls: Vec::new(),
+            tool_index: std::collections::HashMap::new(),
             details: true,
             panels: BTreeMap::new(),
             show_plugins: false,
@@ -432,7 +439,7 @@ impl ChatApp {
     /// Looks up a tool call by its ACP id (the transcript anchor key).
     #[must_use]
     pub fn tool_call(&self, id: &str) -> Option<&ToolCallInfo> {
-        self.tool_calls.iter().find(|c| c.id == id)
+        self.tool_index.get(id).map(|&i| &self.tool_calls[i])
     }
     /// Whether completed tool calls show their output body (`/details`).
     #[must_use]
@@ -1401,10 +1408,11 @@ impl ChatApp {
             AcpEvent::AgentText(t) => self.append_agent(Role::Agent, &t),
             AcpEvent::Thought(t) => self.append_agent(Role::Thought, &t),
             AcpEvent::ToolCall(info) => {
-                if let Some(slot) = self.tool_calls.iter_mut().find(|c| c.id == info.id) {
-                    *slot = info;
+                if let Some(&i) = self.tool_index.get(&info.id) {
+                    self.tool_calls[i] = info;
                 } else {
                     let id = info.id.clone();
+                    self.tool_index.insert(id.clone(), self.tool_calls.len());
                     self.tool_calls.push(info);
                     self.close_open_entry();
                     // A transcript anchor keeps the tool card in stream order;
@@ -1418,7 +1426,8 @@ impl ChatApp {
                 }
             }
             AcpEvent::ToolCallUpdate(patch) => {
-                if let Some(c) = self.tool_calls.iter_mut().find(|c| c.id == patch.id) {
+                if let Some(i) = self.tool_index.get(&patch.id).copied() {
+                    let c = &mut self.tool_calls[i];
                     if let Some(v) = patch.title {
                         c.title = v;
                     }
@@ -1437,6 +1446,7 @@ impl ChatApp {
                 } else {
                     // Update for an unseen call: synthesize a minimal entry.
                     let id = patch.id.clone();
+                    self.tool_index.insert(id.clone(), self.tool_calls.len());
                     self.tool_calls.push(ToolCallInfo {
                         id: patch.id,
                         title: patch.title.unwrap_or_else(|| "tool".to_owned()),
