@@ -351,4 +351,141 @@ mod tests {
             );
         }
     }
+
+    /// Every special key rstui models, paired with its crossterm source. This
+    /// is the full set an input field navigates by — Home/End/arrows/Page/
+    /// Delete — so the matrix below proves each survives the *real* terminal
+    /// translation, not just the in-memory `TextEdit` model.
+    fn special_key_pairs() -> [(CtKeyCode, KeyCode); 16] {
+        [
+            (CtKeyCode::Backspace, KeyCode::Backspace),
+            (CtKeyCode::Enter, KeyCode::Enter),
+            (CtKeyCode::Left, KeyCode::Left),
+            (CtKeyCode::Right, KeyCode::Right),
+            (CtKeyCode::Up, KeyCode::Up),
+            (CtKeyCode::Down, KeyCode::Down),
+            (CtKeyCode::Home, KeyCode::Home),
+            (CtKeyCode::End, KeyCode::End),
+            (CtKeyCode::PageUp, KeyCode::PageUp),
+            (CtKeyCode::PageDown, KeyCode::PageDown),
+            (CtKeyCode::Tab, KeyCode::Tab),
+            (CtKeyCode::BackTab, KeyCode::BackTab),
+            (CtKeyCode::Delete, KeyCode::Delete),
+            (CtKeyCode::Insert, KeyCode::Insert),
+            (CtKeyCode::Esc, KeyCode::Esc),
+            (CtKeyCode::F(5), KeyCode::F(5)),
+        ]
+    }
+
+    /// Every modifier rstui models, paired with its crossterm source, plus the
+    /// real-world combinations a text field sees (Ctrl+Shift for word-select,
+    /// Ctrl+Alt, Alt+Shift). HYPER/META are unmodeled and asserted dropped
+    /// elsewhere; here every entry must round-trip exactly.
+    fn modifier_pairs() -> [(CtKeyModifiers, KeyModifiers); 9] {
+        [
+            (CtKeyModifiers::NONE, KeyModifiers::NONE),
+            (CtKeyModifiers::SHIFT, KeyModifiers::SHIFT),
+            (CtKeyModifiers::CONTROL, KeyModifiers::CONTROL),
+            (CtKeyModifiers::ALT, KeyModifiers::ALT),
+            (CtKeyModifiers::SUPER, KeyModifiers::SUPER),
+            (
+                CtKeyModifiers::CONTROL | CtKeyModifiers::SHIFT,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            (
+                CtKeyModifiers::CONTROL | CtKeyModifiers::ALT,
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+            (
+                CtKeyModifiers::ALT | CtKeyModifiers::SHIFT,
+                KeyModifiers::ALT | KeyModifiers::SHIFT,
+            ),
+            (
+                CtKeyModifiers::CONTROL | CtKeyModifiers::ALT | CtKeyModifiers::SHIFT,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_special_key_maps_under_every_modeled_modifier() {
+        // 16 navigation/edit keys × 9 modifier sets = 144 combinations. Each
+        // must keep its code AND carry exactly the modeled modifier bits — the
+        // end-to-end guarantee that "Home/End/arrows/Delete + Ctrl/Alt/Shift"
+        // reach an input unchanged from a real terminal.
+        for (ct_code, want_code) in special_key_pairs() {
+            for (ct_mods, want_mods) in modifier_pairs() {
+                let native = CtEvent::Key(CtKeyEvent::new(ct_code, ct_mods));
+                let key = from_crossterm(native)
+                    .unwrap_or_else(|| panic!("{ct_code:?}+{ct_mods:?} must map"))
+                    .as_key()
+                    .expect("a Key event");
+                assert_eq!(key.code, want_code, "code for {ct_code:?}+{ct_mods:?}");
+                assert_eq!(
+                    key.modifiers, want_mods,
+                    "modifiers for {ct_code:?}+{ct_mods:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn char_keys_carry_every_modeled_modifier() {
+        // Typed characters with each modifier — Ctrl+A (home), Ctrl+E (end),
+        // Alt+Backspace (word delete), etc. are how editors bind shortcuts, so
+        // the modifier must survive on Char too.
+        for (ct_mods, want_mods) in modifier_pairs() {
+            let native = CtEvent::Key(CtKeyEvent::new(CtKeyCode::Char('a'), ct_mods));
+            let key = from_crossterm(native).unwrap().as_key().unwrap();
+            assert_eq!(key.code, KeyCode::Char('a'));
+            assert_eq!(key.modifiers, want_mods, "Char('a')+{ct_mods:?}");
+        }
+    }
+
+    #[test]
+    fn navigation_keys_round_trip_press_repeat_and_release_kinds() {
+        // Holding an arrow key autorepeats; releasing it emits a Release. An
+        // input must see the right kind on Home/End/arrows so key-repeat
+        // cursor motion and press-only bindings both behave.
+        use crossterm::event::KeyEventState;
+
+        for code in [
+            CtKeyCode::Home,
+            CtKeyCode::End,
+            CtKeyCode::Left,
+            CtKeyCode::Right,
+            CtKeyCode::Up,
+            CtKeyCode::Down,
+        ] {
+            for (native_kind, want_kind) in [
+                (CtKeyEventKind::Press, KeyEventKind::Press),
+                (CtKeyEventKind::Repeat, KeyEventKind::Repeat),
+                (CtKeyEventKind::Release, KeyEventKind::Release),
+            ] {
+                let native = CtEvent::Key(CtKeyEvent {
+                    code,
+                    modifiers: CtKeyModifiers::CONTROL,
+                    kind: native_kind,
+                    state: KeyEventState::NONE,
+                });
+                let key = from_crossterm(native).unwrap().as_key().unwrap();
+                assert_eq!(key.kind, want_kind, "{code:?} {native_kind:?}");
+                assert!(key.modifiers.contains(KeyModifiers::CONTROL));
+                // `as_key_press` is the input path: Press/Repeat are presses,
+                // Release is not (so a binding does not fire twice).
+                let native = CtEvent::Key(CtKeyEvent {
+                    code,
+                    modifiers: CtKeyModifiers::NONE,
+                    kind: native_kind,
+                    state: KeyEventState::NONE,
+                });
+                let translated = from_crossterm(native).unwrap();
+                assert_eq!(
+                    translated.as_key_press().is_some(),
+                    want_kind != KeyEventKind::Release,
+                    "{code:?} {native_kind:?} press-ness",
+                );
+            }
+        }
+    }
 }
