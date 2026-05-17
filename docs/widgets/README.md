@@ -31,7 +31,7 @@ caller-owned state it projects — this is the part that matters most), the
 |--------|---------|-----------|
 | **Core set** | Block, Paragraph, List, Tabs, Gauge, Scrollbar, Spinner, Table, Checkbox, Button, Radio, Input, Modal, StatusBar, Toast, Tree, Select, Editor | [core-set.md](core-set.md) |
 | **Rich rendering** | Markdown, Link, Diff, Mermaid, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
-| **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider | [forms-and-data.md](forms-and-data.md) |
+| **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider, DataTable | [forms-and-data.md](forms-and-data.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
 | **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, Flow | [overlays-and-control.md](overlays-and-control.md) |
 | **Observability** | LineChart, Heatmap, Histogram, StatPanel, FlameGraph, TraceWaterfall, LogStream | [observability.md](observability.md) |
@@ -53,6 +53,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Card](navigation-and-layout.md#card) | nav/layout | `card_demo` |
 | [Checkbox](core-set.md#checkbox) | core | `checkbox_demo` |
 | [CommandPalette](navigation-and-layout.md#commandpalette) | nav/layout | `command_palette_demo` |
+| [DataTable](forms-and-data.md#datatable) | forms/data | `data_table_demo` |
 | [DatePicker](forms-and-data.md#datepicker) | forms/data | `date_picker_demo` |
 | [DescriptionList](forms-and-data.md#descriptionlist) | forms/data | `description_list_demo` |
 | [Diff](rich-rendering.md#diff) | rich | `diff_demo` |

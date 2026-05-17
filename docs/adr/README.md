@@ -43,3 +43,4 @@ MADR-style shape:
 | [0011](0011-async-event-loop.md) | Async event loop (`tokio::select!`) | Accepted |
 | [0012](0012-widget-composition-and-layout-model.md) | Widget composition and layout model (immediate-mode, pure projection) | Accepted |
 | [0013](0013-terminal-emulator-compatibility.md) | Terminal-emulator compatibility & control-code posture | Accepted |
+| [0014](0014-comprehensive-interactive-datatable.md) | Comprehensive interactive DataTable (reducer-run pipeline, pure projection, borrowed-`TextEdit` editing) | Accepted |

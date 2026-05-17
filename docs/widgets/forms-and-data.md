@@ -226,6 +226,42 @@ Divider::new()
 
 ---
 
+## DataTable
+
+![DataTable demo](media/data_table_demo.gif)
+
+The comprehensive interactive grid: sortable/filterable/groupable,
+mouse-hit-testable, virtualized for fast scroll, with optional per-column
+in-cell editing — the spreadsheet pane to [`Table`](core-set.md#table)'s
+aligned rows.
+
+- **Companion types:** `DataColumn`, `DataRow`, `DataTableState`,
+  `VisualRow` (`Group`/`Data`), `DataTableHit` (`Header`/`Group`/`Cell`),
+  `SortDirection` (`Ascending`/`Descending`)
+- **State model:** pure projection of caller-owned `[DataColumn]` /
+  `[DataRow]` / a flattened `[VisualRow]` (from `data_table::project`, run
+  by the reducer once per data/spec change) / `DataTableState` (composes
+  [`ScrollState`](../core-reference.md#scrollstate)) / an optional editing
+  [`TextEdit`](../core-reference.md#textedit). The reducer runs the
+  filter→sort→group pipeline and owns the edit; change events surface as
+  pure `hit`/`cell_rect` accessors, never callbacks ([ADR
+  0014](../adr/0014-comprehensive-interactive-datatable.md)).
+
+```rust
+DataTable::new(&[DataColumn], &[DataRow], &[VisualRow], &DataTableState)
+.edit(&TextEdit) .block(Block) .column_spacing(u16) .show_header(bool)
+.style(Style) .header_style(Style) .group_style(Style)
+.highlight_style(Style) .cursor_style(Style)
+.hit(area: Rect, pos: Position) -> Option<DataTableHit>
+.cell_rect(area: Rect, source: usize, column: usize) -> Option<Rect>
+// reducer-side pipeline:
+data_table::project(&[DataColumn], &[DataRow], &DataTableState) -> Vec<VisualRow>
+```
+
+**Demo:** `cargo run -p rstui-widgets --example data_table_demo`
+
+---
+
 Next: [Navigation & layout](navigation-and-layout.md) ·
 [Overlays & control](overlays-and-control.md) · [Core set](core-set.md) ·
 [Rich rendering](rich-rendering.md)

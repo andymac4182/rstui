@@ -39,6 +39,14 @@
 //!   fixed header and single-row selection, the 2D generalization of [`List`]
 //!   that reuses the [`Constraint`](rstui_core::Constraint) layout divider for
 //!   column widths.
+//! - [`data_table`]: [`DataTable`] — the comprehensive interactive grid:
+//!   sortable/filterable/groupable, mouse-hit-testable, virtualized for fast
+//!   scroll, with optional per-column in-cell editing. A pure projection of a
+//!   caller-owned [`DataTableState`] (composing
+//!   [`ScrollState`](rstui_core::ScrollState)) and a reducer-run
+//!   [`project`](data_table::project) pipeline — the spreadsheet pane to
+//!   [`Table`]'s aligned rows; change events surface as pure
+//!   [`hit`](DataTable::hit) accessors, never callbacks (ADR 0012).
 //! - [`checkbox`]: [`Checkbox`] — a single-line labelled boolean control, the
 //!   first of the interactive form-control family and the first widget to
 //!   model a focus visual; a pure projection of caller-owned `checked` and
@@ -255,6 +263,7 @@ pub mod calendar;
 pub mod card;
 pub mod checkbox;
 pub mod command_palette;
+pub mod data_table;
 pub mod date_picker;
 pub mod description_list;
 pub mod diff;
@@ -317,6 +326,9 @@ pub use calendar::Calendar;
 pub use card::Card;
 pub use checkbox::Checkbox;
 pub use command_palette::CommandPalette;
+pub use data_table::{
+    DataColumn, DataRow, DataTable, DataTableHit, DataTableState, SortDirection, VisualRow,
+};
 pub use description_list::{DescriptionList, DescriptionRow};
 pub use diff::{Diff, DiffLayout, DiffTheme};
 pub use divider::{Divider, DividerOrientation};

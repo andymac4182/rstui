@@ -129,5 +129,6 @@ you are changing.
 | [0011](adr/0011-async-event-loop.md) | The async event loop (`run_async`, `tokio::select!`) |
 | [0012](adr/0012-widget-composition-and-layout-model.md) | The immediate-mode pure-projection composition model |
 | [0013](adr/0013-terminal-emulator-compatibility.md) | Terminal-emulator compatibility & control-code posture |
+| [0014](adr/0014-comprehensive-interactive-datatable.md) | Comprehensive interactive DataTable: reducer-run pipeline, pure projection, borrowed-`TextEdit` editing |
 
 See [`docs/adr/README.md`](adr/README.md) for the ADR format and statuses.
