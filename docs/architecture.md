@@ -128,5 +128,6 @@ you are changing.
 | [0010](adr/0010-production-ci-and-release-readiness-posture.md) | CI + release-readiness posture (MSRV, supply chain) |
 | [0011](adr/0011-async-event-loop.md) | The async event loop (`run_async`, `tokio::select!`) |
 | [0012](adr/0012-widget-composition-and-layout-model.md) | The immediate-mode pure-projection composition model |
+| [0013](adr/0013-terminal-emulator-compatibility.md) | Terminal-emulator compatibility & control-code posture |
 
 See [`docs/adr/README.md`](adr/README.md) for the ADR format and statuses.

@@ -41,3 +41,5 @@ MADR-style shape:
 | [0009](0009-optional-async-runtime-policy.md) | Optional async-runtime policy (feature-gated tokio) | Superseded by [0011](0011-async-event-loop.md) |
 | [0010](0010-production-ci-and-release-readiness-posture.md) | Production CI and release-readiness posture | Accepted |
 | [0011](0011-async-event-loop.md) | Async event loop (`tokio::select!`) | Accepted |
+| [0012](0012-widget-composition-and-layout-model.md) | Widget composition and layout model (immediate-mode, pure projection) | Accepted |
+| [0013](0013-terminal-emulator-compatibility.md) | Terminal-emulator compatibility & control-code posture | Accepted |
