@@ -60,6 +60,39 @@ where
     serve_over(StdioTransport::new(), handler);
 }
 
+/// Runs a plugin as a WebSocket server: binds `addr`, accepts one client,
+/// and dispatches over a [`WsTransport`](crate::ws::WsTransport) — the same
+/// JSON-RPC, a different transport (the goal's "stdio or websockets").
+///
+/// # Errors
+///
+/// Bind/accept/handshake failures.
+pub fn serve_ws<F>(addr: impl std::net::ToSocketAddrs, handler: F) -> std::io::Result<()>
+where
+    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
+{
+    let transport = crate::ws::WsTransport::accept(addr)?;
+    serve_over(transport, handler);
+    Ok(())
+}
+
+/// [`serve_ws`] for a structured [`Plugin`].
+///
+/// # Errors
+///
+/// Bind/accept/handshake failures.
+pub fn serve_plugin_ws<P: Plugin>(
+    addr: impl std::net::ToSocketAddrs,
+    mut plugin: P,
+) -> std::io::Result<()> {
+    let transport = crate::ws::WsTransport::accept(addr)?;
+    serve_over(transport, move |event, emit| {
+        let mut host = Host { emit };
+        dispatch(&mut plugin, event, &mut host);
+    });
+    Ok(())
+}
+
 /// An ergonomic emit handle passed to [`Plugin`] callbacks.
 pub struct Host<'a> {
     emit: &'a mut dyn FnMut(PluginAction),
@@ -169,27 +202,31 @@ pub trait Plugin {
 pub fn serve_plugin<P: Plugin>(mut plugin: P) {
     serve(move |event, emit| {
         let mut host = Host { emit };
-        match event {
-            HostEvent::Init { client, cwd, .. } => plugin.initialize(&client, &cwd, &mut host),
-            HostEvent::SessionStart { agent } => plugin.on_session_start(&agent, &mut host),
-            HostEvent::UserPrompt { text } => plugin.on_prompt(&text, &mut host),
-            HostEvent::TurnEnded { stop_reason } => {
-                plugin.on_turn_ended(&stop_reason, &mut host);
-            }
-            HostEvent::Command { name, args } => plugin.on_command(&name, &args, &mut host),
-            HostEvent::ModalResponse {
-                id,
-                button,
-                cancelled,
-            } => plugin.on_modal_response(id, &button, cancelled, &mut host),
-            HostEvent::AskResponse {
-                id,
-                selections,
-                text,
-                cancelled,
-            } => plugin.on_ask_response(id, &selections, &text, cancelled, &mut host),
-            HostEvent::Refresh => plugin.on_tick(&mut host),
-            HostEvent::Shutdown => plugin.on_shutdown(&mut host),
-        }
+        dispatch(&mut plugin, event, &mut host);
     });
+}
+
+/// Routes one [`HostEvent`] to the matching [`Plugin`] callback. Shared by
+/// every `serve_plugin*` entry so the transports stay interchangeable.
+fn dispatch<P: Plugin>(plugin: &mut P, event: HostEvent, host: &mut Host<'_>) {
+    match event {
+        HostEvent::Init { client, cwd, .. } => plugin.initialize(&client, &cwd, host),
+        HostEvent::SessionStart { agent } => plugin.on_session_start(&agent, host),
+        HostEvent::UserPrompt { text } => plugin.on_prompt(&text, host),
+        HostEvent::TurnEnded { stop_reason } => plugin.on_turn_ended(&stop_reason, host),
+        HostEvent::Command { name, args } => plugin.on_command(&name, &args, host),
+        HostEvent::ModalResponse {
+            id,
+            button,
+            cancelled,
+        } => plugin.on_modal_response(id, &button, cancelled, host),
+        HostEvent::AskResponse {
+            id,
+            selections,
+            text,
+            cancelled,
+        } => plugin.on_ask_response(id, &selections, &text, cancelled, host),
+        HostEvent::Refresh => plugin.on_tick(host),
+        HostEvent::Shutdown => plugin.on_shutdown(host),
+    }
 }
