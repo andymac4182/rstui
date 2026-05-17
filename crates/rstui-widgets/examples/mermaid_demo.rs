@@ -157,7 +157,10 @@ fn main() {
     // An unrecognised header still degrades to the long-standing placeholder,
     // never a panic — the backward-compatible floor.
     let unknown = frame("notADiagram\n  x", 40, 1);
-    assert!(unknown.contains("missing graph header"), "lost the legacy floor");
+    assert!(
+        unknown.contains("missing graph header"),
+        "lost the legacy floor"
+    );
     println!(
         "✓ all {} Mermaid diagram types render deterministically; unknown → placeholder\n",
         DIAGRAMS.len()
