@@ -151,6 +151,89 @@ impl Pagination {
     }
 }
 
+/// Stamps one single-glyph token at `*x` (a leading base-filled gap cell
+/// first when `gap`), clipped at `right`; returns `false` once the right
+/// edge is reached so the caller stops. No allocation (PA-1).
+fn stamp_tok(
+    buf: &mut Buffer,
+    x: &mut u16,
+    y: u16,
+    right: u16,
+    gap: bool,
+    ch: char,
+    style: Style,
+) -> bool {
+    if gap {
+        if *x >= right {
+            return false;
+        }
+        *x = x.saturating_add(1);
+    }
+    if *x >= right {
+        return false;
+    }
+    buf.set_cell(Position::new(*x, y), ch, style);
+    *x = x.saturating_add(1);
+    true
+}
+
+/// Stamps a 1-based page number, optionally `[bracketed]` for the current
+/// page, from a stack digit buffer — no `to_string`/`format!` per page per
+/// frame (PA-1). Same gap/clip contract as [`stamp_tok`]; `usize` is at
+/// most 20 decimal digits.
+#[allow(clippy::too_many_arguments)]
+fn stamp_page(
+    buf: &mut Buffer,
+    x: &mut u16,
+    y: u16,
+    right: u16,
+    gap: bool,
+    n: usize,
+    bracket: bool,
+    style: Style,
+) -> bool {
+    if gap {
+        if *x >= right {
+            return false;
+        }
+        *x = x.saturating_add(1);
+    }
+    if bracket {
+        if *x >= right {
+            return false;
+        }
+        buf.set_cell(Position::new(*x, y), '[', style);
+        *x = x.saturating_add(1);
+    }
+    let mut digits = [0u8; 20];
+    let mut k = 0;
+    let mut v = n;
+    loop {
+        digits[k] = b'0' + (v % 10) as u8;
+        k += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    while k > 0 {
+        k -= 1;
+        if *x >= right {
+            return false;
+        }
+        buf.set_cell(Position::new(*x, y), digits[k] as char, style);
+        *x = x.saturating_add(1);
+    }
+    if bracket {
+        if *x >= right {
+            return false;
+        }
+        buf.set_cell(Position::new(*x, y), ']', style);
+        *x = x.saturating_add(1);
+    }
+    true
+}
+
 impl Widget for Pagination {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.is_empty() {
@@ -172,44 +255,34 @@ impl Widget for Pagination {
         let ctrl = self.style.patch(self.control_style);
         let current = self.style.patch(self.current_style);
 
-        // Build the token stream: `‹`, the windowed page numbers with `…`
-        // standing in for each skipped run, then `›`.
-        let mut tokens: Vec<(String, Style)> = vec![(PREV.to_string(), ctrl)];
+        // Stamp `‹`, the windowed page numbers (`…` for each skipped run,
+        // the current page bracketed), then `›`, left to right with one
+        // base-filled blank between tokens, clipped hard at the right edge.
+        // Stamped directly — no per-frame token `Vec`/`String`s (PA-1). The
+        // stamp loop is render's tail, so the old `break 'render` is a
+        // `return`.
+        let mut x = left;
+        if !stamp_tok(buf, &mut x, y, right, false, PREV, ctrl) {
+            return;
+        }
         let mut prev: Option<usize> = None;
         for idx in self.shown(page) {
             if let Some(p) = prev {
-                if idx > p + 1 {
-                    tokens.push((ELLIPSIS.to_string(), ctrl));
+                if idx > p + 1 && !stamp_tok(buf, &mut x, y, right, true, ELLIPSIS, ctrl) {
+                    return;
                 }
             }
-            let label = (idx + 1).to_string();
-            if idx == page {
-                tokens.push((format!("[{label}]"), current));
+            let (style, bracket) = if idx == page {
+                (current, true)
             } else {
-                tokens.push((label, self.style));
+                (self.style, false)
+            };
+            if !stamp_page(buf, &mut x, y, right, true, idx + 1, bracket, style) {
+                return;
             }
             prev = Some(idx);
         }
-        tokens.push((NEXT.to_string(), ctrl));
-
-        // Stamp the tokens left to right, one base-filled blank between each,
-        // clipped hard at the right edge.
-        let mut x = left;
-        'render: for (i, (text, style)) in tokens.iter().enumerate() {
-            if i > 0 {
-                if x >= right {
-                    break 'render;
-                }
-                x = x.saturating_add(1);
-            }
-            for ch in text.chars() {
-                if x >= right {
-                    break 'render;
-                }
-                buf.set_cell(Position::new(x, y), ch, *style);
-                x = x.saturating_add(1);
-            }
-        }
+        let _ = stamp_tok(buf, &mut x, y, right, true, NEXT, ctrl);
     }
 }
 
