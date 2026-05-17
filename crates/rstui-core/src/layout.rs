@@ -314,11 +314,41 @@ impl Layout {
     /// The rectangles are contiguous along the layout direction (with
     /// [`spacing`](Self::spacing) gaps), span the full cross-axis, and are
     /// entirely contained in `area` after margins.
+    ///
+    /// This allocates a fresh `Vec` every call. A widget that splits the same
+    /// container every frame should keep one `Vec<Rect>` and call
+    /// [`split_into`](Self::split_into) instead, which reuses that buffer.
     #[must_use]
     pub fn split(&self, area: Rect) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        self.split_into(area, &mut rects);
+        rects
+    }
+
+    /// Like [`split`](Self::split) but writes the segments into a caller-owned
+    /// `out`, clearing it first.
+    ///
+    /// `out` is `clear`ed (length reset to 0, capacity kept) and then refilled,
+    /// so a caller that keeps one `Vec<Rect>` across frames and passes it here
+    /// every frame performs **no heap allocation** once the buffer has grown to
+    /// the segment count. This is the per-frame path the layout-heavy widgets
+    /// (table, grid, form, flow, split-pane) take; [`split`](Self::split) is
+    /// the convenience wrapper for one-off callers and remains byte-identical.
+    pub fn split_into(&self, area: Rect, out: &mut Vec<Rect>) {
+        out.clear();
+        out.reserve(self.constraints.len());
+        self.for_each_rect(area, |rect| out.push(rect));
+    }
+
+    /// Solves the layout and invokes `emit` once per segment, in order. The
+    /// single owner of the size→geometry math: [`split_into`](Self::split_into)
+    /// pushes into a `Vec`, [`areas`](Self::areas) writes into a stack array,
+    /// and neither path allocates here (the scratch is stack-backed for the
+    /// small-N common case via `ScratchBuf`).
+    fn for_each_rect(&self, area: Rect, mut emit: impl FnMut(Rect)) {
         let n = self.constraints.len();
         if n == 0 {
-            return Vec::new();
+            return;
         }
 
         let inner = area.inner(Margin::new(self.horizontal_margin, self.vertical_margin));
@@ -326,25 +356,28 @@ impl Layout {
             Direction::Horizontal => inner.width,
             Direction::Vertical => inner.height,
         };
-        let sizes = solve(span, &self.constraints, self.spacing);
 
-        let mut rects = Vec::with_capacity(n);
+        // Scratch-free for the small-N common case (layouts are 2–5
+        // constraints): `solve` borrows a stack array sliced to `n` and only
+        // touches the heap when `n` exceeds the inline capacity.
+        let mut sizes = ScratchBuf::new(n);
+        solve(span, &self.constraints, self.spacing, sizes.as_mut_slice());
+
         let mut cursor = match self.direction {
             Direction::Horizontal => inner.x,
             Direction::Vertical => inner.y,
         };
-        for (i, &size) in sizes.iter().enumerate() {
+        for (i, &size) in sizes.as_slice().iter().enumerate() {
             let rect = match self.direction {
                 Direction::Horizontal => Rect::new(cursor, inner.y, size, inner.height),
                 Direction::Vertical => Rect::new(inner.x, cursor, inner.width, size),
             };
-            rects.push(rect);
+            emit(rect);
             cursor = cursor.saturating_add(size);
             if i + 1 < n {
                 cursor = cursor.saturating_add(self.spacing);
             }
         }
-        rects
     }
 
     /// Like [`split`](Self::split) but returns a fixed-size array, so callers
@@ -355,15 +388,17 @@ impl Layout {
     /// Panics if `N` does not equal the number of constraints.
     #[must_use]
     pub fn areas<const N: usize>(&self, area: Rect) -> [Rect; N] {
-        let rects = self.split(area);
+        let count = self.constraints.len();
         assert_eq!(
-            rects.len(),
-            N,
-            "Layout::areas::<{N}> called with {} constraint(s)",
-            rects.len(),
+            count, N,
+            "Layout::areas::<{N}> called with {count} constraint(s)",
         );
         let mut out = [Rect::ZERO; N];
-        out.copy_from_slice(&rects);
+        let mut i = 0;
+        self.for_each_rect(area, |rect| {
+            out[i] = rect;
+            i += 1;
+        });
         out
     }
 }
@@ -374,6 +409,70 @@ fn div_round(num: u64, den: u64) -> u64 {
     (num + den / 2) / den
 }
 
+/// Inline capacity for [`solve`]'s per-segment scratch. Real layouts are 2–5
+/// constraints (header/body/footer, sidebar/content/aside, a form's rows); 16
+/// covers every layout in the codebase with zero heap traffic and keeps the
+/// stack frame small (a `[u64; 16]` is 128 B). Larger layouts fall back to a
+/// one-off `Vec`, which is correct but no longer the hot path.
+const SCRATCH_INLINE: usize = 16;
+
+/// A length-`n` scratch slice that lives on the stack while `n <=
+/// SCRATCH_INLINE` and spills to a single heap `Vec` only for the rare large
+/// layout. `T: Copy + Default` so the inline array can be value-initialized
+/// with no `unsafe` and no per-element drop. Used both for [`solve`]'s
+/// per-segment work arrays and for the size output buffer.
+enum ScratchBuf<T: Copy + Default> {
+    /// Stack-backed: a fixed array plus the live length (`<= SCRATCH_INLINE`).
+    Inline {
+        data: [T; SCRATCH_INLINE],
+        len: usize,
+    },
+    /// Heap fallback for `n > SCRATCH_INLINE`; a single allocation.
+    Spill(Vec<T>),
+}
+
+impl<T: Copy + Default> ScratchBuf<T> {
+    /// A zero-initialized buffer of length `n` (stack if it fits inline).
+    fn new(n: usize) -> Self {
+        if n <= SCRATCH_INLINE {
+            Self::Inline {
+                data: [T::default(); SCRATCH_INLINE],
+                len: n,
+            }
+        } else {
+            Self::Spill(vec![T::default(); n])
+        }
+    }
+
+    /// A buffer of length `n` with every element set to `value`.
+    fn filled(n: usize, value: T) -> Self {
+        if n <= SCRATCH_INLINE {
+            Self::Inline {
+                data: [value; SCRATCH_INLINE],
+                len: n,
+            }
+        } else {
+            Self::Spill(vec![value; n])
+        }
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[T] {
+        match self {
+            Self::Inline { data, len } => &data[..*len],
+            Self::Spill(v) => v.as_slice(),
+        }
+    }
+
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        match self {
+            Self::Inline { data, len } => &mut data[..*len],
+            Self::Spill(v) => v.as_mut_slice(),
+        }
+    }
+}
+
 /// Per-axis core: resolves `constraints` against a `total` span (including
 /// `spacing` between segments) into one size per constraint, always summing to
 /// the span exactly. See [`Layout`] for the documented algorithm.
@@ -382,21 +481,33 @@ fn div_round(num: u64, den: u64) -> u64 {
 /// flexible growth (`Fill`/`Min`/`Max`), so the canonical
 /// `[Percentage(100), Min(20)]` reserve-the-sidebar idiom resolves the way
 /// ratatui's solver does even though this is plain integer arithmetic.
-fn solve(total: u16, constraints: &[Constraint], spacing: u16) -> Vec<u16> {
+fn solve(total: u16, constraints: &[Constraint], spacing: u16, out: &mut [u16]) {
     let n = constraints.len();
+    debug_assert_eq!(
+        out.len(),
+        n,
+        "solve out buffer must be one slot per constraint"
+    );
     let gaps = u64::from(spacing) * (n as u64 - 1);
     let available = u64::from(total).saturating_sub(gaps);
     if available == 0 {
-        return vec![0u16; n];
+        out.fill(0);
+        return;
     }
-    let mut size = vec![0u64; n];
+    let mut size_buf = ScratchBuf::<u64>::new(n);
+    let size = size_buf.as_mut_slice();
 
     // Per-segment: a hard floor (Min), a fixed request
     // (Length/Percentage/Ratio), a flex weight, and an upper ceiling.
-    let mut floor = vec![0u64; n];
-    let mut req = vec![0u64; n];
-    let mut weight = vec![0u64; n];
-    let mut ceil = vec![u64::MAX; n];
+    // Stack-backed for the small-N common case; see `ScratchBuf`.
+    let mut floor_buf = ScratchBuf::<u64>::new(n);
+    let mut req_buf = ScratchBuf::<u64>::new(n);
+    let mut weight_buf = ScratchBuf::<u64>::new(n);
+    let mut ceil_buf = ScratchBuf::<u64>::filled(n, u64::MAX);
+    let floor = floor_buf.as_mut_slice();
+    let req = req_buf.as_mut_slice();
+    let weight = weight_buf.as_mut_slice();
+    let ceil = ceil_buf.as_mut_slice();
     for (i, c) in constraints.iter().enumerate() {
         match *c {
             Constraint::Length(v) => req[i] = u64::from(v),
@@ -427,7 +538,7 @@ fn solve(total: u16, constraints: &[Constraint], spacing: u16) -> Vec<u16> {
             size[i] = div_round(floor[i] * available, floor_sum);
         }
     } else {
-        size.copy_from_slice(&floor);
+        size.copy_from_slice(floor);
         let budget = available - floor_sum;
         let req_sum: u64 = req.iter().sum();
         if req_sum > budget {
@@ -451,7 +562,8 @@ fn solve(total: u16, constraints: &[Constraint], spacing: u16) -> Vec<u16> {
             } else {
                 // Water-fill the leftover by weight, freezing any Max segment
                 // that reaches its ceiling and redistributing the excess.
-                let mut frozen = vec![false; n];
+                let mut frozen_buf = ScratchBuf::<bool>::new(n);
+                let frozen = frozen_buf.as_mut_slice();
                 while leftover > 0 {
                     let active: u64 = (0..n)
                         .filter(|&i| weight[i] > 0 && !frozen[i])
@@ -504,9 +616,9 @@ fn solve(total: u16, constraints: &[Constraint], spacing: u16) -> Vec<u16> {
         std::cmp::Ordering::Equal => {}
     }
 
-    size.into_iter()
-        .map(|s| s.min(u64::from(u16::MAX)) as u16)
-        .collect()
+    for (slot, &s) in out.iter_mut().zip(size.iter()) {
+        *slot = s.min(u64::from(u16::MAX)) as u16;
+    }
 }
 
 #[cfg(test)]
@@ -518,6 +630,11 @@ mod tests {
     fn assert_tiles(layout: &Layout, area: Rect) -> Vec<Rect> {
         let rects = layout.split(area);
         assert_eq!(rects.len(), layout.constraints.len());
+        // `split_into` must be byte-identical to `split` for every case the
+        // suite exercises (and `split` is now a wrapper over it).
+        let mut reused = vec![Rect::new(9, 9, 9, 9)]; // pre-dirtied buffer
+        layout.split_into(area, &mut reused);
+        assert_eq!(reused, rects, "split_into != split");
         let inner = area.inner(Margin::new(
             layout.horizontal_margin,
             layout.vertical_margin,
@@ -726,5 +843,61 @@ mod tests {
         assert_eq!(Direction::default(), Direction::Vertical);
         assert_eq!(Direction::Horizontal.opposite(), Direction::Vertical);
         assert_eq!(Direction::Vertical.opposite(), Direction::Horizontal);
+    }
+
+    #[test]
+    fn split_into_clears_a_dirty_buffer_and_matches_split() {
+        let layout = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ]);
+        let area = Rect::new(0, 0, 40, 10);
+        // A buffer that already holds stale, longer content must be replaced
+        // wholesale — not appended to, not partially overwritten.
+        let mut buf = vec![Rect::new(7, 7, 7, 7); 9];
+        layout.split_into(area, &mut buf);
+        assert_eq!(buf, layout.split(area));
+        assert_eq!(buf.len(), 3);
+    }
+
+    #[test]
+    fn split_into_reuses_capacity_without_reallocating() {
+        // The whole point of the API: a widget that keeps one buffer across
+        // frames must not hit the allocator once it has grown to fit.
+        let layout = Layout::horizontal([Constraint::Fill(1), Constraint::Min(20)]);
+        let area = Rect::new(0, 0, 100, 4);
+        let mut buf = Vec::new();
+        layout.split_into(area, &mut buf);
+        let ptr = buf.as_ptr();
+        let cap = buf.capacity();
+        for _ in 0..32 {
+            layout.split_into(area, &mut buf);
+        }
+        assert_eq!(buf.as_ptr(), ptr, "buffer was reallocated across frames");
+        assert_eq!(buf.capacity(), cap);
+        assert_eq!(buf, layout.split(area));
+    }
+
+    #[test]
+    fn split_into_empty_constraints_clears_to_nothing() {
+        let mut buf = vec![Rect::new(1, 2, 3, 4)];
+        Layout::vertical(Vec::<Constraint>::new()).split_into(Rect::new(0, 0, 10, 10), &mut buf);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn large_n_layout_spills_scratch_to_heap_but_stays_correct() {
+        // 20 > SCRATCH_INLINE (16): exercises the `ScratchBuf::Spill` path in
+        // `solve`; the result must still tile exactly like any other layout.
+        let n = 20usize;
+        let layout = Layout::horizontal(vec![Constraint::Fill(1); n]);
+        let r = assert_tiles(&layout, Rect::new(0, 0, 200, 1));
+        assert_eq!(r.len(), n);
+        assert_eq!(r.iter().map(|x| x.width).sum::<u16>(), 200);
+        // Equal weights over 200 cells → 10 each, exactly tiled.
+        for rect in &r {
+            assert_eq!(rect.width, 10);
+        }
     }
 }
