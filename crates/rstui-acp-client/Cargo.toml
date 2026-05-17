@@ -41,6 +41,8 @@ rstui-keymap = { path = "../rstui-keymap", version = "0.0.1" }
 rstui-runtime = { path = "../rstui-runtime", features = ["async"], version = "0.0.1" }
 rstui-crossterm = { path = "../rstui-crossterm", version = "0.0.1" }
 rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# All gpui-component themes + the reusable ThemePicker widget.
+rstui-theme = { path = "../rstui-theme", version = "0.0.1" }
 # The plugin SDK owns the JSON-RPC 2.0 wire + transports + author API; the
 # client (host side) and every reference plugin share its `proto` types.
 rstui-acp-plugin-sdk = { path = "../rstui-acp-plugin-sdk", version = "0.0.1" }

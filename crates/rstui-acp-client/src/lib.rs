@@ -25,6 +25,7 @@ pub mod app;
 pub mod input;
 pub mod plugin;
 pub mod registry;
+pub mod theme;
 pub mod ui;
 
 use std::io::{self, Stdout};

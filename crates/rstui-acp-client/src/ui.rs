@@ -52,7 +52,34 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
     if let Some(m) = app.modal() {
         render_modal(m, frame, area);
     }
+    if app.picking() {
+        render_theme_picker(app, frame, area);
+    }
     render_toasts(app, frame, area);
+}
+
+/// The `/theme` picker — the reusable [`rstui_theme::ThemePicker`] in a
+/// centred panel. The whole client is already painted in the highlighted
+/// theme (live preview), so the panel previews it too.
+fn render_theme_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let w = area.width.saturating_mul(3) / 5;
+    let h = area.height.saturating_mul(7) / 10;
+    let rect = centered(area, w.clamp(28, 72), h.clamp(8, 30));
+    let block = Block::bordered()
+        .title(format!(" Theme — {} ", t.name))
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(
+        rstui_theme::ThemePicker::new(app.theme_picker())
+            .title("Browse · preview live")
+            .style(t.base())
+            .highlight_style(t.selection()),
+        inner,
+    );
 }
 
 fn render_modal(m: &crate::app::ModalState, frame: &mut Frame<'_>, area: Rect) {
@@ -105,7 +132,7 @@ fn render_header(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         "{spinner}rstui-acp-client │ {}",
         truncate(app.status_line(), area.width.saturating_sub(20) as usize)
     );
-    let style = Style::new().fg(Color::Black).bg(Color::Cyan);
+    let style = app.theme().header();
     fill(frame, area, style);
     frame.buffer_mut().set_str(
         Position::new(area.x, area.y),
@@ -125,7 +152,7 @@ fn render_header(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_footer(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
-    fill(frame, area, Style::new().bg(Color::DarkGray));
+    fill(frame, area, app.theme().footer());
     let mut x = area.x;
     for seg in app.footer_segments() {
         x = draw_segment(frame, area, x, seg);
@@ -138,11 +165,9 @@ fn render_footer(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     let hw = hint.chars().count() as u16;
     if area.x + area.width > x + hw + 2 {
         let hx = area.x + area.width - hw;
-        frame.buffer_mut().set_str(
-            Position::new(hx, area.y),
-            hint,
-            Style::new().fg(Color::Gray).bg(Color::DarkGray),
-        );
+        frame
+            .buffer_mut()
+            .set_str(Position::new(hx, area.y), hint, app.theme().footer());
     }
 }
 
@@ -193,7 +218,7 @@ fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
 
     let list = List::new(items)
         .highlight_symbol("▸ ")
-        .highlight_style(Style::new().fg(Color::Black).bg(Color::Cyan))
+        .highlight_style(app.theme().selection())
         .selected(Some(app.picker_selected()))
         .offset(picker_offset(app.picker_selected(), inner.height));
     frame.render_widget(list, inner);
@@ -325,7 +350,7 @@ fn render_completion(app: &ChatApp, frame: &mut Frame<'_>, composer_area: Rect) 
     frame.render_widget(
         List::new(items)
             .highlight_symbol("▸ ")
-            .highlight_style(Style::new().fg(Color::Black).bg(Color::Cyan))
+            .highlight_style(app.theme().selection())
             .selected(Some(comp.selected)),
         body,
     );

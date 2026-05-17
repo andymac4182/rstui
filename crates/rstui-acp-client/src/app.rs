@@ -212,6 +212,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("details", "Show/hide completed tool-call output"),
     ("plugins", "Show loaded plugins, commands & status"),
     ("log", "Toggle the diagnostic log"),
+    ("theme", "Pick a colour theme (browse + preview live)"),
     ("cancel", "Interrupt the streaming turn"),
     ("quit", "Exit the client"),
 ];
@@ -294,6 +295,15 @@ pub struct ChatApp {
     /// sampled once per frame in `view` and shown in the header so the
     /// client's performance is always visible.
     fps: rstui_widgets::FpsMeter,
+    /// The active colour theme (any of the 36 gpui-component themes,
+    /// resolved from `RSTUI_THEME` / the saved choice / the default).
+    theme: crate::theme::AcpTheme,
+    /// Reusable theme-picker state, driven while [`picking`](Self::picking).
+    theme_picker: rstui_theme::ThemePickerState,
+    /// The theme to restore if the picker is cancelled with `Esc`.
+    theme_restore: Option<crate::theme::AcpTheme>,
+    /// `true` while the `/theme` picker overlay is open.
+    picking: bool,
 }
 
 impl ChatApp {
@@ -341,6 +351,10 @@ impl ChatApp {
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
+            theme: crate::theme::startup_theme(),
+            theme_picker: rstui_theme::ThemePickerState::new(),
+            theme_restore: None,
+            picking: false,
         }
     }
 
@@ -411,6 +425,24 @@ impl ChatApp {
     #[must_use]
     pub fn help_visible(&self) -> bool {
         self.show_help
+    }
+
+    /// The active colour theme.
+    #[must_use]
+    pub fn theme(&self) -> &crate::theme::AcpTheme {
+        &self.theme
+    }
+
+    /// The theme-picker state (rendered while [`picking`](Self::picking)).
+    #[must_use]
+    pub fn theme_picker(&self) -> &rstui_theme::ThemePickerState {
+        &self.theme_picker
+    }
+
+    /// Whether the `/theme` picker overlay is open.
+    #[must_use]
+    pub fn picking(&self) -> bool {
+        self.picking
     }
     /// Whether the log overlay is open.
     #[must_use]
@@ -713,6 +745,13 @@ impl ChatApp {
                 self.show_log = !self.show_log;
                 Cmd::none()
             }
+            "theme" => {
+                // Open the reusable picker; remember the current palette so
+                // Esc can restore it.
+                self.theme_restore = Some(self.theme.clone());
+                self.picking = true;
+                Cmd::none()
+            }
             "cancel" => {
                 if let Some(driver) = &self.driver {
                     driver.send(DriverCmd::Cancel);
@@ -1007,8 +1046,61 @@ impl ChatApp {
         }
     }
 
+    /// Live-preview the highlighted picker theme by adopting its palette.
+    fn preview_theme(&mut self) {
+        let next = self
+            .theme_picker
+            .selected_theme()
+            .map(crate::theme::AcpTheme::from_theme);
+        if let Some(t) = next {
+            self.theme = t;
+        }
+    }
+
+    /// Key handling while the `/theme` picker is open: arrows preview, typing
+    /// filters, `Enter` keeps + persists, `Esc` restores the prior palette.
+    fn theme_picker_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(prev) = self.theme_restore.take() {
+                    self.theme = prev;
+                }
+                self.picking = false;
+            }
+            KeyCode::Enter => {
+                self.preview_theme();
+                let name = self.theme.name.clone();
+                let _ = rstui_theme::Theme::write_choice(crate::theme::theme_config_path(), &name);
+                self.push_system(format!("theme saved → {name}"));
+                self.theme_restore = None;
+                self.picking = false;
+            }
+            KeyCode::Up => {
+                self.theme_picker.prev();
+                self.preview_theme();
+            }
+            KeyCode::Down => {
+                self.theme_picker.next();
+                self.preview_theme();
+            }
+            KeyCode::Backspace => {
+                self.theme_picker.pop_filter();
+                self.preview_theme();
+            }
+            KeyCode::Char(c) => {
+                self.theme_picker.push_filter(c);
+                self.preview_theme();
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        if self.picking {
+            return self.theme_picker_key(key);
+        }
         if self.show_help {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1)) {
                 self.show_help = false;
