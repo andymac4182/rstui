@@ -87,6 +87,51 @@ pub struct Toast {
     pub age: usize,
 }
 
+/// Where a slash command comes from (drives its autocomplete tag/colour).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandSource {
+    /// A client built-in.
+    Builtin,
+    /// Contributed by a plugin (carries the plugin name for routing).
+    Plugin(String),
+    /// Advertised by the connected agent (`available_commands_update`).
+    Agent,
+}
+
+/// One entry in the merged slash-command set.
+#[derive(Debug, Clone)]
+pub struct CommandSpec {
+    /// Command name without the leading slash.
+    pub name: String,
+    /// One-line help text.
+    pub description: String,
+    /// Its origin.
+    pub source: CommandSource,
+}
+
+/// The live slash-command autocomplete popup state.
+#[derive(Debug, Clone)]
+pub struct Completion {
+    /// Filtered candidates (already ranked, capped at [`COMPLETION_MAX`]).
+    pub items: Vec<CommandSpec>,
+    /// Highlighted index into `items`.
+    pub selected: usize,
+}
+
+/// Built-in slash commands, shown in autocomplete + `/help`.
+pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
+    ("help", "Show keys & commands"),
+    ("agents", "Switch agent (open the registry picker)"),
+    ("new", "New session (back to the agent picker)"),
+    ("clear", "Clear the transcript"),
+    ("log", "Toggle the diagnostic log"),
+    ("cancel", "Interrupt the streaming turn"),
+    ("quit", "Exit the client"),
+];
+
+/// Max rows shown in the autocomplete popup (opencode parity).
+pub const COMPLETION_MAX: usize = 10;
+
 /// Messages the reducer folds. Input is normalized to [`Msg::Key`] /
 /// [`Msg::Resize`] in `on_event` so all focus routing lives in `update`.
 #[derive(Debug, Clone)]
@@ -135,6 +180,8 @@ pub struct ChatApp {
     footers: BTreeMap<String, Vec<FooterSegment>>,
     statuses: BTreeMap<String, String>,
     commands: BTreeMap<String, (String, String)>,
+    agent_commands: BTreeMap<String, String>,
+    completion: Option<Completion>,
     toasts: Vec<Toast>,
     log: Vec<String>,
     show_log: bool,
@@ -170,6 +217,8 @@ impl ChatApp {
             footers: BTreeMap::new(),
             statuses: BTreeMap::new(),
             commands: BTreeMap::new(),
+            agent_commands: BTreeMap::new(),
+            completion: None,
             toasts: Vec::new(),
             log: Vec::new(),
             show_log: false,
@@ -250,6 +299,11 @@ impl ChatApp {
     #[must_use]
     pub fn commands(&self) -> &BTreeMap<String, (String, String)> {
         &self.commands
+    }
+    /// The live slash-command autocomplete popup, if visible.
+    #[must_use]
+    pub fn completion(&self) -> Option<&Completion> {
+        self.completion.as_ref()
     }
     /// Active toasts.
     #[must_use]
@@ -386,8 +440,15 @@ impl ChatApp {
                 self.show_help = true;
                 Cmd::none()
             }
-            "agents" => {
+            "agents" | "new" => {
                 self.screen = Screen::Picker;
+                Cmd::none()
+            }
+            "clear" => {
+                self.transcript.clear();
+                self.scroll = 0;
+                self.follow = true;
+                self.push_system("transcript cleared");
                 Cmd::none()
             }
             "log" => {
@@ -414,11 +475,159 @@ impl ChatApp {
                         );
                     }
                     self.push_system(format!("/{other} → {plugin}"));
+                    Cmd::none()
+                } else if self.agent_commands.contains_key(other) {
+                    // Agent-advertised command: the agent owns it, so forward
+                    // the whole `/name args` line as a prompt (opencode does
+                    // the same for server commands).
+                    if self.driver.is_none() {
+                        self.push_system("not connected — pick an agent with /agents");
+                        return Cmd::none();
+                    }
+                    let line = if args.is_empty() {
+                        format!("/{other}")
+                    } else {
+                        format!("/{other} {args}")
+                    };
+                    self.transcript.push(Entry {
+                        role: Role::User,
+                        text: line.clone(),
+                        open: false,
+                    });
+                    self.streaming = true;
+                    if let Some(driver) = &self.driver {
+                        driver.send(DriverCmd::Prompt(line.clone()));
+                    }
+                    if let Some(host) = &self.plugins {
+                        host.broadcast(&HostEvent::UserPrompt { text: line });
+                    }
+                    Cmd::none()
                 } else {
                     self.push_system(format!("unknown command: /{other} (try /help)"));
+                    Cmd::none()
                 }
-                Cmd::none()
             }
+        }
+    }
+
+    /// The merged, de-duplicated, name-sorted slash-command set:
+    /// built-ins, then plugin commands, then agent-advertised commands
+    /// (first source for a given name wins, matching the resolution order).
+    #[must_use]
+    pub fn command_specs(&self) -> Vec<CommandSpec> {
+        let mut by_name: BTreeMap<String, CommandSpec> = BTreeMap::new();
+        for (name, desc) in BUILTIN_COMMANDS {
+            by_name.entry((*name).to_owned()).or_insert(CommandSpec {
+                name: (*name).to_owned(),
+                description: (*desc).to_owned(),
+                source: CommandSource::Builtin,
+            });
+        }
+        for (name, (plugin, desc)) in &self.commands {
+            by_name.entry(name.clone()).or_insert(CommandSpec {
+                name: name.clone(),
+                description: desc.clone(),
+                source: CommandSource::Plugin(plugin.clone()),
+            });
+        }
+        for (name, desc) in &self.agent_commands {
+            by_name.entry(name.clone()).or_insert(CommandSpec {
+                name: name.clone(),
+                description: desc.clone(),
+                source: CommandSource::Agent,
+            });
+        }
+        by_name.into_values().collect()
+    }
+
+    /// The `/`-autocomplete query, or `None` when the popup must not show:
+    /// the composer is a single line starting with `/` and no whitespace has
+    /// been typed yet (typing an argument closes it — opencode parity).
+    fn completion_query(&self) -> Option<String> {
+        if self.composer.lines().len() != 1 {
+            return None;
+        }
+        let line = self.composer.line(0).unwrap_or("");
+        let rest = line.strip_prefix('/')?;
+        if rest.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(rest.to_owned())
+    }
+
+    /// Recomputes [`Completion`] from the composer (called after every
+    /// composer edit). Prefix matches rank above substring matches; the
+    /// previously-selected command is kept selected when still present.
+    fn refresh_completion(&mut self) {
+        let Some(query) = self.completion_query() else {
+            self.completion = None;
+            return;
+        };
+        let q = query.to_ascii_lowercase();
+        let mut scored: Vec<(u8, CommandSpec)> = self
+            .command_specs()
+            .into_iter()
+            .filter_map(|c| {
+                let lname = c.name.to_ascii_lowercase();
+                if q.is_empty() {
+                    Some((1, c))
+                } else if lname.starts_with(&q) {
+                    Some((0, c))
+                } else if lname.contains(&q) || c.description.to_ascii_lowercase().contains(&q) {
+                    Some((2, c))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        let items: Vec<CommandSpec> = scored
+            .into_iter()
+            .take(COMPLETION_MAX)
+            .map(|(_, c)| c)
+            .collect();
+        if items.is_empty() {
+            self.completion = None;
+            return;
+        }
+        let keep = self
+            .completion
+            .as_ref()
+            .and_then(|c| c.items.get(c.selected))
+            .map(|c| c.name.clone());
+        let selected = keep
+            .and_then(|n| items.iter().position(|c| c.name == n))
+            .unwrap_or(0);
+        self.completion = Some(Completion { items, selected });
+    }
+
+    /// Moves the autocomplete selection by `delta`, wrapping at both ends.
+    fn move_completion(&mut self, delta: i32) {
+        if let Some(c) = &mut self.completion {
+            let n = c.items.len() as i32;
+            if n > 0 {
+                c.selected = (((c.selected as i32 + delta) % n + n) % n) as usize;
+            }
+        }
+    }
+
+    /// Accepts the highlighted completion. `run` (Enter) executes it now;
+    /// otherwise (Tab) it inserts `/<name> ` so arguments can be typed.
+    fn accept_completion(&mut self, run: bool) -> Cmd<Msg> {
+        let Some(c) = &self.completion else {
+            return Cmd::none();
+        };
+        let Some(spec) = c.items.get(c.selected).cloned() else {
+            self.completion = None;
+            return Cmd::none();
+        };
+        self.completion = None;
+        if run {
+            self.composer.set_value(format!("/{}", spec.name));
+            self.submit_composer()
+        } else {
+            self.composer.set_value(format!("/{} ", spec.name));
+            Cmd::none()
         }
     }
 
@@ -632,6 +841,38 @@ impl ChatApp {
 
     fn chat_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // The slash-command autocomplete owns navigation/accept keys while it
+        // is visible (opencode: ↑↓/Ctrl+P/N move, Tab completes, Enter runs,
+        // Esc hides); anything else falls through and re-filters the list.
+        if self.completion.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.completion = None;
+                    return Cmd::none();
+                }
+                KeyCode::Up => {
+                    self.move_completion(-1);
+                    return Cmd::none();
+                }
+                KeyCode::Down => {
+                    self.move_completion(1);
+                    return Cmd::none();
+                }
+                KeyCode::Char('p') if ctrl => {
+                    self.move_completion(-1);
+                    return Cmd::none();
+                }
+                KeyCode::Char('n') if ctrl => {
+                    self.move_completion(1);
+                    return Cmd::none();
+                }
+                KeyCode::Tab => return self.accept_completion(false),
+                KeyCode::Enter => return self.accept_completion(true),
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Char('c') if ctrl => return self.begin_quit(),
             KeyCode::Char('q') if ctrl => return self.begin_quit(),
@@ -678,6 +919,9 @@ impl ChatApp {
             KeyCode::Char(c) => self.composer.insert_char(c),
             _ => {}
         }
+        // Any edit that reached the composer re-filters the popup (and
+        // opens it the moment a leading `/` appears).
+        self.refresh_completion();
         Cmd::none()
     }
 }
@@ -762,6 +1006,7 @@ impl App for ChatApp {
             Msg::Paste(text) => {
                 if self.screen == Screen::Chat || self.screen == Screen::Connecting {
                     self.composer.insert_str(&text);
+                    self.refresh_completion();
                 }
                 Cmd::none()
             }
@@ -853,6 +1098,10 @@ impl ChatApp {
                     open: false,
                 });
                 self.follow = true;
+            }
+            AcpEvent::AvailableCommands(cmds) => {
+                self.agent_commands = cmds.into_iter().collect();
+                self.refresh_completion();
             }
             AcpEvent::TurnEnded(reason) => {
                 self.close_open_entry();
