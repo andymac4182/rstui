@@ -464,3 +464,44 @@ fn commands_route_through_the_keymap_and_motions_stay_raw() {
     assert!(h.snapshot().contains("Commits 3"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn widening_the_history_pane_reveals_more_of_the_commit_subject() {
+    // The marker lives ONLY in the commit *subject* (well past the old
+    // fixed 64-char cap), never in a file — so a match can only come from
+    // the history list row, not the diff pane.
+    let subject = format!("{}ENDTOKEN", "x".repeat(80));
+    let dir = std::env::temp_dir().join(format!(
+        "rgr-wide-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    git_in(&dir, &["init", "-q"]);
+    std::fs::write(dir.join("a.txt"), "hi\n").expect("seed");
+    git_in(&dir, &["add", "a.txt"]);
+    git_in(&dir, &["commit", "-q", "-m", &subject]);
+
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    h.resize(200, 40);
+    assert!(
+        !h.snapshot().contains("ENDTOKEN"),
+        "at the default split the long subject is clipped to the pane width:\n{}",
+        h.snapshot()
+    );
+    // Grow the history pane to its maximum (GROW = `=`, clamped at 94 %).
+    for _ in 0..20 {
+        h.handle(ch('='));
+    }
+    assert!(
+        h.snapshot().contains("ENDTOKEN"),
+        "widening the pane reveals the rest of the subject — the fixed cap \
+         that defeated the resize is gone:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}

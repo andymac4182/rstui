@@ -744,13 +744,15 @@ impl GitReview {
                         }
                         let this = ord;
                         ord += 1;
-                        let subj: String = c.subject.chars().take(64).collect();
+                        // Full subject — `List` clips the line to the pane's
+                        // width, so widening the pane reveals more (a fixed
+                        // cap here would defeat the resize).
                         out.push((
                             Some(this),
                             Line::from(vec![
                                 Span::styled(format!("{} ", row.art), self.theme.graph()),
                                 Span::styled(format!("{} ", c.short), self.theme.accent()),
-                                Span::raw(subj),
+                                Span::raw(c.subject.clone()),
                             ]),
                         ));
                     }
@@ -768,13 +770,12 @@ impl GitReview {
                 .enumerate()
                 .map(|(ord, &i)| {
                     let c = self.rows[i].commit.as_ref().expect("visible ⇒ commit");
-                    let subj: String = c.subject.chars().take(64).collect();
                     (
                         Some(ord),
                         Line::from(vec![
                             Span::styled(format!("{} ", c.short), self.theme.accent()),
                             Span::styled(format!("{} ", c.date), self.theme.dim()),
-                            Span::raw(subj),
+                            Span::raw(c.subject.clone()),
                         ]),
                     )
                 })
