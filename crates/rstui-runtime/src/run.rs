@@ -159,6 +159,18 @@ const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(16);
 /// skipped intermediate frames are never observable.
 const COALESCE_LIMIT: usize = 1024;
 
+/// Wall-clock cap on a single input-coalescing drain. A *count* cap alone
+/// (`COALESCE_LIMIT`) does not bound the *time* the loop spends folding a
+/// never-ending flood, so under continuous input (e.g. the per-sample
+/// mouse-move reports any-motion mouse capture emits while the pointer
+/// moves) the loop could stay in the drain long enough to starve the tick
+/// deadline and the steady repaint cadence — the "frames freeze while I move
+/// the mouse" report. Breaking the drain after roughly one frame guarantees
+/// the loop returns to re-check the tick and present at a bounded cadence
+/// no matter how fast input arrives; state is still exact (every event was
+/// folded), only the *batch* is time-sliced.
+const COALESCE_TIME_BUDGET: Duration = Duration::from_millis(8);
+
 /// The default cap on `update`/`perform` steps a single input may produce
 /// before the command loop gives up. Generous enough for real cascades, low
 /// enough to fail a runaway reducer fast.
@@ -249,14 +261,21 @@ fn step<A: App>(
 /// The single-sourced per-event handling shared by the primary input branch
 /// **and** the burst-coalescing drain, in *both* the sync [`run_core`] and the
 /// async [`run_async`], so those four sites cannot drift.
+/// Returns the running outcome **and** whether the event actually produced a
+/// message (so the live loops can skip a redundant `view`+`diff` repaint for
+/// a no-op event flood — a pointer move under any-motion mouse capture maps
+/// to no message; rendering once per such burst is the RT-01 saturation that
+/// froze the UI during mouse movement). `None` ⇒ definitively no state
+/// change for this event; the headless [`Harness`](crate::Harness) does not
+/// use this path, so its determinism is unaffected.
 fn handle_input<A: App>(
     app: &mut A,
     event: rstui_core::Event,
     exec: &mut dyn CommandExecutor<A::Message>,
-) -> Settled {
+) -> (Settled, bool) {
     match app.on_event(event) {
-        Some(message) => step(app, message, exec),
-        None => Settled::Running,
+        Some(message) => (step(app, message, exec), true),
+        None => (Settled::Running, false),
     }
 }
 
@@ -814,22 +833,38 @@ where
 
             event = events.next_event() => match event {
                 Ok(Some(event)) => {
-                    let mut outcome = handle_input(&mut app, event, &mut exec);
+                    let batch_start = Instant::now();
+                    // A resize repaints even with no modeled message
+                    // (`view` re-reads `frame.area()`); a no-op flood does
+                    // not — see the sync loop for the full rationale.
+                    let mut changed = matches!(event, rstui_core::Event::Resize(_));
+                    let (mut outcome, produced) = handle_input(&mut app, event, &mut exec);
+                    changed |= produced;
                     // Coalesce a burst the same way the sync loop does, but
                     // with no real clock: a `biased` inner `select!` tries the
                     // next event first and falls through to a *ready* future
                     // the instant input would block — draining exactly what is
                     // buffered, then one repaint with the latest state. So a
-                    // fast resize/scroll has zero render-backlog latency.
-                    // `next_event` is cancel-safe (the trait's contract), so
-                    // dropping the losing future never loses an event.
+                    // fast resize/scroll/mouse-move flood has zero
+                    // render-backlog latency. The wall-clock budget caps a
+                    // never-ending flood so the tick/repaint cadence is never
+                    // starved. `next_event` is cancel-safe (the trait's
+                    // contract), so dropping the losing future never loses an
+                    // event.
                     let mut coalesced = 0usize;
-                    while outcome == Settled::Running && coalesced < COALESCE_LIMIT {
+                    while outcome == Settled::Running
+                        && coalesced < COALESCE_LIMIT
+                        && batch_start.elapsed() < COALESCE_TIME_BUDGET
+                    {
                         tokio::select! {
                             biased;
                             more = events.next_event() => match more {
                                 Ok(Some(next)) => {
-                                    outcome = handle_input(&mut app, next, &mut exec);
+                                    changed |= matches!(next, rstui_core::Event::Resize(_));
+                                    let (next_outcome, next_produced) =
+                                        handle_input(&mut app, next, &mut exec);
+                                    outcome = next_outcome;
+                                    changed |= next_produced;
                                     coalesced += 1;
                                 }
                                 Ok(None) => {
@@ -844,7 +879,13 @@ where
                     if outcome == Settled::Quit {
                         running = false;
                     }
-                    render(&mut terminal, &app).map_err(RunError::Backend)?;
+                    // Skip the repaint for a pure no-op event flood (e.g.
+                    // any-motion mouse-move reports): rendering once per
+                    // such burst is the RT-01 saturation that froze the UI
+                    // during mouse movement. State is always exact.
+                    if changed {
+                        render(&mut terminal, &app).map_err(RunError::Backend)?;
+                    }
                 }
                 // Single, unambiguous meaning (unlike sync `poll_event`):
                 // input ended for good.
@@ -986,21 +1027,34 @@ where
             Some(event) => {
                 // `on_event` (&self) decides intent; `update` (&mut self) is
                 // the sole mutation; `settle` folds any follow-up commands.
-                let mut outcome = handle_input(&mut app, event, exec);
-                // Coalesce a burst (fast resize-drag / scroll-wheel spin):
-                // fold every event already buffered, then repaint **once**
-                // with the latest state. A non-blocking `ZERO` poll drains
-                // exactly what is ready and stops the instant nothing is —
-                // so the UI tracks the newest size/scroll with no per-event
-                // render backlog, the actual cause of resize/scroll lag.
+                let batch_start = Instant::now();
+                // A resize must repaint even if the app models no message for
+                // it (`view` re-reads `frame.area()`), so it counts as a
+                // change independently of whether it produced a message.
+                let mut changed = matches!(event, rstui_core::Event::Resize(_));
+                let (mut outcome, produced) = handle_input(&mut app, event, exec);
+                changed |= produced;
+                // Coalesce a burst (fast resize-drag / scroll-wheel spin / a
+                // mouse-move flood): fold every event already buffered, then
+                // repaint **once** with the latest state. A non-blocking
+                // `ZERO` poll drains exactly what is ready and stops the
+                // instant nothing is; the wall-clock budget additionally caps
+                // a *never-ending* flood so the tick deadline and repaint
+                // cadence are never starved (the freeze-while-moving bug).
                 let mut coalesced = 0usize;
-                while outcome == Settled::Running && coalesced < COALESCE_LIMIT {
+                while outcome == Settled::Running
+                    && coalesced < COALESCE_LIMIT
+                    && batch_start.elapsed() < COALESCE_TIME_BUDGET
+                {
                     match events
                         .poll_event(Some(Duration::ZERO))
                         .map_err(RunError::Input)?
                     {
                         Some(next) => {
-                            outcome = handle_input(&mut app, next, exec);
+                            changed |= matches!(next, rstui_core::Event::Resize(_));
+                            let (next_outcome, next_produced) = handle_input(&mut app, next, exec);
+                            outcome = next_outcome;
+                            changed |= next_produced;
                             coalesced += 1;
                         }
                         None => break, // nothing more immediately ready
@@ -1009,10 +1063,37 @@ where
                 if outcome == Settled::Quit {
                     running = false;
                 }
-                // Repaint even when no message was produced, so a resize the
-                // backend already absorbed still repaints (an empty diff sends
-                // zero cells when nothing actually changed).
-                render(&mut terminal, &app).map_err(RunError::Backend)?;
+                // Service a due tick even while input is flooding. Under
+                // continuous motion `poll_event` never times out, so the
+                // `None` arm's tick path is unreachable — without this the
+                // animation clock (spinner, header time, toast expiry) would
+                // freeze for the whole duration of the move even though the
+                // repaint backlog is already gone. Folding it here keeps the
+                // cadence; the single repaint below covers it.
+                if let Some(rate) = rate {
+                    let deadline = *next_tick.get_or_insert_with(|| Instant::now() + rate);
+                    if Instant::now() >= deadline {
+                        next_tick = Some(Instant::now() + rate);
+                        if let Some(message) = app.on_tick() {
+                            if step(&mut app, message, exec) == Settled::Quit {
+                                running = false;
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                // Repaint only when the coalesced batch actually changed
+                // state (≥1 message) or the terminal resized. A pure no-op
+                // event flood — most commonly the per-sample mouse-move
+                // reports any-motion mouse capture emits while the pointer
+                // moves — must NOT trigger a full `view`+`diff`: doing so
+                // once per burst is the render saturation that froze/lagged
+                // the UI during mouse movement (RT-01). State is always
+                // exact — every event was still folded — so a skipped
+                // repaint is never observable.
+                if changed {
+                    render(&mut terminal, &app).map_err(RunError::Backend)?;
+                }
             }
             None => match rate {
                 // A *bounded* wait returned `None`: the timer elapsed (or the
@@ -1749,6 +1830,79 @@ mod tests {
         // …but the burst produced exactly one repaint after the initial frame
         // (init render + one coalesced batch), not one-per-event.
         assert_eq!(draws.get(), 2, "burst must coalesce to a single repaint");
+    }
+
+    /// A no-op pointer-move event (any-motion mouse capture emits one per
+    /// sample while the mouse moves).
+    fn moved(x: u16) -> Event {
+        Event::Mouse(rstui_core::MouseEvent::new(
+            rstui_core::MouseEventKind::Moved,
+            Position::new(x, 0),
+            rstui_core::KeyModifiers::NONE,
+        ))
+    }
+
+    /// The freeze-while-moving regression. A flood of no-op events maps to
+    /// **no message**, so the live loop must not repaint for it: before
+    /// RT-01 the loop did a full `view`+`diff` once per coalesced burst
+    /// regardless, and under continuous motion that render saturation
+    /// starved ticks and the repaint cadence — the UI froze while the mouse
+    /// moved. After the fix the only frame is the initial one (state never
+    /// changed), so the draw counter stays at exactly 1 (it would be ≥ 2
+    /// before the fix).
+    #[test]
+    fn a_no_op_event_flood_never_repaints() {
+        let draws = Rc::new(std::cell::Cell::new(0));
+        let backend = RenderCountingBackend {
+            inner: Rc::new(RefCell::new(TestBackend::new(8, 4))),
+            draws: Rc::clone(&draws),
+        };
+        // A pure pointer-move flood, then end-of-input (no quit, no tick):
+        // every event maps to `None` in `WidthLog::on_event`.
+        let flood: Vec<Event> = (0..64).map(moved).collect();
+        let mut input = TestEventSource::with_events(flood);
+
+        let app = run(WidthLog::default(), backend, &mut input).unwrap();
+
+        // No resize was ever delivered, so state never changed…
+        assert!(app.widths.is_empty(), "no-op events must not mutate state");
+        // …and the loop presented exactly the one initial frame.
+        assert_eq!(
+            draws.get(),
+            1,
+            "a no-op event flood must trigger zero repaints \
+             (freeze-while-moving regression)"
+        );
+    }
+
+    /// The async loop must gate the repaint on a real state change too: the
+    /// same no-op flood, over the `select!` drain, presents only the initial
+    /// frame.
+    #[cfg(feature = "async")]
+    #[tokio::test(start_paused = true)]
+    async fn async_loop_does_not_repaint_a_no_op_flood() {
+        let draws = Rc::new(std::cell::Cell::new(0));
+        let backend = RenderCountingBackend {
+            inner: Rc::new(RefCell::new(TestBackend::new(8, 4))),
+            draws: Rc::clone(&draws),
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for x in 0..64 {
+            tx.send(moved(x)).unwrap();
+        }
+        drop(tx); // close the channel so the drained source reports EOF.
+        let mut source = ScriptedAsyncSource { rx };
+
+        let app = run_async(WidthLog::default(), backend, &mut source)
+            .await
+            .unwrap();
+
+        assert!(app.widths.is_empty());
+        assert_eq!(
+            draws.get(),
+            1,
+            "the async select! drain must not repaint a no-op flood"
+        );
     }
 
     #[cfg(feature = "async")]
