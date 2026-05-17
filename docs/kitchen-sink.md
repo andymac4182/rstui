@@ -72,6 +72,23 @@ palette-navigates to each, asserts the widget content renders, coloured,
 total under resize/ticks) plus the `vhs/e2e/kitchen-sink-dataviz.{tape,expect}`
 real-binary gate run by `cargo xtask record e2e --check`.
 
+## The chart catalog
+
+A fourth rail section — the exploratory (non-dashboard) chart types from the
+[charts widgets](widgets/charts.md), in one selectable `2×3` grid:
+
+| Screen | Widgets it shows |
+|--------|------------------|
+| Analytics | `ScatterPlot`, `RadarChart`, `BoxPlot`, `Candlestick`, `Treemap`, `Sankey` |
+
+Reach it from the `Chart catalog` rail group, the command palette
+(`:analytics`), or the sidebar. `←/→/↑/↓` move the highlight, `Enter` names
+the focused chart; the scatter and candlestick series animate from the
+shared `tick`. Like the observability suite it has no number hotkey, so it
+carries its app-scale coverage in the same `data_viz_e2e.rs` suite. The
+business-dashboard chart widgets themselves live on the `Dashboard`
+experience screen.
+
 ## Keybindings
 
 | Key(s) | Action |
