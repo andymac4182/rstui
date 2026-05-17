@@ -253,8 +253,8 @@ impl Widget for Stepper<'_> {
             Some(b) => b.inner(area),
             None => area,
         };
-        if let Some(b) = self.block.clone() {
-            b.render(area, buf);
+        if let Some(b) = &self.block {
+            b.render_ref(area, buf);
         }
         if inner.is_empty() {
             return;

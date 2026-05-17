@@ -1085,8 +1085,8 @@ impl Widget for DataTable<'_> {
         }
         let (inner, header, body, columns) = self.geometry(area);
 
-        if let Some(b) = self.block.clone() {
-            b.render(area, buf);
+        if let Some(b) = &self.block {
+            b.render_ref(area, buf);
         }
         if inner.is_empty() {
             return;

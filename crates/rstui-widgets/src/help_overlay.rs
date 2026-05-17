@@ -272,8 +272,8 @@ impl Widget for HelpOverlay<'_> {
             Some(b) => b.inner(dialog),
             None => dialog,
         };
-        if let Some(b) = self.block.clone() {
-            b.render(dialog, buf);
+        if let Some(b) = &self.block {
+            b.render_ref(dialog, buf);
         }
         if inner.is_empty() {
             return;
