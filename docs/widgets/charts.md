@@ -120,6 +120,29 @@ BoxPlot::new(impl IntoIterator<Item = BoxStats>)      // BoxStats::new(label,min
 
 ---
 
+## ViolinChart
+
+![ViolinChart demo](media/violin_chart_demo.gif)
+
+A violin (density) plot over a shared value scale — the distribution-*shape*
+sibling of [BoxPlot](#boxplot), which shows only the five-number summary.
+
+- **Companion types:** `Violin`, `ViolinOrientation` (`Horizontal`/`Vertical`)
+- **State model:** pure projection of a caller-computed density profile per
+  `Violin` (`Vec<f64>` sampled across the window, like `BoxPlot` takes the
+  precomputed quartiles — no statistics in the dependency-free widget) plus an
+  optional median; symmetric body at eighth-block sub-cell thickness.
+
+```rust
+ViolinChart::new(impl IntoIterator<Item = Violin>)   // Violin::new(label, Vec<f64>).median(f64)
+.bounds(Option<[f64; 2]>) .orientation(ViolinOrientation) .block(Block)
+.style(Style) .violin_style(Style) .median_style(Style) .label_style(Style)
+```
+
+**Demo:** `cargo run -p rstui-widgets --example violin_chart_demo`
+
+---
+
 ## Candlestick
 
 ![Candlestick demo](media/candlestick_demo.gif)
