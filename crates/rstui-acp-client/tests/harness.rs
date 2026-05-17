@@ -901,3 +901,29 @@ fn keymap_panel_opens_with_ctrl_k_navigates_rebinds_and_closes() {
     assert!(!h.app().keymap_panel_open(), "Esc closes the panel");
     assert!(h.is_running(), "closing the panel must not quit");
 }
+
+#[test]
+fn help_then_k_is_the_universal_gateway_into_the_keymap_editor() {
+    let mut h = booted(100, 30);
+    h.message(Msg::RegistryLoaded(Box::new(Registry::offline_fallback())));
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::F(1))));
+    assert!(h.app().help_visible(), "F1 opens help");
+    assert!(
+        h.snapshot().contains("customise these keybindings"),
+        "help advertises the k gateway:\n{}",
+        h.snapshot()
+    );
+    // `k` from help turns the cheat-sheet into the keymap editor.
+    h.message(Msg::Key(KeyEvent::char('k')));
+    assert!(!h.app().help_visible(), "k closes help");
+    assert!(
+        h.app().keymap_panel_open(),
+        "help → k opened the keymap editor"
+    );
+    assert!(
+        h.snapshot().contains("Keymap") && h.snapshot().contains("Quit"),
+        "the KeymapView renders:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}

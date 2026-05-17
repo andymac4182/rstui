@@ -237,6 +237,10 @@ fn view_help(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     for (k, d) in RAW_HELP {
         rows.push(((*k).to_string(), *d));
     }
+    // The universal gateway, listed right where a lost user looks: from
+    // this help overlay, `k` opens the keymap editor (same key in every
+    // app). Shown last so it reads as the call-to-action.
+    rows.push(("k".to_string(), "Customise these keybindings ↵"));
     let entries: Vec<HelpEntry> = rows
         .iter()
         .map(|(k, d)| HelpEntry::new([k.as_str()], *d))

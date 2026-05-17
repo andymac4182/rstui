@@ -100,7 +100,10 @@ help overlay (`F1`), and the keymap settings panel (`Ctrl+K`) — are
 semantic `Action`s resolved through the shared
 [`rstui-keymap`](keymaps.md) engine, *after* the plugin-chord layer (a
 plugin binding still wins) and before the screen dispatch. So they are
-remappable two ways: in-app via `Ctrl+K` — the shared
+remappable two ways: in-app — open help with `F1` and press **`k`** (the
+universal gateway, the same two keystrokes in every rstui app), or the
+`Ctrl+K` shortcut directly (surfaced in the footer and the help sheet) —
+opening the shared
 [`KeymapView`](widgets/overlays-and-control.md#keymapview) widget (the
 exact one the kitchen sink and git-review use): select a row, `r`/`Enter`
 to capture a new key, `x` to disable; or a `RSTUI_KEYMAP=/path/to/keymap`

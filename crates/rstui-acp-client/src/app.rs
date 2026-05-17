@@ -1274,7 +1274,14 @@ impl ChatApp {
             return self.theme_picker_key(key);
         }
         if self.show_help {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1)) {
+            // The help overlay doubles as the discoverable gateway into
+            // the keymap editor: `k` (the same key in every app) opens it.
+            if key.code == KeyCode::Char('k') {
+                self.show_help = false;
+                self.keymap_panel = true;
+                self.km_sel = 0;
+                self.km_rebind = None;
+            } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1)) {
                 self.show_help = false;
             }
             return Cmd::none();

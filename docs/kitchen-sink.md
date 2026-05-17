@@ -101,7 +101,7 @@ experience screen.
 | `s` `o` `c` `/` `e` | Data Grid: sort · group · collapse · filter · edit cell (`[` `]` pick the active column) |
 | `:` | Command palette — type to filter, `Enter` to jump |
 | `?` | Help overlay — the **live** keymap (reverse-looked-up, follows remaps) |
-| `g` | Settings drawer — the keymap manager, now the shared [`KeymapView`](widgets/overlays-and-control.md#keymapview) widget (capture-to-rebind, disable, theme) |
+| `g`, or `?`→`k` | Settings drawer — the keymap manager, the shared [`KeymapView`](widgets/overlays-and-control.md#keymapview) widget (capture-to-rebind, disable, theme). `?`→`k` is the universal gateway, the same two keystrokes in every rstui app |
 | `F2` | Cycle keymap: Default → Vim → opencode-style Leader |
 | `q` / `Esc` | Quit (opens a confirm modal; `y`/`Enter` confirms) |
 | typing | Into focused inputs; filters the palette |

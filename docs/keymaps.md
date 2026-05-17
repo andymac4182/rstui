@@ -187,6 +187,19 @@ The reducer still owns the cursor and the capture FSM (arm on a key,
 widget only draws state and reports the clicked row. All three apps
 (kitchen sink, acp-client, git-review) use this one widget.
 
+### One universal way in: **help → `k`**
+
+The hard part of "easy setting of keymaps" is *discovery* — a user who
+wants to change a key looks at the **help overlay** first. So that is the
+gateway, identically in every app: open help (`?` in the kitchen sink and
+git-review, `F1` in acp-client), then press **`k`**. The help overlay
+lists this line itself ("Customise these keybindings"), so it is
+self-documenting; the always-visible footer/status of each app also
+surfaces the keymap key. The direct shortcut still works for power users
+(the kitchen sink's `Drawer` key — shown live in its footer; `Ctrl+K` in
+git-review and acp-client). The rule: *if you can find help, you can find
+— and change — every binding*, the same two keystrokes everywhere.
+
 ## How the consumers use it
 
 - **`rstui-kitchen-sink`** — every shell binding (quit, palette, help,
