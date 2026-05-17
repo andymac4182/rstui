@@ -1,8 +1,13 @@
 # rstui-acp-client plugin SDKs
 
 Plugins are **separate processes** that speak **JSON-RPC 2.0** (the same wire
-ACP and MCP use) to the client over a transport (stdio today; websocket is
-additive — same `Message`). Two SDKs, one wire:
+ACP and MCP use) to the client over a transport — **stdio or WebSocket**
+(same `Message`, different framing). The WebSocket server is dependency-free
+(hand-rolled RFC 6455: inline SHA-1/base64 handshake, masked/unmasked text
+frames) so the strict workspace dependency/`cargo deny` budget is untouched.
+A Rust plugin chooses its transport with `serve(...)` (stdio) or
+`serve_ws(addr, ...)` / `serve_plugin_ws(addr, p)` (WebSocket). Two SDKs,
+one wire:
 
 | SDK | Language | Role |
 |---|---|---|
