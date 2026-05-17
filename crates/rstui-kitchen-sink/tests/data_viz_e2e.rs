@@ -2,14 +2,16 @@
 //! `render_e2e` suite drives screens by number hotkey, which only reaches the
 //! first eight (`1`–`8`) — so every screen below it in `Screen::ALL` is
 //! reachable *only* via the command palette and has no app-scale coverage.
-//! This pins the five chart-bearing ones:
+//! This pins the six chart-bearing ones:
 //!
 //! - `Observability`, `Metrics`, `Traces` — the suite that showcases the
 //!   observability widget family (`LineChart`, `Heatmap`, `Histogram`,
 //!   `StatPanel`, `FlameGraph`, `TraceWaterfall`, `LogStream`);
 //! - `Dashboard` (the business-dashboard chart suite: `Canvas` revenue line,
 //!   `StackedBarChart`, `Waterfall`, `Funnel`, `PieChart`, `BulletChart`,
-//!   `Gantt`, `CalendarHeatmap`, KPI `Sparkline`s) and `Live Logs` (the
+//!   `Gantt`, `CalendarHeatmap`, KPI `Sparkline`s);
+//! - `Analytics` (the exploratory chart catalog: `ScatterPlot`, `RadarChart`,
+//!   `BoxPlot`, `Candlestick`, `Treemap`, `Sankey`) and `Live Logs` (the
 //!   filtered tail) — the sibling palette-only screens the hotkey suite
 //!   also cannot reach.
 //!
@@ -67,12 +69,13 @@ fn goto(h: &mut Harness<KitchenSink>, query: &str) {
 /// marker is a panel/border title each screen always renders (verified
 /// against the screen modules), so a present marker proves the screen's
 /// content actually composed, not just the global chrome.
-const DATA_VIZ: [(&str, &str, &str); 5] = [
+const DATA_VIZ: [(&str, &str, &str); 6] = [
     ("dashboard", "Dashboard", "Roadmap"),
     ("live logs", "Live Logs", "application.log"),
     ("observability", "Observability", "Throughput vs errors"),
     ("metrics", "Metrics", "Latency heatmap"),
     ("traces", "Traces", "Span waterfall"),
+    ("analytics", "Analytics", "Treemap"),
 ];
 
 #[test]
