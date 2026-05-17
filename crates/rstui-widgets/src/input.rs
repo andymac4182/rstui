@@ -70,6 +70,7 @@
 
 use std::borrow::Cow;
 
+use crate::extmark::{self, Extmark};
 use rstui_core::{Buffer, Modifier, Position, Rect, Style, TextEdit, Widget};
 
 /// A single-line text-entry field rendered as a pure projection of a
@@ -84,6 +85,12 @@ use rstui_core::{Buffer, Modifier, Position, Rect, Style, TextEdit, Widget};
 /// [`cursor_style`](Self::cursor_style). When the value is empty an optional
 /// [`placeholder`](Self::placeholder) hint is shown instead, styled with
 /// [`placeholder_style`](Self::placeholder_style).
+///
+/// Caller-owned [`extmarks`](Self::extmarks) (the @-mention / pasted-file
+/// "pill" model) patch their [`Style`] over the cells in their character
+/// range, cascading **base → focus → extmark → caret**. The reducer owns and
+/// re-derives the list on every edit; the widget only projects it (see the
+/// [`Extmark`] docs).
 ///
 /// # Example
 ///
@@ -113,6 +120,7 @@ pub struct Input<'a> {
     edit: &'a TextEdit,
     focused: bool,
     placeholder: Cow<'a, str>,
+    extmarks: &'a [Extmark],
     style: Style,
     focus_style: Style,
     cursor_style: Style,
@@ -128,6 +136,7 @@ impl<'a> Input<'a> {
             edit,
             focused: false,
             placeholder: Cow::Borrowed(""),
+            extmarks: &[],
             style: Style::new(),
             focus_style: Style::new(),
             // The caret is a text field's defining affordance: a focused field
@@ -152,6 +161,33 @@ impl<'a> Input<'a> {
     #[must_use]
     pub fn placeholder(mut self, placeholder: impl Into<Cow<'a, str>>) -> Self {
         self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Sets the caller-owned [`Extmark`] list — styled (optionally atomic)
+    /// character ranges patched over the value (@-mention / pasted-file
+    /// pills). The reducer owns the slice and re-derives it on every edit; the
+    /// widget only reads it and never enforces atomicity (that is the
+    /// reducer's cursor-stepping job — see the [`Extmark`] docs). Empty,
+    /// reversed, overlapping, and out-of-range ranges are all total.
+    ///
+    /// ```
+    /// use rstui_core::{Buffer, Color, Position, Rect, Style, TextEdit, Widget};
+    /// use rstui_widgets::{Extmark, Input};
+    ///
+    /// let edit = TextEdit::from_value("hi @ada");
+    /// // The reducer recomputes this range on every edit; the widget reads it.
+    /// let marks = [Extmark::pill(3..7, Style::new().bg(Color::Blue))];
+    /// let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+    /// Input::new(&edit).extmarks(&marks).render(buf.area(), &mut buf);
+    ///
+    /// // "@ada" (chars 3..7) reads as a styled pill; "hi " does not.
+    /// assert_eq!(buf.get(Position::new(3, 0)).unwrap().bg, Color::Blue);
+    /// assert_eq!(buf.get(Position::new(0, 0)).unwrap().bg, Color::Reset);
+    /// ```
+    #[must_use]
+    pub fn extmarks(mut self, extmarks: &'a [Extmark]) -> Self {
+        self.extmarks = extmarks;
         self
     }
 
@@ -202,6 +238,7 @@ impl Widget for Input<'_> {
             edit,
             focused,
             placeholder,
+            extmarks,
             style,
             focus_style,
             cursor_style,
@@ -265,7 +302,9 @@ impl Widget for Input<'_> {
             if i == cursor {
                 caret_x = Some(x);
             }
-            buf.set_cell(Position::new(x, y), ch, base);
+            // Cascade: base/focus fill → extmark pill at this char index.
+            let cell = extmark::patch_at(base, extmarks, i);
+            buf.set_cell(Position::new(x, y), ch, cell);
             x = x.saturating_add(1);
         }
         // Cursor at end-of-text: it is the next free cell, if it still fits.
@@ -276,7 +315,9 @@ impl Widget for Input<'_> {
         if focused {
             if let Some(cx) = caret_x {
                 let glyph = value.chars().nth(cursor).unwrap_or(' ');
-                buf.set_cell(Position::new(cx, y), glyph, base.patch(cursor_style));
+                // Cascade end: extmark patched first, the caret last on top.
+                let under = extmark::patch_at(base, extmarks, cursor);
+                buf.set_cell(Position::new(cx, y), glyph, under.patch(cursor_style));
             }
         }
     }
@@ -527,5 +568,206 @@ mod tests {
             .focused(true)
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    fn bg_at(buf: &Buffer, x: u16) -> Color {
+        buf.get(Position::new(x, 0)).unwrap().bg
+    }
+
+    #[test]
+    fn an_extmark_patches_only_the_cells_in_its_char_range() {
+        let edit = TextEdit::from_value("hi @ada");
+        let marks = [Extmark::pill(3..7, Style::new().bg(Color::Blue))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        for x in 0..3 {
+            assert_eq!(bg_at(&buf, x), Color::Reset);
+        }
+        for x in 3..7 {
+            assert_eq!(bg_at(&buf, x), Color::Blue);
+        }
+        assert_eq!(bg_at(&buf, 7), Color::Reset);
+    }
+
+    #[test]
+    fn multiple_extmarks_each_apply() {
+        // Width > len keeps the stateless scroll at 0 (end cursor).
+        let edit = TextEdit::from_value("ab cd ef");
+        let marks = [
+            Extmark::new(0..2, Style::new().bg(Color::Red)),
+            Extmark::new(6..8, Style::new().bg(Color::Green)),
+        ];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 9, 1));
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(bg_at(&buf, 0), Color::Red);
+        assert_eq!(bg_at(&buf, 1), Color::Red);
+        assert_eq!(bg_at(&buf, 3), Color::Reset);
+        assert_eq!(bg_at(&buf, 6), Color::Green);
+        assert_eq!(bg_at(&buf, 7), Color::Green);
+    }
+
+    #[test]
+    fn overlapping_extmarks_cascade_last_wins() {
+        let edit = TextEdit::from_value("abcdef");
+        let marks = [
+            Extmark::new(0..6, Style::new().bg(Color::Red)),
+            Extmark::new(2..4, Style::new().bg(Color::Blue)),
+        ];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 7, 1));
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(bg_at(&buf, 1), Color::Red);
+        assert_eq!(bg_at(&buf, 2), Color::Blue); // later mark wins
+        assert_eq!(bg_at(&buf, 4), Color::Red);
+    }
+
+    #[test]
+    fn an_out_of_range_extmark_is_a_total_no_op() {
+        let edit = TextEdit::from_value("abc");
+        let marks = [Extmark::new(10..20, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 1));
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        for x in 0..5 {
+            assert_eq!(bg_at(&buf, x), Color::Reset);
+        }
+    }
+
+    #[test]
+    // Reversed/empty ranges are exactly what this totality test feeds in.
+    #[allow(clippy::reversed_empty_ranges)]
+    fn empty_and_reversed_ranges_paint_nothing() {
+        let edit = TextEdit::from_value("abcdef");
+        let marks = [
+            Extmark::new(3..3, Style::new().bg(Color::Red)),
+            Extmark::new(5..2, Style::new().bg(Color::Green)),
+        ];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        for x in 0..6 {
+            assert_eq!(bg_at(&buf, x), Color::Reset);
+        }
+    }
+
+    #[test]
+    fn the_caret_wins_over_an_extmark_under_it() {
+        let mut edit = TextEdit::from_value("abcdef");
+        edit.set_cursor(2);
+        let marks = [Extmark::new(0..6, Style::new().bg(Color::Blue))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        Input::new(&edit)
+            .focused(true)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        let caret = buf.get(Position::new(2, 0)).unwrap();
+        // Extmark fill is patched first, then the caret modifier on top.
+        assert_eq!(caret.bg, Color::Blue);
+        assert!(caret.modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn an_extmark_maps_through_horizontal_scroll() {
+        // 10 chars, width 5, cursor at end → scroll = 6, window = "ghij".
+        let edit = TextEdit::from_value("abcdefghij");
+        // Pill over chars 7..9 ("hi") → visible columns 1..3 of the window.
+        let marks = [Extmark::pill(7..9, Style::new().bg(Color::Blue))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 1));
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 'g');
+        assert_eq!(bg_at(&buf, 0), Color::Reset);
+        assert_eq!(bg_at(&buf, 1), Color::Blue); // 'h'
+        assert_eq!(bg_at(&buf, 2), Color::Blue); // 'i'
+        assert_eq!(bg_at(&buf, 3), Color::Reset); // 'j'
+    }
+
+    #[test]
+    fn an_extmark_over_a_multibyte_char_is_char_indexed() {
+        let edit = TextEdit::from_value("é日x");
+        let marks = [Extmark::new(1..2, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 1));
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        assert_eq!(buf.get(Position::new(1, 0)).unwrap().symbol, '日');
+        assert_eq!(bg_at(&buf, 0), Color::Reset); // 'é'
+        assert_eq!(bg_at(&buf, 1), Color::Red); // '日'
+        assert_eq!(bg_at(&buf, 2), Color::Reset); // 'x'
+    }
+
+    #[test]
+    fn extmarks_project_independently_of_focus() {
+        let edit = TextEdit::from_value("abc");
+        let marks = [Extmark::new(0..3, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
+        // Unfocused: no caret, but the pill still renders (a pure projection).
+        Input::new(&edit)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        for x in 0..3 {
+            assert_eq!(bg_at(&buf, x), Color::Red);
+            assert!(
+                !buf.get(Position::new(x, 0))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::REVERSED)
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_value_with_extmarks_is_total_and_leaves_the_placeholder() {
+        let edit = TextEdit::new();
+        let marks = [Extmark::new(0..5, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        Input::new(&edit)
+            .placeholder("name")
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        // Placeholder is not model text, so the extmark matches no cell.
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 'n');
+        for x in 0..6 {
+            assert_eq!(bg_at(&buf, x), Color::Reset);
+        }
+    }
+
+    #[test]
+    fn extmarks_compose_with_the_base_and_focus_fill() {
+        let edit = TextEdit::from_value("abcd");
+        // The pill sets only bg; the base fg must still cascade through.
+        let marks = [Extmark::new(1..3, Style::new().bg(Color::Blue))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 1));
+        Input::new(&edit)
+            .focused(true)
+            .focus_style(Style::new().fg(Color::Yellow))
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        let pill = buf.get(Position::new(1, 0)).unwrap();
+        assert_eq!(pill.bg, Color::Blue); // extmark
+        assert_eq!(pill.fg, Color::Yellow); // focus fill cascades under it
+    }
+
+    #[test]
+    fn a_zero_width_range_at_the_end_is_a_no_op_with_the_end_caret() {
+        let edit = TextEdit::from_value("ab"); // cursor at end (2)
+        let marks = [Extmark::new(2..2, Style::new().bg(Color::Red))];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
+        Input::new(&edit)
+            .focused(true)
+            .extmarks(&marks)
+            .render(buf.area(), &mut buf);
+        // The end caret is drawn but the empty range tints nothing.
+        let caret = buf.get(Position::new(2, 0)).unwrap();
+        assert!(caret.modifier.contains(Modifier::REVERSED));
+        assert_eq!(caret.bg, Color::Reset);
     }
 }

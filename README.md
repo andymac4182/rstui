@@ -58,7 +58,7 @@ only when there is enough real API surface to justify the boundary.
 
 | Crate                  | Responsibility                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------ |
-| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit, text_area, scroll |
+| `crates/rstui-core`      | Dependency-free substrate: geometry, style, stylize, layout, buffer, backend, terminal, event, event_source, focus, the `Widget` trait, text, text_edit, text_area, scroll, selection |
 | `crates/rstui-widgets`   | The concrete widget set ([ADR 0002](docs/adr/0002-widget-crate-boundary.md)), one module per widget — the core set (`Block`, `Paragraph`, `List`, `Tabs`, `Gauge`, `Scrollbar`, `Spinner`, `Table`, `Checkbox`, `Button`, `Radio`, `Input`, `Modal`, `StatusBar`, `Toast`, `Tree`, `Select`, `Editor`), the rich-rendering family (`Markdown`, `Link`, `Diff`, `Mermaid`), the form/data family (`Slider`, `Switch`, `Form`, `Sparkline`, `BarChart`, `Calendar`, `DescriptionList`, `Badge`, `Alert`, `Divider`), the navigation/layout family (`Menu`, `CommandPalette`, `Tooltip`, `Breadcrumb`, `SplitPane`, `Accordion`, `Card`), and the layout/overlay/control family (`ScrollView`, `Grid`, `Align`, `Popover`, `Drawer`, `Sidebar`, `Skeleton`, `Avatar`, `Kbd`, `HelpOverlay`, `Pagination`, `Stepper`, `MaskedInput`, `DatePicker`) — ~53 today. Depends only on `rstui-core`; the worked reference for third-party widget crates |
 | `crates/rstui-runtime`   | Elm-style `App`/`Cmd` contract, a deterministic terminal-free test harness, and the live `run` loop they share |
 | `crates/rstui-crossterm` | The crossterm-backed terminal driver ([ADR 0001](docs/adr/0001-terminal-backend-strategy.md)); the workspace's only external dependency, isolated here. The crossterm → `rstui-core` event translation, the `Backend` impl over `io::Write`, the panic-safe RAII lifecycle guard, and the `CrosstermEventSource` input source |
@@ -193,6 +193,15 @@ loop — so every layer above it can be unit tested without a TTY.
   `offset` stays in bounds after `clamp`) — the `TextEdit`/`FocusRing`
   discipline. `new()` follows the tail (the useful streaming default),
   `Default` is inert — a deliberate, documented divergence.
+- `selection` — the optional, caller-owned text-selection model
+  ([ADR 0012](docs/adr/0012-widget-composition-and-layout-model.md) §P1):
+  `Selection`, a row-major terminal-stream span over content coordinates
+  (`start`/`extend`/`clear`/`ordered`/`contains`), plus `selected_text(&Buffer,
+  &Selection) -> String` (per-row trailing-space trim, `'\n'`-joined). The app
+  sets the span on mouse drag in `update`, widgets read `contains` to style
+  selected cells, the app extracts the copied text — enabling drag-select →
+  copy. **Total** (20k-op LCG property test; out-of-buffer coords clamp, never
+  panic). The `TextEdit`/`ScrollState` discipline.
 
 ### `rstui-widgets`
 
@@ -451,6 +460,15 @@ layout/overlay/control family — the same pure-projection, total discipline:
   unmask toggle (passwords); `Input` itself untouched.
 - `date_picker` — `DatePicker`: a closed field dropping an opaque anchored
   `Calendar` panel (the `Select` idiom, self-contained, no date math).
+- `extmark` — `Extmark`: a caller-owned `(range, Style, atomic)` overlay
+  `Editor`/`Input` project as styled, optionally cursor-atomic "pills"
+  (@-mention/paste chips). The reducer owns and re-derives the ranges on every
+  edit; the widget only reads (ADR 0012 §P1). Char-indexed, multi-byte-safe,
+  total (empty/reversed/overlapping/out-of-range ranges clip).
+- `line_number_gutter` — `LineNumberGutter`: a pure layout widget drawing a
+  right-aligned numeric (+ optional per-row sign) gutter and exposing the inner
+  content `Rect` (the `Block::inner` pattern) for code/diff/editor panes.
+  Total (huge numbers saturate, narrow area collapses `inner`).
 
 ### `rstui-runtime`
 
@@ -644,6 +662,8 @@ cargo run -p rstui-widgets --example pagination_demo
 cargo run -p rstui-widgets --example stepper_demo
 cargo run -p rstui-widgets --example masked_input_demo
 cargo run -p rstui-widgets --example date_picker_demo
+cargo run -p rstui-widgets --example extmark_demo
+cargo run -p rstui-widgets --example line_number_gutter_demo
 # The flagship: one dynamic full-screen app exercising every widget +
 # layout, driven by the public runtime, headless-testable. The executable
 # proof of docs/composition.md / ADR 0012.
