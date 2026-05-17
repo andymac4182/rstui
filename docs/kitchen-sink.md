@@ -111,7 +111,10 @@ Every shell binding is a semantic `Action` resolved through the shared
 [`rstui-keymap`](keymaps.md) engine (ADR 0015) — so the bindings above are
 the *Default* keymap; switching keymaps or remapping in the drawer changes
 them and the help/footer follow automatically. The displayed chords are
-per-OS (`⌘` on macOS, `Ctrl` elsewhere).
+per-OS (`⌘` on macOS, `Ctrl` elsewhere). `RSTUI_KEYMAP=Vim` picks a map
+at launch, or point it at a keymap config file to remap actions — no
+rebuild, no drawer needed, mirroring `RSTUI_THEME`
+(see [Keymaps](keymaps.md#end-user-a-config-file-no-app-ui-no-rebuild)).
 
 ## Resolution adaptive
 

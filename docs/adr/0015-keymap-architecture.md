@@ -147,6 +147,15 @@ reverse lookup that the immediate-mode UI consumes.
 - No config-file *loading* yet (no serde in the crate): `override_action`
   takes the config-style string, but reading a `keymap.toml` is the
   consuming app's job (kept out so the crate stays dependency-light).
+  - *Follow-up (resolved 2026-05-17):* a **serde-free, std-only**
+    `Keymaps::load_overrides` (hand-parsed `id = keys`, the same ethos as
+    `Chord::parse` — no dependency added) plus `set_active`/`map_names`
+    now ship; the kitchen sink wires them through `RSTUI_KEYMAP`,
+    mirroring `RSTUI_THEME`. The decision stands (the crate stays
+    dependency-light); only the deferral is lifted. Also delivered:
+    app-defined actions (`Action::Custom` + `Keymaps::bind`/`from_maps`)
+    so the engine is reusable beyond the kitchen sink's vocabulary. See
+    [`docs/keymaps.md`](../keymaps.md).
 - Resolution is shell-level only by design — per-widget keymaps are not
   modelled; screens still own their raw keys (ADR 0004 routing).
 - Chord vocabulary is the crate's (`bs`/`del` for Backspace/Delete);
