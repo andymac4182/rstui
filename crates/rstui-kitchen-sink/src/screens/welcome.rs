@@ -57,6 +57,26 @@ pub(crate) fn on_click(pos: Position, content: Rect) -> ScreenOutcome {
     ScreenOutcome::ignored()
 }
 
+/// The container a drag-select stays inside: the Markdown tour, or the
+/// quickstart Card. Mirrors [`view`]'s split exactly.
+pub(crate) fn selection_region(pos: Position, content: Rect) -> Option<Rect> {
+    let [_, mid, _, _] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(4),
+        Constraint::Length(1),
+    ])
+    .areas(content);
+    let [tour, card] = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)]).areas(mid);
+    if tour.contains(pos) {
+        Some(crate::screens::block_inner(tour))
+    } else if card.contains(pos) {
+        Some(crate::screens::block_inner(card))
+    } else {
+        None
+    }
+}
+
 /// Draw the welcome screen.
 pub(crate) fn view(theme: &Theme, frame: &mut Frame<'_>, area: Rect) {
     let [banner, mid, keys, foot] = Layout::vertical([

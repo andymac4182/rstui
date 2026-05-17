@@ -167,6 +167,28 @@ impl State {
         ScreenOutcome::ignored()
     }
 
+    /// A drag-select stays inside one panel — the Diff, the live
+    /// DescriptionList, the Calendar, a chart, or the Accordion — never
+    /// across the dashboard. Mirrors [`view`]'s six-panel grid exactly.
+    pub(crate) fn selection_region(&self, pos: Position, content: Rect) -> Option<Rect> {
+        let [top, mid, bottom] = Layout::vertical([
+            Constraint::Length(8),
+            Constraint::Length(11),
+            Constraint::Fill(1),
+        ])
+        .areas(content);
+        let [prog, bars] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Fill(1)]).areas(top);
+        let [cal, desc] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Fill(1)]).areas(mid);
+        let [diff, acc] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Fill(1)]).areas(bottom);
+        [prog, bars, cal, desc, diff, acc]
+            .into_iter()
+            .find(|r| r.contains(pos))
+            .map(crate::screens::block_inner)
+    }
+
     /// Draw the dashboard. `tick` animates the auto gauge / sparkline / bars.
     pub(crate) fn view(&self, theme: &Theme, tick: u64, frame: &mut Frame<'_>, area: Rect) {
         let [top, mid, bottom] = Layout::vertical([

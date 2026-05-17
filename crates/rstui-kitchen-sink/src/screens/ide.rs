@@ -113,6 +113,29 @@ impl State {
         ScreenOutcome::ignored()
     }
 
+    /// A drag-select stays inside the code area (the rect *after* the
+    /// line-number gutter) or the Problems list — never across the two or
+    /// over the gutter. Mirrors [`view`]'s editor composition exactly.
+    pub(crate) fn selection_region(&self, pos: Position, content: Rect) -> Option<Rect> {
+        let [_, body, _] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(content);
+        let [editor_a, problems] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(34)]).areas(body);
+        if editor_a.contains(pos) {
+            let ia = crate::screens::block_inner(editor_a);
+            let rows = self.files[self.active].1.row_count();
+            let gutter = LineNumberGutter::new(1, rows).min_number_width(3);
+            return Some(gutter.inner(ia));
+        }
+        problems
+            .contains(pos)
+            .then(|| crate::screens::block_inner(problems))
+    }
+
     /// Wheel scroll moves the caret a line at a time.
     pub(crate) fn on_scroll(&mut self, up: bool) {
         if up {

@@ -30,11 +30,19 @@ pub(crate) mod rich_text;
 pub(crate) mod settings_app;
 pub(crate) mod welcome;
 
-use rstui_core::{KeyCode, Position, Rect};
+use rstui_core::{KeyCode, Margin, Position, Rect};
 use rstui_runtime::Frame;
 use rstui_widgets::ToastLevel;
 
 use crate::theme::Theme;
+
+/// The text-bearing rect inside a rounded framing block (every panel here is
+/// `Block::bordered()` with no padding, so its inner is a one-cell margin).
+/// Used by `selection_region` so a drag stays inside the *container*'s text,
+/// never its border or a neighbouring panel.
+pub(crate) fn block_inner(r: Rect) -> Rect {
+    r.inner(Margin::new(1, 1))
+}
 
 /// The tab a click landed on in a one-row [`Tabs`](rstui_widgets::Tabs)
 /// strip, or `None` if it missed every tab.
@@ -433,6 +441,32 @@ impl ScreenState {
             Screen::Logs => self.logs.on_scroll(up),
             Screen::Ide => self.ide.on_scroll(up),
             _ => {}
+        }
+    }
+
+    /// The text container under `pos` for the active screen — the rect a
+    /// drag-selection must stay inside (so it never crosses into a
+    /// neighbouring panel or the chrome). `None` means "nothing selectable
+    /// here" (the press is then a plain click). Screens that are a single
+    /// text surface fall back to the whole `content`.
+    pub(crate) fn selection_region(
+        &self,
+        screen: Screen,
+        pos: Position,
+        content: Rect,
+    ) -> Option<Rect> {
+        match screen {
+            Screen::Welcome => welcome::selection_region(pos, content),
+            Screen::RichText => self.rich_text.selection_region(pos, content),
+            Screen::Data => self.data.selection_region(pos, content),
+            Screen::Mail => self.mail.selection_region(pos, content),
+            Screen::Logs => logs::selection_region(pos, content),
+            Screen::Ide => self.ide.selection_region(pos, content),
+            Screen::Chat => chat::selection_region(pos, content),
+            Screen::Containers => containers::selection_region(pos, content),
+            // Single-surface screens: confine to the whole content (still
+            // never the sidebar/header/footer), not a sub-panel.
+            _ => Some(content),
         }
     }
 
