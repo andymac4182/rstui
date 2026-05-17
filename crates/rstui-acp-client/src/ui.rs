@@ -9,7 +9,7 @@
 
 use rstui_core::{Color, Constraint, Layout, Line, Position, Rect, Span, Style};
 use rstui_runtime::Frame;
-use rstui_widgets::{Block, List, ListItem, Paragraph, Wrap};
+use rstui_widgets::{Block, List, ListItem, Markdown, Paragraph, Wrap};
 
 use crate::app::{ChatApp, Role, Screen};
 use crate::plugin::FooterSegment;
@@ -451,11 +451,24 @@ fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
             format!("{label}:"),
             Style::new().fg(color),
         )]));
-        for raw in entry.text.split('\n') {
-            out.push(Line::from(vec![
-                Span::styled("  ", Style::new()),
-                Span::styled(raw.to_owned(), Style::new().fg(line_color(entry.role))),
-            ]));
+
+        // Parse markdown for agent responses to support links
+        if entry.role == Role::Agent {
+            let markdown = Markdown::new(&entry.text);
+            let md_lines = markdown.lines(80); // Use reasonable default width
+            for line in md_lines {
+                // Indent each markdown line
+                let mut spans = vec![Span::styled("  ", Style::new())];
+                spans.extend(line.spans);
+                out.push(Line::from(spans));
+            }
+        } else {
+            for raw in entry.text.split('\n') {
+                out.push(Line::from(vec![
+                    Span::styled("  ", Style::new()),
+                    Span::styled(raw.to_owned(), Style::new().fg(line_color(entry.role))),
+                ]));
+            }
         }
         out.push(Line::raw(""));
     }
