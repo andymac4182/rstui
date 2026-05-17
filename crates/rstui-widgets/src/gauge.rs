@@ -203,7 +203,33 @@ impl Widget for Gauge<'_> {
         // both ways. Where it crosses the filled run its fg/bg are swapped so
         // the text stays readable over the solid bar; over the track it keeps
         // the gauge style. A caller label's own style is patched last.
-        let label = label.unwrap_or_else(|| Span::raw(format!("{}%", (ratio * 100.0).round())));
+        // GAUGE-1: the default `{pct}%` label was a `format!` String every
+        // frame. `ratio` is clamped to `0.0..=1.0` (NaN→0; `ratio`/`percent`
+        // are the only setters), so `(ratio*100).round()` is an
+        // integer-valued f64 in `0..=100`; `format!("{}%", v)` is then
+        // exactly its decimal digits + `%`. Stamp those into a stack buffer
+        // (`Span::raw` borrows it) — byte-identical, no per-frame alloc.
+        let mut pct_buf = [0u8; 4];
+        let label = match label {
+            Some(s) => s,
+            None => {
+                let pct = (ratio * 100.0).round() as u32;
+                let mut k = 0;
+                if pct >= 100 {
+                    pct_buf[k] = b'0' + (pct / 100) as u8;
+                    k += 1;
+                }
+                if pct >= 10 {
+                    pct_buf[k] = b'0' + (pct / 10 % 10) as u8;
+                    k += 1;
+                }
+                pct_buf[k] = b'0' + (pct % 10) as u8;
+                k += 1;
+                pct_buf[k] = b'%';
+                k += 1;
+                Span::raw(std::str::from_utf8(&pct_buf[..k]).expect("ASCII digits and %"))
+            }
+        };
         let label_width = inner.width.min(label.width() as u16);
         if label_width == 0 {
             return;
