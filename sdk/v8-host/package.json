@@ -1,0 +1,20 @@
+{
+  "name": "@rstui-acp/v8-host",
+  "version": "0.0.1",
+  "description": "Node V8 plugin host for rstui-acp-client: runs TS/JS plugins in a secure-exec V8 isolate, bridged to JSON-RPC 2.0 over stdio.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "rstui-acp-v8-host": "host.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  },
+  "optionalDependencies": {
+    "secure-exec": "^0.2.1"
+  },
+  "files": ["host.mjs"]
+}
