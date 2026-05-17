@@ -20,6 +20,7 @@ use rstui_core::{
     Buffer, Cell, Constraint, Layout, Position, Rect, Selection, Style, TextArea, Widget,
     selected_text,
 };
+use rstui_runtime::{App, Cmd, Frame, Harness};
 use rstui_widgets::{List, ListItem, Markdown, Paragraph, Row, Table, Tree, TreeItem, Wrap};
 
 use crate::measure::{Bench, Stats};
@@ -262,6 +263,79 @@ fn widget_markdown_render(bench: &Bench) -> Stats {
     })
 }
 
+/// A representative multi-widget app: a selectable `List` beside a wrapped
+/// `Paragraph`, split by `Layout` — the shape a real screen's `view`
+/// projects every frame. State is caller-owned (immediate-mode); the
+/// widgets are rebuilt from borrowed data each `view`.
+struct FrameApp {
+    rows: Vec<String>,
+    para: String,
+    sel: usize,
+}
+
+/// `Bump` moves the selection one row — the "one widget changed" frame.
+enum FrameMsg {
+    Bump,
+}
+
+impl App for FrameApp {
+    type Message = FrameMsg;
+
+    fn update(&mut self, message: FrameMsg) -> Cmd<FrameMsg> {
+        match message {
+            FrameMsg::Bump => {
+                self.sel = (self.sel + 1) % self.rows.len().max(1);
+            }
+        }
+        Cmd::none()
+    }
+
+    fn view(&self, frame: &mut Frame<'_>) {
+        let cols = Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)])
+            .split(frame.area());
+        frame.render_widget(
+            List::new(self.rows.iter().map(|s| ListItem::new(s.as_str()))).selected(Some(self.sel)),
+            cols[0],
+        );
+        frame.render_widget(
+            Paragraph::new(self.para.as_str()).wrap(Wrap { trim: false }),
+            cols[1],
+        );
+    }
+}
+
+fn frame_app() -> FrameApp {
+    FrameApp {
+        rows: rows_data(500),
+        para: rows_data(120).join("\n"),
+        sel: 0,
+    }
+}
+
+/// `runtime/frame/idle` — the steady-state idle re-render through the public
+/// `Harness`: `view` re-projects the whole screen, `Buffer::diff` finds
+/// (near) zero changes, the backend flushes nothing. The dominant cost of an
+/// animated/idle app, and what `Buffer::diff`/`Terminal::reset` ultimately
+/// pay into (BN01). `Harness::tick` re-renders even with no state change.
+fn runtime_frame_idle(bench: &Bench) -> Stats {
+    let mut h = Harness::new(frame_app(), FRAME_W, FRAME_H);
+    bench.run(|| {
+        h.tick();
+        h.app().sel
+    })
+}
+
+/// `runtime/frame/changed` — one widget's state changed: `update` folds the
+/// message, `view` re-projects, `Buffer::diff` emits the small delta, the
+/// backend flushes it. The realistic interactive frame cost (BN01).
+fn runtime_frame_changed(bench: &Bench) -> Stats {
+    let mut h = Harness::new(frame_app(), FRAME_W, FRAME_H);
+    bench.run(|| {
+        h.message(FrameMsg::Bump);
+        h.app().sel
+    })
+}
+
 /// The scenario registry: stable `name` → measuring function. `main` filters
 /// and iterates this; the names are the substring-filter and `--list`
 /// vocabulary, so keep them stable and `/`-segmented.
@@ -281,6 +355,8 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     ("widget/tree/render", widget_tree_render),
     ("widget/paragraph/render", widget_paragraph_render),
     ("widget/markdown/render", widget_markdown_render),
+    ("runtime/frame/idle", runtime_frame_idle),
+    ("runtime/frame/changed", runtime_frame_changed),
 ];
 
 #[cfg(test)]

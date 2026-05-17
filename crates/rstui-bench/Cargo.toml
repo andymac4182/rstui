@@ -23,3 +23,8 @@ workspace = true
 [dependencies]
 rstui-core = { path = "../rstui-core" }
 rstui-widgets = { path = "../rstui-widgets" }
+# `runtime/frame/*` drives a representative App through the public headless
+# `Harness` (the same one the test suite uses) to measure the end-to-end
+# view→diff→flush frame cost — the bench-gap the audit flagged. First-party,
+# `rstui-core`-only crate, so "rstui code plus std" still holds.
+rstui-runtime = { path = "../rstui-runtime" }
