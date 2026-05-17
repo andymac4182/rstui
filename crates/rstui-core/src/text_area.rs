@@ -107,6 +107,16 @@ use std::fmt;
 pub struct TextArea {
     /// One logical line per `String`, never empty, no embedded `'\n'`.
     lines: Vec<String>,
+    /// Cached `lines[i].chars().count()` for every row, kept exact by every
+    /// mutator so [`line_char_len`](Self::line_char_len) is O(1) instead of
+    /// an O(line) UTF-8 re-scan — the per-keystroke (`move_*`) and
+    /// per-visible-row (projecting `Editor`) hot path (CM-3, the 2-D
+    /// analogue of [`TextEdit`](crate::text_edit::TextEdit)'s `char_len`,
+    /// CM-2). It is a pure function of `lines` (`line_lens.len() ==
+    /// lines.len()` and `line_lens[i] == lines[i].chars().count()`), so the
+    /// derived `PartialEq`/`Eq` stay correct (equal `lines` ⇒ equal cache)
+    /// and the totality proptest gate-enforces the invariant after every op.
+    line_lens: Vec<usize>,
     /// Row index in `0..lines.len()`.
     row: usize,
     /// Character index in `0..=lines[row].chars().count()`.
@@ -123,6 +133,7 @@ impl Default for TextArea {
     fn default() -> Self {
         Self {
             lines: vec![String::new()],
+            line_lens: vec![0],
             row: 0,
             col: 0,
             goal_col: None,
@@ -191,6 +202,7 @@ impl TextArea {
         if self.lines.is_empty() {
             self.lines.push(String::new());
         }
+        self.line_lens = self.lines.iter().map(|l| l.chars().count()).collect();
         self.row = self.lines.len() - 1;
         self.col = self.line_char_len(self.row);
         self.goal_col = None;
@@ -200,6 +212,7 @@ impl TextArea {
     /// the origin.
     pub fn clear(&mut self) {
         self.lines = vec![String::new()];
+        self.line_lens = vec![0];
         self.row = 0;
         self.col = 0;
         self.goal_col = None;
@@ -227,6 +240,7 @@ impl TextArea {
         } else {
             let at = self.byte_at(self.row, self.col);
             self.lines[self.row].insert(at, c);
+            self.line_lens[self.row] += 1;
             self.col += 1;
         }
     }
@@ -244,6 +258,13 @@ impl TextArea {
             return;
         }
 
+        // The contiguous row range this paste rewrites — `line_lens` for
+        // exactly `[start ..= self.row]` is recomputed from the final
+        // strings at the end (CM-3). Paste is the cold path, so a precise
+        // recount there is correct-by-construction and not worth O(1) delta
+        // arithmetic across this method's several `lines` rewrites.
+        let start = self.row;
+
         let mut segments = s.split('\n');
         // `split` always yields at least one segment, so this never panics.
         let first = segments.next().unwrap_or("");
@@ -258,8 +279,10 @@ impl TextArea {
 
         if rest.is_empty() {
             // No newline: a single-line insert. The cursor sits between the
-            // pasted text and the re-attached tail.
-            self.col = self.line_char_len(self.row);
+            // pasted text and the re-attached tail. Count the row directly
+            // (not via the cache, which `line_lens` resync below has not yet
+            // updated) — identical to the original `line_char_len` here.
+            self.col = self.lines[self.row].chars().count();
             self.lines[self.row].push_str(&tail);
         } else {
             let last_idx = rest.len() - 1;
@@ -273,6 +296,16 @@ impl TextArea {
                 self.lines.insert(self.row, line);
             }
         }
+
+        // CM-3: the single `line_lens` entry at `start` is replaced by the
+        // exact char counts of every row this paste produced
+        // (`[start ..= self.row]`), keeping the cache a perfect mirror of
+        // `lines` regardless of how many rows the split created.
+        let new: Vec<usize> = self.lines[start..=self.row]
+            .iter()
+            .map(|l| l.chars().count())
+            .collect();
+        self.line_lens.splice(start..start + 1, new);
     }
 
     /// Splits the current line at the cursor, opening a new row — exactly
@@ -291,13 +324,19 @@ impl TextArea {
             let end = self.byte_at(self.row, self.col);
             let start = self.byte_at(self.row, self.col - 1);
             self.lines[self.row].replace_range(start..end, "");
+            self.line_lens[self.row] -= 1;
             self.col -= 1;
             true
         } else if self.row > 0 {
             let current = self.lines.remove(self.row);
+            // Mirror the row removal in the cache; the prev row's cached
+            // len is still exact, so the `line_char_len` read below (the
+            // pre-join cursor column) is unchanged from the old behaviour.
+            let removed = self.line_lens.remove(self.row);
             self.row -= 1;
             self.col = self.line_char_len(self.row);
             self.lines[self.row].push_str(&current);
+            self.line_lens[self.row] += removed;
             true
         } else {
             false
@@ -314,10 +353,13 @@ impl TextArea {
             let start = self.byte_at(self.row, self.col);
             let end = self.byte_at(self.row, self.col + 1);
             self.lines[self.row].replace_range(start..end, "");
+            self.line_lens[self.row] -= 1;
             true
         } else if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
+            let removed = self.line_lens.remove(self.row + 1);
             self.lines[self.row].push_str(&next);
+            self.line_lens[self.row] += removed;
             true
         } else {
             false
@@ -448,15 +490,25 @@ impl TextArea {
     fn split_line_at_cursor(&mut self) {
         let at = self.byte_at(self.row, self.col);
         let tail = self.lines[self.row].split_off(at);
+        // The line keeps its prefix (full − tail) and the tail becomes the
+        // next row: a split of the cached length, no recount needed.
+        let tail_len = tail.chars().count();
+        self.line_lens[self.row] -= tail_len;
         self.row += 1;
         self.lines.insert(self.row, tail);
+        self.line_lens.insert(self.row, tail_len);
         self.col = 0;
     }
 
     /// The character length of row `row` (the largest valid column there).
     /// `row` is always in range when called (the cursor invariant).
+    ///
+    /// O(1): reads the [`line_lens`](Self::line_lens) cache every mutator
+    /// keeps exact, not an O(line) UTF-8 re-scan (CM-3). This is the
+    /// per-keystroke (`move_*`/`set_cursor`) and per-visible-row
+    /// (projecting `Editor`) hot path.
     fn line_char_len(&self, row: usize) -> usize {
-        self.lines[row].chars().count()
+        self.line_lens[row]
     }
 
     /// The byte offset of character index `char_idx` within `lines[row]`, or
@@ -779,6 +831,25 @@ mod tests {
                 // the next edit cannot split a codepoint.
                 let byte = ta.byte_at(r, c);
                 assert!(line.is_char_boundary(byte), "cursor landed mid-codepoint");
+                // Invariant 5 (CM-3): the `line_lens` cache is *exactly* the
+                // per-row char count after every operation — the contract
+                // that makes the O(1) `line_char_len` correct. This is the
+                // gate-enforced desync detector (the CM-2 precedent): any
+                // mutator that ever leaves it stale fails here, across all
+                // 18 ops × 3000 iters × 5 seeds (paste/clear/set/join/split
+                // included), so a desync can never ship silently.
+                assert_eq!(
+                    ta.line_lens.len(),
+                    ta.lines.len(),
+                    "line_lens length desynced from lines"
+                );
+                for (i, l) in ta.lines.iter().enumerate() {
+                    assert_eq!(
+                        ta.line_lens[i],
+                        l.chars().count(),
+                        "line_lens[{i}] desynced from its line's char count"
+                    );
+                }
             }
             // Reaching here for every seed proves no operation panicked.
         }

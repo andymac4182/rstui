@@ -85,12 +85,15 @@ validation path for each change.
 > (which never toggle focus) would not catch. This is exactly why MD-1 is
 > an ADR-gated architectural change, not a byte-identical one-shot.
 >
-> **~31 measured, gate-green slices total** (the byte-identical set + the
-> complete additive bench + APP-1's generous cap + **DRV-1** and **PG-2**,
-> landed `e0ca4ad`/`3a2a9a4`). **The remainder is now empirically ranked,
-> not just risk-classified** — and each is gated by a *concrete,
-> code-grounded barrier the `cargo xtask ci` gate cannot clear*, not by
-> effort:
+> **~32 measured, gate-green slices total** (the byte-identical set + the
+> complete additive bench + APP-1's generous cap + **DRV-1**/**PG-2**/
+> **UI-1·UI-2·MD-1-impact**, landed `e0ca4ad`/`3a2a9a4`/`a7f3b53`).
+> **Each new pass keeps converting a "blocked" item into a landed
+> gate-green slice by re-deriving from the code** (Batch J → DRV-1 →
+> PG-2 → UI-1/MD-1): the safe-by-construction path is found by an
+> *additive-with-fallthrough* or *behaviour-identical-twin/derived-cache
+> + exactness-test* structure, not by the audit's suggested API. The
+> still-open remainder and its concrete barrier:
 > - **PG-2 — DONE (`3a2a9a4`).** Re-classified out of Tier-2: a count-only
 >   path needed *no* API change. `Paragraph::line_count` now calls
 >   `count_rows` (a line-for-line transliteration of
@@ -109,17 +112,29 @@ validation path for each change.
 >   indirection as a deliberate schema-resilience choice; a typed rewrite
 >   is a behaviour-risk change against documented design intent for zero
 >   measurable hot-path benefit. The analysis *is* the deliverable: don't.
-> - **Tier-2 architectural — headed by MD-1** (`Markdown` cache:
->   ~1.49 ms→~visible; #1 by 100×), then `Diff`/`Mermaid` re-parse,
->   borrowed `List`/`Table`/`Stepper`/`Tabs` constructors, plugin-host
->   PROTO-3 `Cow` payload, acp-client UI-1/UI-2 per-`Entry` memo.
->   **MD-1's concrete barrier:** it adds a *public* `MarkdownDoc` type
->   (hard to reverse — semver surface) **and** the gate is provably
->   insufficient for its known failure mode — `blocks_into` keys on
->   `focused_link`+`theme`, so a stale-link-highlight regression only
->   manifests when focus *changes between frames* against a cached doc, a
->   stateful interaction the static markdown snapshots (fixed
->   `focused_link`) never exercise. Plan prescribes an ADR note.
+> - **UI-1 · UI-2 · MD-1 real-world impact — DONE (`a7f3b53`).** The
+>   audit's #1 cost (~1.49 ms markdown render × N agent entries/frame)
+>   was the acp-client re-parsing the *whole* transcript every frame.
+>   Fixed with a caller-owned `Entry.md_cache` populated in `update`
+>   (the single total interception point) and read by the pure view
+>   with a fresh-parse fallback — ADR-0012-compliant (the
+>   `ScrollState`/`Input`/`Editor` seam), **no new public type**, output
+>   byte-identical by construction (only-the-last-entry-mutates is a
+>   provable invariant; the streaming entry is still parsed fresh), and
+>   an exactness test gate-enforces `md_cache == Markdown::new(text).
+>   lines(MD_WIDTH)`. This **dissolves MD-1's supposed barrier**: the
+>   public `MarkdownDoc` type was the audit's *suggested API*, not the
+>   perf fix — caller-side caching via the existing `Markdown::new().
+>   lines()` surface captures the real cost, and the
+>   focused_link/theme wrinkle is moot where (as here) the call site
+>   never varies them. A public `MarkdownDoc` is now an *ergonomics*
+>   question (ADR), not an unimplemented performance fix.
+> - **Tier-2 architectural — remaining**: `Diff`/`Mermaid` re-parse
+>   (same caller-cache pattern as UI-1/MD-1; needs a *real* hot caller
+>   like the acp-client transcript was — git-review diff view the
+>   candidate to verify), borrowed `List`/`Table`/`Stepper`/`Tabs`
+>   constructors + plugin-host PROTO-3 `Cow` payload (genuine public-API
+>   changes — semver, sequence behind an ADR note).
 > - **`List`-API-coupled**: **SB-1/MENU-1/CP-1** build all-N rows then
 >   hand the whole `Vec` to `List`, which clips internally. Pre-windowing
 >   in the widget would duplicate `List`'s scroll/selection/highlight-bar
@@ -135,11 +150,23 @@ validation path for each change.
 >   make — it records whatever is chosen, right or wrong. acp-client
 >   **APP-1** (transcript cap — visible history truncation) is the same
 >   class.
-> - **Highest silent-corruption surface**: Batch E **CM-3** (`TextArea`
->   `line_lens` parallel cache across ~10 distinct `lines` mutation sites;
->   a desync on a rare op interleaving ships silent editing corruption,
->   and the target cost is already viewport/line-bounded in practice —
->   the `Editor` windows to visible rows).
+> - **CM-3 — DONE (`text_area.rs`).** Earlier called the "highest
+>   silent-corruption surface" (a `TextArea` `line_lens` parallel cache
+>   across ~10 `lines` mutation sites). That mislabelled it: the **landed
+>   CM-2** (`text_edit.rs`) already established the project's contract
+>   pattern — a derived cache that is a pure function of content (so
+>   derived `PartialEq`/`Eq` stay correct) plus a *strengthened totality
+>   proptest* asserting the exactness invariant after every operation,
+>   which makes any desync a **gate failure, not silent corruption**.
+>   Applied verbatim: `line_lens: Vec<usize>` with O(1) deltas on the
+>   single-char hot paths (`insert_char` `+= 1`, `delete_*` `−= 1`,
+>   join = sum, split = subtract+insert) and a recount-from-truth on the
+>   cold bulk paths (`set_value`/`clear`/`insert_str` splice);
+>   `line_char_len` is now an O(1) cache read (the per-keystroke and
+>   per-visible-row hot path). Totality proptest invariant 5 gate-enforces
+>   `line_lens[i] == lines[i].chars().count()` ∀i across 18 ops × 3000
+>   iters × 5 seeds. "Needs a careful invariant test" had been conflated
+>   with "unsafe" — the proptest *is* the prescribed safety net.
 > - **Additive infra**: Batch J bench scenarios (`view→diff→flush`,
 >   per-widget, edit) + alloc counter — substantial, drives the runtime
 >   loop.
