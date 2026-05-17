@@ -16,7 +16,9 @@
 //! Frame size is a fixed 160×48 (a large-but-ordinary terminal, 7 680 cells)
 //! so numbers are comparable run to run.
 
-use rstui_core::{Buffer, Cell, Constraint, Layout, Position, Rect, Style};
+use rstui_core::{
+    Buffer, Cell, Constraint, Layout, Position, Rect, Selection, Style, TextArea, selected_text,
+};
 
 use crate::measure::{Bench, Stats};
 
@@ -137,6 +139,35 @@ fn layout_split_nested(bench: &Bench) -> Stats {
     })
 }
 
+/// `edit/textarea/insert` — one keystroke into a mid-sized document: the
+/// per-keypress cost the chat composer / IDE editor pays (BN03). Insert then
+/// immediately delete so the document and cursor are stable across
+/// iterations, isolating the `byte_at` + cached `char_len` edit path
+/// (CM-2/CM-4) rather than measuring an ever-growing buffer.
+fn edit_textarea_insert(bench: &Bench) -> Stats {
+    let doc: String = (0..200)
+        .map(|i| format!("{i:>4}  the quick brown fox jumps over the lazy dog 0123456789\n"))
+        .collect();
+    let mut ta = TextArea::from_value(doc);
+    ta.set_cursor(100, 20);
+    bench.run(|| {
+        ta.insert_char('x');
+        ta.delete_backward()
+    })
+}
+
+/// `selection/extract` — the copy path: read a large drag-selected region
+/// out of the content buffer as text (BN03). A full-frame selection over a
+/// painted 160×48 buffer, the worst case `selected_text` walks.
+fn selection_extract(bench: &Bench) -> Stats {
+    let mut buf = Buffer::empty(frame());
+    paint(&mut buf);
+    let mut sel = Selection::new();
+    sel.start(Position::new(0, 0));
+    sel.extend(Position::new(FRAME_W - 1, FRAME_H - 1));
+    bench.run(|| selected_text(&buf, &sel))
+}
+
 /// The scenario registry: stable `name` → measuring function. `main` filters
 /// and iterates this; the names are the substring-filter and `--list`
 /// vocabulary, so keep them stable and `/`-segmented.
@@ -149,6 +180,8 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     ("buffer/set_str", buffer_set_str),
     ("buffer/clear_region", buffer_clear_region),
     ("layout/split/nested", layout_split_nested),
+    ("edit/textarea/insert", edit_textarea_insert),
+    ("selection/extract", selection_extract),
 ];
 
 #[cfg(test)]
