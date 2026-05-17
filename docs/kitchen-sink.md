@@ -64,6 +64,13 @@ Reach them from the `Observability` rail group, the command palette
 (`:observability` / `:metrics` / `:traces`), or the sidebar. They are
 arrow-driven; the series animate from the shared animation `tick`.
 
+Having no number hotkey, they are out of reach of the digit-bound
+`render_e2e` suite, so they carry their own app-scale coverage:
+`crates/rstui-kitchen-sink/tests/data_viz_e2e.rs` (headless `Harness` —
+palette-navigates to each, asserts the widget content renders, coloured,
+total under resize/ticks) plus the `vhs/e2e/kitchen-sink-dataviz.{tape,expect}`
+real-binary gate run by `cargo xtask record e2e --check`.
+
 ## Keybindings
 
 | Key(s) | Action |

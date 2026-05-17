@@ -55,8 +55,10 @@ vhs/
     kitchen-sink-160x50.tape
     kitchen-sink-200x60.tape
   e2e/
-    kitchen-sink-smoke.tape   # drives the real binary; Output is a .txt capture
-    kitchen-sink-smoke.expect # required substrings in the final frame
+    kitchen-sink-smoke.tape     # drives the real binary; Output is a .txt capture
+    kitchen-sink-smoke.expect   # required substrings in the final frame
+    kitchen-sink-dataviz.tape   # palette-drives the real binary through the
+    kitchen-sink-dataviz.expect # observability/data-viz screens
 ```
 
 - Every tape `Source vhs/common.tape`, so theme/font/padding are defined once.
