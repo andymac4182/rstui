@@ -9,6 +9,7 @@ use rstui_core::{
     stylize::Stylize,
 };
 use rstui_runtime::Frame;
+use rstui_widgets::mermaid::MermaidGraph;
 use rstui_widgets::{Block, BorderType, Kbd, Markdown, Mermaid, Paragraph, Tabs, Wrap};
 
 use crate::screens::ScreenOutcome;
@@ -54,12 +55,24 @@ D --> A";
 pub(crate) struct State {
     tab: usize,
     scroll: u16,
+    /// MM-1/2: the [`GRAPH`] flowchart parsed **once** at construction.
+    /// `GRAPH` is a `const`, so its parse is invariant — caching it here
+    /// (model state the pure `view` only reads) replaces re-parsing +
+    /// re-laying-out the same source every frame the Mermaid tab is up.
+    /// `None` only if the const ever fails to parse, in which case the
+    /// view falls back to `Mermaid::new(GRAPH)` (the identical error
+    /// placeholder).
+    mermaid: Option<MermaidGraph>,
 }
 
 impl State {
     /// Paragraph tab, scrolled to the top.
     pub(crate) fn new() -> Self {
-        Self { tab: 0, scroll: 0 }
+        Self {
+            tab: 0,
+            scroll: 0,
+            mermaid: Mermaid::parse(GRAPH).ok(),
+        }
     }
 
     /// `←/→` switch tabs (resetting scroll), `↑/↓` scroll the document.
@@ -166,12 +179,23 @@ impl State {
                     .block(framed(theme, "Markdown · links + ↑↓ scroll")),
                 body,
             ),
-            2 => frame.render_widget(
-                Mermaid::new(GRAPH)
-                    .style(theme.body())
-                    .block(framed(theme, "Mermaid · the rstui event loop")),
-                body,
-            ),
+            2 => {
+                // MM-1/2: render the parse cached once in `State::new`;
+                // fall back to parsing the const only if it ever failed
+                // (byte-identical — `Mermaid::new(GRAPH)` reproduces the
+                // exact placeholder, and `from_graph` is the exact
+                // `Flowchart` Ok arm).
+                let mermaid = match &self.mermaid {
+                    Some(graph) => Mermaid::from_graph(graph),
+                    None => Mermaid::new(GRAPH),
+                };
+                frame.render_widget(
+                    mermaid
+                        .style(theme.body())
+                        .block(framed(theme, "Mermaid · the rstui event loop")),
+                    body,
+                );
+            }
             _ => self.view_spans(theme, frame, body),
         }
 
