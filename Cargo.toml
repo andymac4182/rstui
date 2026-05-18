@@ -1,5 +1,12 @@
 [workspace]
 members = ["crates/*"]
+# ADR 0023: the tree-sitter Tier-1 adapter is a gate-excluded opt-in leaf —
+# `--all-features [--workspace]` (the CI gates) must NOT compile it, honouring
+# ADR 0022's "the five CI gates do not depend on it". `exclude` wins over the
+# `crates/*` glob; it still builds via `cargo build -p rstui-treesitter` and
+# is consumed only by an explicit path dep (e.g. its own `code_editor`
+# example). Validated out-of-gate, the `rstui-bench` posture (ADR 0005).
+exclude = ["crates/rstui-treesitter"]
 resolver = "3"
 
 [workspace.package]
