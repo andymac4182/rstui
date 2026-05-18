@@ -643,6 +643,33 @@ fn ctrl_v_pastes_the_clipboard_into_a_focused_input() {
     assert!(h.is_running());
 }
 
+/// Audit regression: the Data Grid is a text-entry screen (`is_text_entry`,
+/// so the shell binds Ctrl+V → Paste there) but its `on_paste` was missing
+/// from the screen dispatch, so pasting into a cell being edited silently
+/// did nothing. Wire it and prove a paste reaches the in-progress cell
+/// editor (the clipboard e2e audit's one real defect).
+#[test]
+fn paste_lands_in_an_edited_data_grid_cell() {
+    let mut h = harness();
+    // Load the clipboard with a known sentinel via a real copy.
+    goto(&mut h, "Code Editor");
+    type_text(&mut h, CLIP);
+    let (x, y) = cell_of(&h, CLIP);
+    drag_word(&mut h, x, y, CLIP);
+    h.handle(ctrl('c'));
+    assert_eq!(h.app().clipboard().trim(), CLIP, "clipboard loaded by copy");
+    // Open a Data Grid cell for editing, then paste into it.
+    goto(&mut h, "Data Grid");
+    h.handle(key(KeyCode::Enter)); // begin editing the focused cell
+    h.handle(ctrl('v'));
+    assert!(
+        h.snapshot().contains(CLIP),
+        "Ctrl+V must paste into the cell being edited on the Data Grid:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}
+
 #[test]
 fn kanban_cards_render_their_title_text() {
     // Regression: the card box was 2 rows inside a bordered Block ⇒ zero

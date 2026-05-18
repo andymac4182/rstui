@@ -671,6 +671,7 @@ impl ScreenState {
             Screen::A2ui => self.a2ui.on_paste(text),
             Screen::JsonRender => self.json_render.on_paste(text),
             Screen::Logs => self.logs.on_paste(text),
+            Screen::DataGrid => self.data_grid.on_paste(text),
             _ => {}
         }
     }
@@ -704,6 +705,7 @@ impl ScreenState {
             Screen::A2ui => self.a2ui.cut(sel),
             Screen::JsonRender => self.json_render.cut(sel),
             Screen::Logs => self.logs.cut(sel),
+            Screen::DataGrid => self.data_grid.cut(sel),
             _ => false,
         }
     }

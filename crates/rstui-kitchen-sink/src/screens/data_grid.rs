@@ -248,6 +248,31 @@ impl State {
         ScreenOutcome::with_toast(rstui_widgets::ToastLevel::Success, "cell updated")
     }
 
+    /// A paste lands in the in-progress cell editor. The grid itself is
+    /// tabular, not free text, so a paste is only meaningful while a cell
+    /// is being edited (the focused-editable rule `Forms`/`Logs` follow);
+    /// otherwise it is a no-op. Wiring this is what makes `Ctrl+V` /
+    /// bracketed paste actually work on the Data Grid — it is a
+    /// text-entry screen ([`Screen::is_text_entry`]) so the shell binds
+    /// the clipboard chords there, and the paste must have somewhere to go.
+    pub(crate) fn on_paste(&mut self, text: &str) {
+        if self.grid.editing().is_some() {
+            self.edit.insert_str(text);
+        }
+    }
+
+    /// Cut `sel` from the in-progress cell editor. `false` (the caller then
+    /// toasts "Copied", not "Cut") when no cell is being edited — a stream
+    /// selection over the *rendered* grid has no editable buffer to remove
+    /// from, exactly like a read-only screen.
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        if self.grid.editing().is_some() {
+            crate::screens::cut_field(&mut self.edit, sel)
+        } else {
+            false
+        }
+    }
+
     /// `(grid, help, readout)` from the screen area — one definition so
     /// `view` and `on_click` hit-test identically (the forms.rs idiom).
     fn layout(area: Rect) -> [Rect; 3] {
