@@ -475,6 +475,111 @@ impl TextArea {
         true
     }
 
+    /// The new `(row_off, col_off)` scroll offset that keeps the cursor
+    /// visible inside an inner text `viewport` of `(width, height)` cells,
+    /// moving the minimum amount and keeping `margin` cells of context around
+    /// the caret when possible (the vim `scrolloff`/`sidescrolloff` idea).
+    ///
+    /// **Pure**: it reads the cursor and document and mutates nothing — the
+    /// reducer stores the result, because [ADR 0004](https://github.com/andymac4182/rstui/blob/main/docs/adr/0004-focus-routing-architecture.md)
+    /// §1 makes scroll caller-owned model state the pure `view` reads. This
+    /// is the `scroll_into_view` seam [`Editor`](../../rstui_widgets/struct.Editor.html)
+    /// deliberately deferred to the caller: an editor calls this in `update`
+    /// after every motion/edit and on resize, then feeds the result to
+    /// `Editor::scroll`, so the caret is never scrolled off-screen and the
+    /// view never shows blank space past the end.
+    ///
+    /// **Total**: a zero-width or zero-height axis keeps that axis's offset
+    /// unchanged (nothing can be shown, so nothing moves); the result is
+    /// always within `0..row_count()` / the caret's line length, and the
+    /// caret is always inside the returned window for any non-zero viewport.
+    #[must_use]
+    pub fn scroll_into_view(
+        &self,
+        scroll: (usize, usize),
+        viewport: (u16, u16),
+        margin: u16,
+    ) -> (usize, usize) {
+        let (cur_row, cur_col) = (self.row, self.col);
+        let (w, h) = (viewport.0 as usize, viewport.1 as usize);
+        let m = margin as usize;
+        // Rows are bounded by the document; columns by the caret's line
+        // length plus one (the append position must be reachable).
+        let row_off = Self::scroll_axis(cur_row, scroll.0, h, m, self.lines.len());
+        let col_off = Self::scroll_axis(
+            cur_col,
+            scroll.1,
+            w,
+            m,
+            self.line_char_len(cur_row).saturating_add(1),
+        );
+        (row_off, col_off)
+    }
+
+    /// The text between `a` and `b` (the pair is normalised, so order does
+    /// not matter), rows joined by `'\n'` exactly as [`to_string`](Self::fmt).
+    /// Both positions are clamped into the document first, so any input is
+    /// **total**. This is what a "copy/yank the selection" command reads
+    /// back (the logical-selection dual of [`selected_text`](crate::selected_text)).
+    #[must_use]
+    pub fn span_text(&self, a: (usize, usize), b: (usize, usize)) -> String {
+        let (s, e) = self.normalised_span(a, b);
+        if s.0 == e.0 {
+            let line = &self.lines[s.0];
+            let from = self.byte_at(s.0, s.1);
+            let to = self.byte_at(s.0, e.1);
+            return line[from..to].to_owned();
+        }
+        let mut out = self.lines[s.0][self.byte_at(s.0, s.1)..].to_owned();
+        for line in &self.lines[s.0 + 1..e.0] {
+            out.push('\n');
+            out.push_str(line);
+        }
+        out.push('\n');
+        out.push_str(&self.lines[e.0][..self.byte_at(e.0, e.1)]);
+        out
+    }
+
+    /// Deletes the characters between `a` and `b` (normalised), joining the
+    /// head of the first line to the tail of the last and leaving the cursor
+    /// at the (normalised) start. Returns whether anything was removed
+    /// (`false` only for an empty span). Clamps both endpoints, so it is
+    /// **total** — this is the primitive vim `d`/`c`/visual-delete and
+    /// "type over the selection" are built from.
+    pub fn delete_span(&mut self, a: (usize, usize), b: (usize, usize)) -> bool {
+        let (s, e) = self.normalised_span(a, b);
+        if s == e {
+            return false;
+        }
+        let head_end = self.byte_at(s.0, s.1);
+        let tail: String = self.lines[e.0][self.byte_at(e.0, e.1)..].to_owned();
+        self.lines[s.0].truncate(head_end);
+        self.lines[s.0].push_str(&tail);
+        // Drop the fully/partly consumed rows after the first.
+        if e.0 > s.0 {
+            self.lines.drain(s.0 + 1..=e.0);
+        }
+        // The span touched exactly rows `s.0..=old e.0`; that whole stretch
+        // is now the single row `s.0`. Resync the cache with one splice so
+        // the CM-3 invariant the totality proptest enforces still holds.
+        let new_len = self.lines[s.0].chars().count();
+        self.line_lens.splice(s.0..=e.0.min(self.line_lens.len() - 1), [new_len]);
+        self.row = s.0;
+        self.col = s.1;
+        self.goal_col = None;
+        true
+    }
+
+    /// Replaces the span between `a` and `b` with `s` (which may contain
+    /// `'\n'`), leaving the cursor just after the inserted text. Clamps both
+    /// endpoints, so it is **total**. Equivalent to [`delete_span`](Self::delete_span)
+    /// then [`insert_str`](Self::insert_str) — the "replace the selection"
+    /// primitive.
+    pub fn replace_span(&mut self, a: (usize, usize), b: (usize, usize), s: &str) {
+        self.delete_span(a, b);
+        self.insert_str(s);
+    }
+
     /// Moves the cursor to `target_row`, clamping the column to that row's
     /// length while preserving the sticky goal column so a sequence of
     /// vertical moves aims at the same column throughout.
@@ -498,6 +603,53 @@ impl TextArea {
         self.lines.insert(self.row, tail);
         self.line_lens.insert(self.row, tail_len);
         self.col = 0;
+    }
+
+    /// One axis of [`scroll_into_view`](Self::scroll_into_view): the minimal
+    /// offset that keeps `cur` inside `[off, off + view)` with `margin` cells
+    /// of context, never scrolling past `count` items (so no blank tail), yet
+    /// always leaving `cur` visible. Every step is saturating, so any
+    /// `(cur, off, view, margin, count)` — including a zero `view` — is total.
+    fn scroll_axis(cur: usize, off: usize, view: usize, margin: usize, count: usize) -> usize {
+        if view == 0 {
+            return off; // nothing can be shown on this axis — do not move it.
+        }
+        // A margin wider than half the window is meaningless; clamp it so the
+        // "too high" and "too low" bands cannot cross on a tiny viewport.
+        let m = margin.min((view - 1) / 2);
+        let mut off = off;
+        if cur < off + m {
+            off = cur.saturating_sub(m); // caret entered the top margin band
+        } else if cur + m >= off + view {
+            off = (cur + m + 1).saturating_sub(view); // …the bottom band
+        }
+        // Do not scroll past the end into blank space (the git-review bug
+        // this whole seam fixes): the last screenful is the deepest offset.
+        off = off.min(count.saturating_sub(view));
+        // …but the no-blank clamp must never hide the caret (content shorter
+        // than the viewport, or the caret near the very end).
+        if cur < off {
+            off = cur;
+        } else if cur >= off + view {
+            off = cur + 1 - view;
+        }
+        off
+    }
+
+    /// Clamps `a` and `b` into the document and returns them as
+    /// `(start, end)` in row-major order — the shared front of every span
+    /// operation, keeping each one total regardless of caller input.
+    fn normalised_span(
+        &self,
+        a: (usize, usize),
+        b: (usize, usize),
+    ) -> ((usize, usize), (usize, usize)) {
+        let clamp = |(r, c): (usize, usize)| {
+            let r = r.min(self.lines.len() - 1);
+            (r, c.min(self.line_char_len(r)))
+        };
+        let (a, b) = (clamp(a), clamp(b));
+        if a <= b { (a, b) } else { (b, a) }
     }
 
     /// The character length of row `row` (the largest valid column there).
@@ -782,7 +934,7 @@ mod tests {
         for seed in seeds {
             let mut ta = TextArea::from_value(seed);
             for _ in 0..3_000 {
-                match rng() % 18 {
+                match rng() % 22 {
                     0 => ta.insert_char(inserts[(rng() % 5) as usize]),
                     1 => ta.insert_str("ab\n日"),
                     2 => ta.insert_newline(),
@@ -816,6 +968,30 @@ mod tests {
                     }
                     15 => ta.set_cursor((rng() % 5) as usize, (rng() % 7) as usize),
                     16 => ta.clear(),
+                    17 => {
+                        let _ = ta.span_text(
+                            ((rng() % 5) as usize, (rng() % 7) as usize),
+                            ((rng() % 5) as usize, (rng() % 7) as usize),
+                        );
+                    }
+                    18 => {
+                        ta.delete_span(
+                            ((rng() % 5) as usize, (rng() % 7) as usize),
+                            ((rng() % 5) as usize, (rng() % 7) as usize),
+                        );
+                    }
+                    19 => ta.replace_span(
+                        ((rng() % 5) as usize, (rng() % 7) as usize),
+                        ((rng() % 5) as usize, (rng() % 7) as usize),
+                        "x\n値",
+                    ),
+                    20 => {
+                        let _ = ta.scroll_into_view(
+                            ((rng() % 4) as usize, (rng() % 4) as usize),
+                            ((rng() % 6) as u16, (rng() % 5) as u16),
+                            (rng() % 3) as u16,
+                        );
+                    }
                     _ => ta.set_value("re\nset 値"),
                 }
 
@@ -836,8 +1012,9 @@ mod tests {
                 // that makes the O(1) `line_char_len` correct. This is the
                 // gate-enforced desync detector (the CM-2 precedent): any
                 // mutator that ever leaves it stale fails here, across all
-                // 18 ops × 3000 iters × 5 seeds (paste/clear/set/join/split
-                // included), so a desync can never ship silently.
+                // 22 ops × 3000 iters × 5 seeds (paste/clear/set/join/split
+                // and the span edits included), so a desync can never ship
+                // silently.
                 assert_eq!(
                     ta.line_lens.len(),
                     ta.lines.len(),
@@ -850,8 +1027,87 @@ mod tests {
                         "line_lens[{i}] desynced from its line's char count"
                     );
                 }
+                // Invariant 6: `scroll_into_view` is pure and *always* keeps
+                // the caret inside the returned window and the offsets within
+                // bounds — for every non-zero viewport, any prior offset, any
+                // margin. This is the gate-enforced proof of the fix the
+                // git-review scroll bug needed (the caret can never be
+                // scrolled off-screen, the view never runs past the end).
+                for (vw, vh) in [(1u16, 1u16), (3, 2), (7, 5), (40, 20)] {
+                    let (ro, co) =
+                        ta.scroll_into_view((r + 9, c + 9), (vw, vh), (vw.min(vh)) as u16);
+                    let (w, h) = (vw as usize, vh as usize);
+                    assert!(ro <= r && r < ro + h, "row caret {r} escaped [{ro},{ro}+{h})");
+                    assert!(co <= c && c < co + w, "col caret {c} escaped [{co},{co}+{w})");
+                    assert!(ro < ta.row_count(), "row_off {ro} past document");
+                }
             }
             // Reaching here for every seed proves no operation panicked.
+        }
+    }
+
+    #[test]
+    fn scroll_into_view_follows_the_caret_without_blank_past_the_end() {
+        let mut ta = TextArea::from_value("0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
+        // Caret deep in the document, a 4-row window, 1 row of margin.
+        ta.set_cursor(7, 0);
+        let (ro, _) = ta.scroll_into_view((0, 0), (10, 4), 1);
+        // Window must contain row 7 and not run past row 9 into blank space:
+        // deepest offset is row_count(10) - height(4) = 6.
+        assert!(ro <= 7 && 7 < ro + 4);
+        assert!(ro <= 6, "scrolled into blank space past the end");
+
+        // Moving back to the top scrolls up so the caret is visible again.
+        ta.set_cursor(0, 0);
+        assert_eq!(ta.scroll_into_view((ro, 0), (10, 4), 1).0, 0);
+    }
+
+    #[test]
+    fn scroll_into_view_is_total_and_keeps_short_content_pinned() {
+        let mut ta = TextArea::from_value("a\nb");
+        ta.set_cursor(1, 1);
+        // Content shorter than the viewport: never scroll, stay at the top.
+        assert_eq!(ta.scroll_into_view((0, 0), (20, 10), 2), (0, 0));
+        // A zero-size axis is a no-op on that axis (nothing can be shown).
+        assert_eq!(ta.scroll_into_view((3, 5), (0, 0), 0), (3, 5));
+        // A long line scrolls horizontally so the caret column is visible.
+        let mut wide = TextArea::from_value(&"x".repeat(200)[..]);
+        wide.set_cursor(0, 150);
+        let (_, co) = wide.scroll_into_view((0, 0), (20, 1), 3);
+        assert!(co <= 150 && 150 < co + 20);
+    }
+
+    #[test]
+    fn span_text_reads_within_and_across_lines_total() {
+        let ta = TextArea::from_value("abc\nédef\nghi");
+        // Within one row.
+        assert_eq!(ta.span_text((0, 1), (0, 3)), "bc");
+        // Across rows, multi-byte safe, order-independent (reversed args).
+        assert_eq!(ta.span_text((2, 1), (0, 2)), "c\nédef\ng");
+        // Out-of-range endpoints clamp instead of panicking.
+        assert_eq!(ta.span_text((0, 0), (99, 99)), "abc\nédef\nghi");
+    }
+
+    #[test]
+    fn delete_and_replace_span_join_lines_and_place_the_cursor() {
+        let mut ta = TextArea::from_value("hello\nbrave\nworld");
+        // Delete from (0,2) to (2,2): "he" + "rld".
+        assert!(ta.delete_span((0, 2), (2, 2)));
+        assert_eq!(ta.row_count(), 1);
+        assert_eq!(ta.line(0), Some("herld"));
+        assert_eq!(ta.cursor(), (0, 2)); // at the normalised start
+        // An empty span removes nothing.
+        assert!(!ta.delete_span((0, 3), (0, 3)));
+
+        // Replace places the cursor just after the inserted text and keeps
+        // the line_lens cache exact (the CM-3 invariant).
+        let mut ta = TextArea::from_value("one two three");
+        ta.replace_span((0, 4), (0, 7), "2\n2"); // replace "two"
+        assert_eq!(ta.line(0), Some("one 2"));
+        assert_eq!(ta.line(1), Some("2 three"));
+        assert_eq!(ta.cursor(), (1, 1));
+        for (i, l) in ta.lines().iter().enumerate() {
+            assert_eq!(ta.line_lens[i], l.chars().count());
         }
     }
 }

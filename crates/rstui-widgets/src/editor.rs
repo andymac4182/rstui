@@ -242,6 +242,41 @@ impl<'a> Editor<'a> {
         self.content_height(width).clamp(lo, hi)
     }
 
+    /// Maps a buffer cell [`Position`] (e.g. a mouse click) back to the
+    /// document `(row, col)` it overlies, or `None` if the cell is outside
+    /// the inner text area.
+    ///
+    /// The pure inverse of the render mapping, the same `Rect`-accessor seam
+    /// [`content_height`](Self::content_height) is: hit-testing is the
+    /// reducer's job ([ADR 0004](https://github.com/andymac4182/rstui/blob/main/docs/adr/0004-focus-routing-architecture.md)),
+    /// so an app turns a mouse click into a caret with
+    /// [`TextArea::set_cursor`](rstui_core::TextArea::set_cursor) (or a
+    /// selection anchor) from this. It accounts for the optional [`Block`] and
+    /// the caller-owned 2D [`scroll`](Self::scroll), and clamps the result to
+    /// a valid `(row, col)` in the borrowed model, so it is **total** — any
+    /// `area`/`pos`, including a click in the border or past the end of a
+    /// short line, is well-defined and never panics.
+    #[must_use]
+    pub fn cell_to_doc(&self, area: Rect, pos: Position) -> Option<(usize, usize)> {
+        let inner = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        };
+        if inner.is_empty()
+            || pos.x < inner.left()
+            || pos.x >= inner.right()
+            || pos.y < inner.top()
+            || pos.y >= inner.bottom()
+        {
+            return None;
+        }
+        let (row_off, col_off) = self.scroll;
+        let row = (row_off + (pos.y - inner.top()) as usize).min(self.model.row_count() - 1);
+        let col = col_off + (pos.x - inner.left()) as usize;
+        let max_col = self.model.line(row).map_or(0, |l| l.chars().count());
+        Some((row, col.min(max_col)))
+    }
+
     /// Frames the editor in `block`; the document renders into
     /// [`block.inner`](crate::Block::inner).
     #[must_use]

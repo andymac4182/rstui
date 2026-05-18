@@ -86,12 +86,14 @@
 
 pub mod backend;
 pub mod buffer;
+pub mod doc_selection;
 pub mod event;
 pub mod event_source;
 pub mod focus;
 pub mod geometry;
 pub mod layout;
 pub mod scroll;
+pub mod search;
 pub mod selection;
 pub mod style;
 pub mod stylize;
@@ -99,10 +101,12 @@ pub mod terminal;
 pub mod text;
 pub mod text_area;
 pub mod text_edit;
+pub mod undo;
 pub mod widget;
 
 pub use backend::{Backend, TestBackend};
 pub use buffer::{Buffer, Cell};
+pub use doc_selection::{DocSelection, SelKind};
 pub use event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -111,6 +115,7 @@ pub use focus::{FocusId, FocusRing};
 pub use geometry::{Margin, Position, Rect, Size};
 pub use layout::{Alignment, Constraint, Direction, Layout};
 pub use scroll::ScrollState;
+pub use search::{Case, Match, Query};
 pub use selection::{Selection, SelectionSpan, selected_text};
 pub use style::{Color, ColorLevel, Modifier, Style};
 pub use stylize::{Styled, Stylize};
@@ -118,4 +123,5 @@ pub use terminal::{CompletedFrame, Frame, Terminal};
 pub use text::{Line, Span, Text};
 pub use text_area::TextArea;
 pub use text_edit::TextEdit;
+pub use undo::History;
 pub use widget::Widget;
