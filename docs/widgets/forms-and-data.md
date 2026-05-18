@@ -285,8 +285,11 @@ data_table::project(&[DataColumn], &[DataRow], &DataTableState) -> Vec<VisualRow
 DataTableState::{sort_keys, set_sort_keys, push_sort, clear_sort,
                  grouped_by, set_group_by, group_direction,
                  toggle_group_direction,
-                 reorder_column}  // hit→Header(col) drag-reorder: caller moves
-                                  // the DataColumn; this keeps sort/group on it
+                 reorder_column}  // hit→Header(col) drag-reorder; remaps
+                                  // sort/group + in-flight edit
+DataRow::move_cell(from, to)      // cells are POSITIONAL: a reorder must move
+                                  // the column slice + EVERY row + reorder_column
+                                  // (all the same remove+insert)
 CellSelectState::{open, close, move_highlight, reveal, choose}
 ```
 

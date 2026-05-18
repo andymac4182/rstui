@@ -377,6 +377,24 @@ impl<'a> DataRow<'a> {
     pub fn cell(&self, column: usize) -> Option<&Line<'a>> {
         self.cells.get(column)
     }
+
+    /// Move this row's cell from index `from` to `to`, keeping the cell
+    /// aligned with a reordered column.
+    ///
+    /// Cells are **positional** ([`cell`](Self::cell) is `cells[column]`),
+    /// so a column reorder is only correct if *every* row's cells are
+    /// permuted the **same way** as the [`DataColumn`] slice (and
+    /// [`DataTableState::reorder_column`] for the index-keyed state) —
+    /// otherwise the data shows under the wrong header. The exact same
+    /// `remove`+`insert` `reorder_column` assumes. Total: an out-of-range
+    /// `from`, or `from == to`, is a no-op.
+    pub fn move_cell(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.cells.len() {
+            return;
+        }
+        let cell = self.cells.remove(from);
+        self.cells.insert(to.min(self.cells.len()), cell);
+    }
 }
 
 /// One row of the flattened projection [`project`] produces and the widget
@@ -641,6 +659,10 @@ impl DataTableState {
         }
         if let Some(g) = self.group_by {
             self.group_by = Some(remap(g));
+        }
+        // An in-flight edit is column-keyed too — keep it on its cell.
+        if let Some((row, col)) = self.editing {
+            self.editing = Some((row, remap(col)));
         }
     }
 
@@ -2628,5 +2650,38 @@ mod tests {
         s.reorder_column(1, 1);
         s.reorder_column(99, 100);
         assert_eq!(s.grouped_by(), Some(1));
+    }
+
+    #[test]
+    fn reorder_column_also_remaps_an_in_flight_edit() {
+        // An open cell editor is column-keyed; it must follow its column,
+        // not stay on the slot (else the editor is wrong after a reorder).
+        let mut s = DataTableState::new();
+        s.begin_edit(5, 0);
+        s.reorder_column(0, 2); // col 0 → 2  ⇒  the edit's column 0 → 2
+        assert_eq!(s.editing(), Some((5, 2)));
+        s.reorder_column(2, 0); // and back
+        assert_eq!(s.editing(), Some((5, 0)));
+    }
+
+    #[test]
+    fn data_row_move_cell_permutes_exactly_like_a_column_move() {
+        // Cells are positional, so move_cell must be the SAME remove+insert
+        // the column slice / reorder_column use — or data drifts under the
+        // wrong header.
+        let cells = |r: &DataRow| -> Vec<String> {
+            (0..4).filter_map(|i| r.cell(i).map(line_text)).collect()
+        };
+        let mut r = DataRow::new(["a", "b", "c", "d"]);
+        r.move_cell(0, 2);
+        assert_eq!(cells(&r), ["b", "c", "a", "d"]);
+        let mut r = DataRow::new(["a", "b", "c", "d"]);
+        r.move_cell(3, 0);
+        assert_eq!(cells(&r), ["d", "a", "b", "c"]);
+        // Total: no-op / out-of-range never panics or corrupts.
+        let mut r = DataRow::new(["a", "b", "c", "d"]);
+        r.move_cell(1, 1);
+        r.move_cell(9, 0);
+        assert_eq!(cells(&r), ["a", "b", "c", "d"]);
     }
 }

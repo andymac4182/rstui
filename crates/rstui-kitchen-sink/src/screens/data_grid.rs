@@ -428,8 +428,18 @@ impl State {
         };
         if let Some(DataTableHit::Header(to)) = self.hit_test(content, pos) {
             if to != from && from < self.columns.len() {
+                // A reorder while a cell is being edited would strand the
+                // editor/dropdown on a moved column — cancel it first.
+                self.choice.close();
+                self.grid.cancel_edit();
+                // Cells are positional, so the column metadata, EVERY row's
+                // cells, and the index-keyed state must all be permuted the
+                // same way — otherwise the data sits under the wrong header.
                 let col = self.columns.remove(from);
                 self.columns.insert(to.min(self.columns.len()), col);
+                for row in &mut self.rows {
+                    row.move_cell(from, to);
+                }
                 self.grid.reorder_column(from, to);
                 self.active_col = to;
                 self.reproject();

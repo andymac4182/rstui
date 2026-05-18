@@ -593,6 +593,18 @@ fn data_grid_header_drag_reorders_the_column_not_a_text_select() {
         s.contains("Moved column to position"),
         "the header drag reordered the column (not a text selection):\n{s}"
     );
+    // Data-integrity regression: cells are positional, so the seed value
+    // "Ada" (the `name` column) must still sit under the *moved* `name`
+    // header — not stay behind under another column.
+    let (name_x, name_y) = cell_of(&h, "name"); // header at its new position
+    let (ada_x, ada_y) = cell_of(&h, "Ada"); // its column's data
+    assert!(ada_y > name_y, "Ada is a body row beneath the header");
+    assert!(
+        (i32::from(ada_x) - i32::from(name_x)).abs() <= 4,
+        "the 'name' data ({ada_x}) stays under the 'name' header ({name_x}) \
+         after the reorder — columns + row cells moved together:\n{}",
+        h.snapshot()
+    );
     assert!(h.is_running());
 }
 
