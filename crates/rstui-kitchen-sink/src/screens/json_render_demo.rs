@@ -5,7 +5,7 @@
 //! Type to edit the spec and the right pane re-renders live;
 //! `PgUp`/`PgDn` switch the worked examples (edits persist per example).
 //! All real state is the caller-owned [`TextArea`](rstui_core::TextArea)
-//! the [`Editor`](rstui_widgets::Editor) projects — the same pure
+//! the [`Editor`](rstui_code::Editor) projects — the same pure
 //! projection the ACP client uses for agent-driven UI.
 
 use rstui_core::{KeyCode, Position, Rect};

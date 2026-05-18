@@ -7,7 +7,9 @@ use rstui_core::{
     Constraint, KeyCode, Layout, Line, Position, Rect, Style, TextArea, stylize::Stylize,
 };
 use rstui_runtime::Frame;
-use rstui_widgets::{Block, BorderType, Editor, LineNumberGutter, List, StatusBar, Tabs};
+// ADR 0024: `Editor`/`LineNumberGutter` moved to `rstui-code`.
+use rstui_code::{Editor, LineNumberGutter};
+use rstui_widgets::{Block, BorderType, List, StatusBar, Tabs};
 
 use crate::screens::ScreenOutcome;
 use crate::theme::Theme;

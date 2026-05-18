@@ -26,6 +26,10 @@ path = "src/lib.rs"
 # `version` + `path` per the workspace publishability convention.
 rstui-core = { path = "../rstui-core", version = "0.0.1" }
 rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# ADR 0024: the `Editor` code-editing widget the prompt composer projects
+# moved out of `rstui-widgets` into `rstui-code` (tree-sitter first-class);
+# everything else this crate composes stays in `rstui-widgets`.
+rstui-code = { path = "../rstui-code", version = "0.0.1" }
 # The AI message model and tool input/output are JSON; serde(_json) is the
 # one heavier dependency this layer is allowed (ADR 0017), not in core.
 serde = { version = "1", default-features = false, features = [

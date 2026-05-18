@@ -5,10 +5,11 @@
 
 use rstui_core::{Constraint, KeyCode, Layout, Line, Modifier, Position, Rect, Style};
 use rstui_runtime::Frame;
+// ADR 0024: `Diff`/`DiffLayout` moved to `rstui-code`.
+use rstui_code::{Diff, DiffLayout};
 use rstui_widgets::{
     Accordion, AccordionSection, Bar, BarChart, Block, BorderType, Calendar, DatePicker,
-    DescriptionList, DescriptionRow, Diff, DiffLayout, Gauge, Paragraph, Sparkline, ToastLevel,
-    Wrap,
+    DescriptionList, DescriptionRow, Gauge, Paragraph, Sparkline, ToastLevel, Wrap,
 };
 
 use crate::screens::ScreenOutcome;

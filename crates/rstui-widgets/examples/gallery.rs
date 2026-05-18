@@ -45,17 +45,18 @@ use rstui_core::{
     Layout, Line, Modifier, Rect, Span, Style, TextArea, TextEdit, Widget,
 };
 use rstui_runtime::{App, Cmd, Event, Frame, Harness};
-use rstui_widgets::diff::DiffLayout;
+// ADR 0024: `Editor`/`Diff`/`DiffLayout` moved to the `rstui-code` crate,
+// which `rstui-widgets` cannot depend on (cycle). The code-editor + diff
+// showcases now live in `crates/rstui-code/examples/`.
 use rstui_widgets::{
     Accordion, AccordionSection, Alert, AlertLevel, Align, Avatar, Badge, BadgeLevel, Bar,
     BarChart, BarChartDirection, Block, BorderType, Breadcrumb, Button, Calendar, Card, Checkbox,
-    CommandPalette, DatePicker, DescriptionList, DescriptionRow, Diff, Divider, DividerOrientation,
-    Drawer, DrawerSide, Editor, Form, FormField, Gauge, Grid, HelpEntry, HelpOverlay, Input, Kbd,
-    List, Markdown, MaskedInput, Menu, MenuItem, Modal, Pagination, Paragraph, Popover,
-    PopoverSide, Radio, Row, ScrollView, Scrollbar, ScrollbarOrientation, Select, Sidebar,
-    SidebarItem, Skeleton, Slider, Sparkline, Spinner, SplitPane, StatusBar, Step, Stepper, Switch,
-    Table, Tabs, Toast, ToastLevel, ToastMessage, Tooltip, Tree, TreeGuides, TreeItem,
-    VerticalAlignment, Wrap,
+    CommandPalette, DatePicker, DescriptionList, DescriptionRow, Divider, DividerOrientation,
+    Drawer, DrawerSide, Form, FormField, Gauge, Grid, HelpEntry, HelpOverlay, Input, Kbd, List,
+    Markdown, MaskedInput, Menu, MenuItem, Modal, Pagination, Paragraph, Popover, PopoverSide,
+    Radio, Row, ScrollView, Scrollbar, ScrollbarOrientation, Select, Sidebar, SidebarItem,
+    Skeleton, Slider, Sparkline, Spinner, SplitPane, StatusBar, Step, Stepper, Switch, Table, Tabs,
+    Toast, ToastLevel, ToastMessage, Tooltip, Tree, TreeGuides, TreeItem, VerticalAlignment, Wrap,
 };
 use rstui_widgets::{
     AxisBounds, FlameFrame, FlameGraph, Heatmap, Histogram, HistogramBucket, LineChart, LogLevel,
@@ -609,7 +610,10 @@ impl Gallery {
             .help_style(Style::new().fg(Color::DarkGray))
             .field(FormField::new("Name", 1).help("Input — a single-line TextEdit"))
             .field(FormField::new("Secret", 1).help("MaskedInput — press the toggle below"))
-            .field(FormField::new("Notes", 3).help("Editor — multi-line TextArea"))
+            .field(
+                FormField::new("Notes", 3)
+                    .help("Paragraph — caller-owned TextArea (Editor: rstui-code)"),
+            )
             .field(FormField::new("Volume", 1).help("Slider — ←/→ when focused"));
         let rects = form.layout(inner);
         frame.render_widget(form, inner);
@@ -633,13 +637,18 @@ impl Gallery {
             );
         }
         if let Some(&r) = rects.get(2) {
-            frame.render_widget(
-                Editor::new(&self.doc)
-                    .focused(self.focus.is_focused(F_DOC))
-                    .cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan))
-                    .focus_style(Style::new().bg(Color::Black)),
-                r,
-            );
+            // ADR 0024: the `Editor` code-editing widget moved to the
+            // `rstui-code` crate (which `rstui-widgets` cannot depend on —
+            // that would cycle). The multi-line code-editor showcase now
+            // lives in `crates/rstui-code/examples/code_editor.rs`. Here we
+            // keep the caller-owned `TextArea` (still edited via F_DOC keys)
+            // but project it through the in-crate `Paragraph`.
+            let style = if self.focus.is_focused(F_DOC) {
+                Style::new().bg(Color::Black)
+            } else {
+                Style::new()
+            };
+            frame.render_widget(Paragraph::new(self.doc.lines().join("\n")).style(style), r);
         }
         if let Some(&r) = rects.get(3) {
             frame.render_widget(
@@ -835,11 +844,13 @@ impl Gallery {
             md_area,
         );
 
+        // ADR 0024: the `Diff` widget moved to the `rstui-code` crate
+        // (`rstui-widgets` cannot depend on it — that would cycle). The full
+        // unified-diff showcase is `crates/rstui-code/examples/diff_demo.rs`;
+        // here we just show the raw patch through the in-crate `Paragraph`.
         const PATCH: &str = "@@ -1,3 +1,3 @@\n fn main() {\n-    old();\n+    new();\n }\n";
         frame.render_widget(
-            Diff::new(PATCH)
-                .layout(DiffLayout::Unified)
-                .block(Block::bordered().title("Diff")),
+            Paragraph::new(PATCH).block(Block::bordered().title("Diff (see rstui-code)")),
             diff_area,
         );
 

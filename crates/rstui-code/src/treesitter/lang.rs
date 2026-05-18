@@ -15,7 +15,7 @@
 //! - The symbol query const is `TAGS_QUERY` for rust/python/javascript/
 //!   typescript/go/c. **`tree-sitter-json` and `tree-sitter-md` ship no
 //!   tags query**, so those languages have *no* outline (an empty
-//!   [`Outline`](rstui_widgets::Outline)) — handled robustly by returning
+//!   [`Outline`](crate::Outline)) — handled robustly by returning
 //!   `None` for their tags query.
 //! - TypeScript's own `HIGHLIGHTS_QUERY` is *incremental over* the ECMAScript
 //!   grammar (it only adds the TS-specific captures). So the TypeScript

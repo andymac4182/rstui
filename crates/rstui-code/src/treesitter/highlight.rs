@@ -1,7 +1,7 @@
 //! Mapping a tree-sitter highlight query's capture names onto the four
 //! [`SyntaxStyles`] theme buckets, and
 //! flattening the result into the exact per-character [`Style`] overlay the
-//! landed Tier-0 already feeds [`Editor::syntax`](rstui_widgets::Editor).
+//! Tier-0 floor already feeds [`Editor::syntax`](crate::Editor).
 //!
 //! # Capture → bucket map
 //!
@@ -53,8 +53,8 @@
 //! therefore length-identical and index-identical to Tier-0's, a true
 //! drop-in for `.syntax(&overlay)`.
 
+use crate::syntax::SyntaxStyles;
 use rstui_core::Style;
-use rstui_widgets::syntax::SyntaxStyles;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
 /// Which of the four [`SyntaxStyles`] buckets a capture name maps to, or
@@ -128,7 +128,7 @@ fn style_for(bucket: Bucket, styles: &SyntaxStyles) -> Style {
 ///
 /// The returned vector always has length `src.chars().count()` (one slot
 /// per source char *including* each `'\n'`), so it is a drop-in for
-/// [`Editor::syntax`](rstui_widgets::Editor). Total: any tree / query /
+/// [`Editor::syntax`](crate::Editor). Total: any tree / query /
 /// source, never panics.
 ///
 /// Later captures overwrite earlier ones on overlapping ranges — tree-sitter

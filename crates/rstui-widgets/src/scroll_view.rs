@@ -21,9 +21,9 @@
 //! content buffer and the caller-owned `(col_offset, row_offset)` are read,
 //! never mutated (the same borrowed-caller-state discipline
 //! [`Input`](crate::Input) uses for [`TextEdit`](rstui_core::TextEdit) and
-//! [`Editor`](crate::Editor) for [`TextArea`](rstui_core::TextArea)). The
+//! `rstui-code`'s `Editor` for [`TextArea`](rstui_core::TextArea)). The
 //! offset is ordinary application state the reducer changes in `update`,
-//! exactly the [`List`](crate::List)/[`Editor`](crate::Editor) offset model;
+//! exactly the [`List`](crate::List) / `rstui-code` `Editor` offset model;
 //! `ScrollView` owns no content — only the clip and the bars.
 //!
 //! ```text

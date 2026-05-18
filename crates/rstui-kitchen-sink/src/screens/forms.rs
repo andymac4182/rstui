@@ -3,14 +3,15 @@
 //! a [`Slider`], and a [`Button`] — all wired to a caller-owned
 //! [`FocusRing`], exactly the ADR 0004 pattern.
 
+use rstui_code::Editor; // ADR 0024: Editor moved to rstui-code
 use rstui_core::{
     Constraint, FocusId, FocusRing, KeyCode, Layout, Line, Position, Rect, Style, TextArea,
     TextEdit, stylize::Stylize,
 };
 use rstui_runtime::Frame;
 use rstui_widgets::{
-    Block, BorderType, Button, Checkbox, Divider, Editor, Form, FormField, Input, MaskedInput,
-    Paragraph, Radio, Slider, Switch, ToastLevel, Wrap,
+    Block, BorderType, Button, Checkbox, Divider, Form, FormField, Input, MaskedInput, Paragraph,
+    Radio, Slider, Switch, ToastLevel, Wrap,
 };
 
 use crate::screens::ScreenOutcome;

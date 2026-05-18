@@ -5,8 +5,8 @@
 //! [`docs/code-review-and-editing.md`](https://github.com/andymac4182/rstui/blob/main/docs/code-review-and-editing.md):
 //! a code-review/editing tool needs *no* new framework widgets — the existing
 //! [`List`](rstui_widgets::List) (commit history),
-//! [`Diff`](rstui_widgets::Diff) (the per-commit patch),
-//! [`Editor`](rstui_widgets::Editor) over a caller-owned
+//! [`Diff`](rstui_code::Diff) (the per-commit patch),
+//! [`Editor`](rstui_code::Editor) over a caller-owned
 //! [`TextArea`](rstui_core::TextArea) (editing), plus
 //! [`StatusBar`](rstui_widgets::StatusBar) /
 //! [`HelpOverlay`](rstui_widgets::HelpOverlay) chrome compose the whole app,
@@ -210,7 +210,7 @@ pub fn load(repo: &Path, rev: Option<&str>, graph: bool) -> Result<Loaded, Strin
 }
 
 /// The unified patch for one commit (`git show -p`), message stripped so the
-/// [`Diff`](rstui_widgets::Diff) widget gets a clean patch. The commit
+/// [`Diff`](rstui_code::Diff) widget gets a clean patch. The commit
 /// subject/author is shown by the UI from the [`Commit`] row, not here.
 ///
 /// # Errors

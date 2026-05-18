@@ -32,7 +32,7 @@
 //! (the role line + the wrapped parts at a given width) so the caller —
 //! e.g. [`crate::conversation::Conversation`] — can lay turns out and
 //! window them without rendering, exactly as
-//! [`Editor::content_height`](rstui_widgets::Editor::content_height) does.
+//! [`Editor::content_height`](rstui_code::Editor::content_height) does.
 //!
 //! # [`MessageBranch`]: the regenerate selector
 //!
@@ -191,7 +191,7 @@ impl<'a> Message<'a> {
     /// The number of rows this turn needs at `width` columns: the role
     /// line (1) plus the wrapped body. A **pure measurement** of the
     /// borrowed model owning no state and touching no [`Buffer`], exactly
-    /// like [`Editor::content_height`](rstui_widgets::Editor::content_height)
+    /// like [`Editor::content_height`](rstui_code::Editor::content_height)
     /// — what [`crate::conversation::Conversation`] uses to lay out and
     /// window turns. `width == 0` yields `1` (just the role line);
     /// saturates at [`u16::MAX`].

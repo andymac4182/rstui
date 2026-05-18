@@ -16,13 +16,14 @@ use std::cell::RefCell;
 use std::convert::Infallible;
 use std::rc::Rc;
 
+use rstui_code::Editor; // ADR 0024: Editor moved to rstui-code
 use rstui_core::focus::{FocusId, FocusRing};
 use rstui_core::{
     Backend, Cell, Color, Event, KeyCode, KeyEvent, KeyModifiers, Modifier, Position, Rect, Size,
     Style, TestBackend, TestEventSource, TextArea, TextEdit,
 };
 use rstui_runtime::{App, Cmd, Frame, Harness, run};
-use rstui_widgets::{Editor, Input};
+use rstui_widgets::Input;
 
 // --- input helpers ---------------------------------------------------------
 

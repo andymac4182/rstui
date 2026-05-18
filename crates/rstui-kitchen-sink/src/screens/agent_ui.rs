@@ -18,7 +18,9 @@ use rstui_jsonui::a2ui::A2uiSurface;
 use rstui_jsonui::jsonrender::JsonRenderDoc;
 use rstui_jsonui::tree::{HitMap, UiNode};
 use rstui_runtime::Frame;
-use rstui_widgets::{Block, BorderType, Editor, LineNumberGutter, Paragraph};
+// ADR 0024: `Editor`/`LineNumberGutter` moved to `rstui-code`.
+use rstui_code::{Editor, LineNumberGutter};
+use rstui_widgets::{Block, BorderType, Paragraph};
 
 use crate::screens::ScreenOutcome;
 use crate::theme::Theme;

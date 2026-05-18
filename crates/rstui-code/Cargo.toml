@@ -1,0 +1,88 @@
+[package]
+name = "rstui-code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The code-editing widget set for the rstui TUI framework: the Editor, unified Diff, syntax overlay, symbol Outline, changeset splitter, line-number gutter, and a first-class tree-sitter back end (ADR 0024)."
+
+# ADR 0024 supersedes ADR 0023: this is now a normal workspace member (NOT
+# `[workspace] exclude`d), so it inherits the workspace lint policy. The
+# folded tree-sitter code writes NO `unsafe` (tree-sitter's Rust API is safe;
+# the `unsafe` is contained in the grammar crates' generated C bindings), so
+# the workspace `unsafe_code = "forbid"` bar holds for this crate's own code.
+[lints]
+workspace = true
+
+[dependencies]
+# ADR 0024: the code-editing widgets depend on the dependency-free primitives
+# crate AND the base widget set (for `Block`/`Extmark`), then add tree-sitter
+# first-class. `version` + `path` so this crate is publishable; kept = the
+# workspace version by the `crate_dep_versions_match_workspace` xtask guard.
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
+rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# The incremental GLR parser. Its Rust API is entirely safe (no `unsafe`
+# here); the `unsafe` is contained inside the grammar crates' generated C
+# bindings, exactly the ADR 0018 opt-in-leaf containment.
+tree-sitter = "0.26"
+
+# One OPTIONAL grammar crate per language, each behind its own feature so a
+# build pays only for the languages it enables (ADR 0002 §4). Every grammar
+# exposes `pub const LANGUAGE: tree_sitter_language::LanguageFn` (TypeScript:
+# `LANGUAGE_TYPESCRIPT`) consumed via `tree_sitter::Language::from(..)`, and
+# bundles a `HIGHLIGHTS_QUERY`/`HIGHLIGHT_QUERY` (+ a `TAGS_QUERY` for the
+# languages that ship one — JSON & Markdown do not, so they have no outline).
+[dependencies.tree-sitter-rust]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-python]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-javascript]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-typescript]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-go]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-c]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-json]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-md]
+version = "0.5"
+optional = true
+
+[features]
+# Every shipped language is on by default; disable `default-features` and
+# pick a subset to shrink a build. Each feature gates exactly one grammar
+# crate AND the matching `cfg(feature = "..")` `TsLanguage` variant + `lang`
+# adapter, so the public surface is exactly the enabled languages.
+default = ["rust", "python", "javascript", "typescript", "go", "c", "json", "markdown"]
+rust = ["dep:tree-sitter-rust"]
+python = ["dep:tree-sitter-python"]
+javascript = ["dep:tree-sitter-javascript"]
+typescript = ["dep:tree-sitter-typescript"]
+go = ["dep:tree-sitter-go"]
+c = ["dep:tree-sitter-c"]
+json = ["dep:tree-sitter-json"]
+markdown = ["dep:tree-sitter-md"]
+
+[dev-dependencies]
+# Examples only: the Harness-driven demos compose the widget with the Elm
+# runtime. Acyclic — `rstui-runtime` never depends on `rstui-code` (the same
+# pattern as `rstui-widgets`' dev-dependency on `rstui-runtime`).
+rstui-runtime = { path = "../rstui-runtime" }

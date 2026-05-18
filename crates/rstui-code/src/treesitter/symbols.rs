@@ -41,7 +41,7 @@
 //! `@reference.implementation` (a known upstream convention quirk — it is
 //! not literally a `@definition`), yet Tier-0's
 //! [`Outline`] emits it as a
-//! [`SymbolKind::Impl`](rstui_widgets::SymbolKind) (name = the type
+//! [`SymbolKind::Impl`](crate::SymbolKind) (name = the type
 //! implemented; `impl Trait for T` → `T`). To be a faithful drop-in
 //! *producer of the same shapes*, that one capture is lifted to an `Impl`
 //! symbol — which also gives the `impl`'s methods a containing type so the
@@ -67,7 +67,7 @@
 //! (symbols sorted by `line`, `line <= end_line`, both valid rows); a
 //! grammar with no `tags.scm` (JSON, Markdown) yields an empty outline.
 
-use rstui_widgets::{Outline, Symbol, SymbolKind};
+use crate::{Outline, Symbol, SymbolKind};
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
 /// The base [`SymbolKind`] for a definition-bearing capture name, before

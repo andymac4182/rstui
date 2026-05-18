@@ -14,7 +14,7 @@
 //! word-level intra-line diff (a textbook LCS over tokens) and the optional
 //! generic syntax tokenizer (a small character classifier over string,
 //! number, comment and keyword runs) — are the same kind of hand-written
-//! scanning [`Markdown`](crate::Markdown)'s parser uses rather than pulling a
+//! scanning [`Markdown`](rstui_widgets::Markdown)'s parser uses rather than pulling a
 //! CommonMark crate. So `Diff` is a plain [`Widget`]
 //! module here, zero new dependencies.
 //!
@@ -77,8 +77,8 @@
 //! # Example
 //!
 //! ```
+//! use rstui_code::Diff;
 //! use rstui_core::{Buffer, Position, Rect, Widget};
-//! use rstui_widgets::Diff;
 //!
 //! let patch = "\
 //! --- a/greet.txt
@@ -101,9 +101,9 @@
 
 use std::borrow::Cow;
 
-use crate::block::Block;
 use crate::syntax::{self, Language, LexState, SyntaxStyles};
 use rstui_core::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
+use rstui_widgets::Block;
 
 /// Lines longer than this skip the (quadratic) intra-line word diff and fall
 /// back to a whole-line highlight. A pathological minified line should not cost
@@ -223,8 +223,9 @@ pub enum DiffLayout {
 /// # Example
 ///
 /// ```
+/// use rstui_code::Diff;
 /// use rstui_core::{Buffer, Position, Rect, Widget};
-/// use rstui_widgets::{Block, Diff};
+/// use rstui_widgets::Block;
 ///
 /// let mut buf = Buffer::empty(Rect::new(0, 0, 18, 4));
 /// Diff::new("@@ -1 +1 @@\n-old\n+new")
@@ -333,8 +334,8 @@ impl<'a> Diff<'a> {
     /// state instead.
     ///
     /// ```
+    /// use rstui_code::{Diff, Language};
     /// use rstui_core::{Buffer, Rect, Widget};
-    /// use rstui_widgets::{Diff, Language};
     ///
     /// // `fn` is a Rust keyword; the overlay tints it under the add colour.
     /// let mut buf = Buffer::empty(Rect::new(0, 0, 24, 2));

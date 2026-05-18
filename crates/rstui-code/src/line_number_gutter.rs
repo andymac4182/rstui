@@ -11,7 +11,7 @@
 //! extracted as a standalone, composable widget: it owns *no* application
 //! state, draws only the numbers/signs, and exposes
 //! [`inner`](LineNumberGutter::inner) — the exact
-//! [`Block::inner`](crate::Block::inner) composition seam. The caller renders
+//! [`Block::inner`](rstui_widgets::Block::inner) composition seam. The caller renders
 //! the gutter, then renders code/diff/editor into `gutter.inner(area)`, the
 //! same two-step every container widget uses:
 //!
@@ -27,14 +27,14 @@
 //! The first line number, the row count, and the optional per-row sign glyph
 //! and per-row [`Style`] are all caller-owned inputs the widget only reads —
 //! the reducer decides what they are (e.g. signs from a diff, a `>` on the
-//! caret row), exactly the [`List`](crate::List)/[`Editor`](crate::Editor)
+//! caret row), exactly the [`List`](rstui_widgets::List)/[`Editor`](crate::Editor)
 //! discipline. It is **total**: line numbers up to [`u64::MAX`] saturate
 //! rather than overflow, an area too narrow for the gutter clips (and
 //! [`inner`](LineNumberGutter::inner) collapses to an empty rect), zero rows
 //! draws nothing — never a panic.
 
-use crate::block::Block;
 use rstui_core::{Buffer, Position, Rect, Style, Widget};
+use rstui_widgets::Block;
 
 /// A right-aligned line-number gutter with an optional sign column and an
 /// optional framing [`Block`], exposing the content [`Rect`] via
@@ -49,7 +49,7 @@ use rstui_core::{Buffer, Position, Rect, Style, Widget};
 ///
 /// ```
 /// use rstui_core::{Buffer, Position, Rect, Widget};
-/// use rstui_widgets::LineNumberGutter;
+/// use rstui_code::LineNumberGutter;
 ///
 /// let gutter = LineNumberGutter::new(8, 3); // lines 8, 9, 10
 /// let area = Rect::new(0, 0, 10, 3);
@@ -95,7 +95,7 @@ impl<'a> LineNumberGutter<'a> {
     }
 
     /// Frames the gutter+content in `block`; everything renders into
-    /// [`block.inner`](crate::Block::inner).
+    /// [`block.inner`](rstui_widgets::Block::inner).
     #[must_use]
     pub fn block(mut self, block: Block<'a>) -> Self {
         self.block = Some(block);
@@ -169,7 +169,7 @@ impl<'a> LineNumberGutter<'a> {
     }
 
     /// The content [`Rect`] to the right of the gutter — the
-    /// [`Block::inner`](crate::Block::inner) composition seam.
+    /// [`Block::inner`](rstui_widgets::Block::inner) composition seam.
     ///
     /// A **pure geometry accessor** (no [`Buffer`], owns no state): render the
     /// gutter into `area`, then render content into `gutter.inner(area)`. The

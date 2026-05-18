@@ -18,11 +18,10 @@
 //! cargo run -p rstui-widgets --example diff_demo
 //! ```
 
+// ADR 0024: the diff widget moved to `rstui-code` (re-exported at its root).
+use rstui_code::{Diff, DiffLayout};
 use rstui_core::{Terminal, TestBackend};
-// `DiffLayout` lives in the (public) `diff` module; the crate root currently
-// re-exports only `Diff`/`DiffTheme`.
-use rstui_widgets::diff::DiffLayout;
-use rstui_widgets::{Block, Diff};
+use rstui_widgets::Block;
 
 /// A real-world patch: a rename with mode/similarity/index metadata, two
 /// hunks with section labels, an intra-line edit, and the no-newline marker.

@@ -1,11 +1,11 @@
 //! "It looks like a proper code editor with real colours."
 //!
-//! A multi-line Rust source rendered through the landed
-//! [`rstui_widgets::Editor`] with its **syntax overlay produced by a real
-//! tree-sitter parse** ([`rstui_treesitter::Analyzer`]) — the ADR 0022
+//! A multi-line Rust source rendered through the
+//! [`rstui_code::Editor`] with its **syntax overlay produced by a real
+//! tree-sitter parse** ([`rstui_code::Analyzer`]) — the ADR 0022
 //! Tier-1 drop-in for the dependency-free Tier-0. One [`Analyzer`] parse
 //! feeds *both* the per-cell colour overlay (`Editor::syntax`) *and* the
-//! symbol [`Outline`](rstui_widgets::Outline) the side panel would show.
+//! symbol [`Outline`](rstui_code::Outline) the side panel would show.
 //!
 //! Per the rstui example convention this is a **deterministic,
 //! self-asserting [`TestBackend`] smoke** (not `run_app`): it renders once,
@@ -15,13 +15,13 @@
 //! is the test:
 //!
 //! ```text
-//! cargo run --manifest-path crates/rstui-treesitter/Cargo.toml --example code_editor
+//! cargo run -p rstui-code --example code_editor
 //! ```
 
+use rstui_code::syntax::SyntaxStyles;
+use rstui_code::{Analyzer, Editor, SymbolKind, TsLanguage};
 use rstui_core::{Color, Position, Style, Terminal, TestBackend, TextArea};
-use rstui_treesitter::{Analyzer, TsLanguage};
-use rstui_widgets::syntax::SyntaxStyles;
-use rstui_widgets::{Block, Editor, SymbolKind};
+use rstui_widgets::Block;
 
 fn main() {
     // A realistic little Rust file: comments, keywords, a string, a number,
@@ -63,7 +63,7 @@ fn main() {
     let mut analyzer = Analyzer::new(TsLanguage::Rust);
     analyzer.set_source(&doc.to_string());
     let overlay = analyzer.highlight(&styles); // drop-in for Editor::syntax
-    let outline = analyzer.outline(); // rstui_widgets::Outline
+    let outline = analyzer.outline(); // rstui_code::Outline
 
     // The overlay is the flattened, newline-inclusive per-char layout the
     // Editor expects — a true drop-in.

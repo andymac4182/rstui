@@ -15,8 +15,9 @@
 //! cargo run -p rstui-widgets --example extmark_demo
 //! ```
 
+use rstui_code::Editor;
 use rstui_core::{Color, Constraint, Layout, Style, Terminal, TestBackend, TextArea, TextEdit};
-use rstui_widgets::{Block, Editor, Extmark, Input};
+use rstui_widgets::{Block, Extmark, Input};
 
 fn main() {
     let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("TestBackend is infallible");

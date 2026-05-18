@@ -1,5 +1,5 @@
 //! [`Extmark`] — a caller-owned, optionally *atomic*, styled character range
-//! that [`Editor`](crate::Editor) and [`Input`](crate::Input) project over
+//! that [`Input`](crate::Input) (and `rstui-code`'s `Editor`) project over
 //! their text.
 //!
 //! # The reducer owns it; the widget only projects it
@@ -28,7 +28,7 @@
 //!
 //! [`range`](Extmark::range) is a half-open **character-index** range into the
 //! model's text — for [`Input`](crate::Input) the char index into
-//! [`value`](rstui_core::TextEdit::value); for [`Editor`](crate::Editor) the
+//! [`value`](rstui_core::TextEdit::value); for `rstui-code`'s `Editor` the
 //! char index into the flattened document (rows joined by `'\n'`, exactly
 //! [`TextArea`](rstui_core::TextArea)'s `to_string()`), so a pill may span a
 //! line break. Character indices match rstui's single-`char` cell model the
@@ -49,8 +49,8 @@ use rstui_core::Style;
 /// Construct one directly (the fields are public so a reducer can rebuild the
 /// list cheaply every edit) or via [`Extmark::new`] /
 /// [`Extmark::pill`]. Pass a `&[Extmark]` to
-/// [`Input::extmarks`](crate::Input::extmarks) /
-/// [`Editor::extmarks`](crate::Editor::extmarks); at render the widget patches
+/// [`Input::extmarks`](crate::Input::extmarks) / `rstui-code`'s
+/// `Editor::extmarks`; at render the widget patches
 /// [`style`](Self::style) over every cell whose character index lies in
 /// [`range`](Self::range), beneath the focus fill and beneath the cursor caret
 /// (cascade: base → focus → **extmark** → caret).
@@ -98,7 +98,13 @@ impl Extmark {
 /// contains the character index `char_idx` over `base`, in slice order so a
 /// later mark wins (the last-wins cascade). Totally defined: an empty,
 /// reversed, or out-of-range range simply does not match.
-pub(crate) fn patch_at(base: Style, marks: &[Extmark], char_idx: usize) -> Style {
+///
+/// `pub` (minimally) so the sibling `rstui-code` crate's `Editor` — which
+/// projects this same `(range, Style, atomic)` overlay — can reuse the exact
+/// cascade rather than reimplement it (ADR 0024: the `extmark` model stays
+/// in `rstui-widgets`, shared by `Input` here and `Editor` there).
+#[must_use]
+pub fn patch_at(base: Style, marks: &[Extmark], char_idx: usize) -> Style {
     let mut style = base;
     for mark in marks {
         if mark.range.contains(&char_idx) {

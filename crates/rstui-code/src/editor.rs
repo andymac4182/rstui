@@ -1,9 +1,9 @@
 //! [`Editor`] — a multi-line text-entry panel, the multi-line sibling of
-//! [`Input`](crate::Input).
+//! [`Input`](rstui_widgets::Input).
 //!
 //! # A pure projection of a caller-owned [`TextArea`] + `focused`
 //!
-//! [`Input`](crate::Input) projects a caller-owned single-line
+//! [`Input`](rstui_widgets::Input) projects a caller-owned single-line
 //! [`TextEdit`](rstui_core::TextEdit); `Editor` projects a caller-owned
 //! **multi-line** [`TextArea`] (the `rstui-core`
 //! document model: a `Vec<String>` of logical lines plus a `(row, col)`
@@ -18,13 +18,13 @@
 //!
 //! # Caller-owned 2D scroll — not derived
 //!
-//! [`Input`](crate::Input) derives its horizontal scroll as a pure function
+//! [`Input`](rstui_widgets::Input) derives its horizontal scroll as a pure function
 //! of the cursor and width (no caller state). That keeps the caret on screen
 //! with zero bookkeeping, but it cannot do the nicer "only scroll when the
 //! caret leaves the view" UX, and it does not generalize cleanly to two axes.
 //! `Editor` instead takes a caller-owned 2D [`scroll`](Editor::scroll)
 //! `(row_offset, col_offset)` — the same caller-owned-offset model
-//! [`List`](crate::List)/[`Table`](crate::Table) use, the option `Input`'s
+//! [`List`](rstui_widgets::List)/[`Table`](rstui_widgets::Table) use, the option `Input`'s
 //! docs name as the deferred-better one. This is the slice where it is
 //! appropriate: a document needs scrolling on both axes, and the app/reducer
 //! owns that state ([ADR 0004](https://github.com/andymac4182/rstui/blob/main/docs/adr/0004-focus-routing-architecture.md)
@@ -33,14 +33,14 @@
 //! widget draws **no caret**; keeping it in view (a `scroll_into_view` seam on
 //! [`TextArea`]) is the caller's job and a deliberately
 //! deferred additive — as are selection and undo. None are smuggled into this
-//! slice (the same scoping discipline [`List`](crate::List) records).
+//! slice (the same scoping discipline [`List`](rstui_widgets::List) records).
 //!
 //! # The cursor is *rendered*, not the terminal's — on purpose
 //!
 //! A [`Widget`] is handed only a [`Buffer`] at render time, never the
 //! [`Frame`](rstui_core::Frame), so it physically *cannot* call
 //! `Frame::set_cursor_position`. `Editor` therefore draws its **own** caret,
-//! generalizing [`Input`](crate::Input)'s to 2D: when
+//! generalizing [`Input`](rstui_widgets::Input)'s to 2D: when
 //! [`focused`](Editor::focused) the cell under the model cursor is stamped
 //! with [`cursor_style`](Editor::cursor_style) (default
 //! [`Modifier::REVERSED`](rstui_core::Modifier::REVERSED), so a focused
@@ -53,14 +53,14 @@
 //!
 //! # A container: an optional framing [`Block`]
 //!
-//! Unlike the single-row leaf [`Input`](crate::Input), an `Editor` is a
+//! Unlike the single-row leaf [`Input`](rstui_widgets::Input), an `Editor` is a
 //! panel: it takes an optional framing [`Block`] and renders
-//! the document into the block's [`inner`](crate::Block::inner) area, exactly
-//! like [`List`](crate::List)/[`Table`](crate::Table).
+//! the document into the block's [`inner`](rstui_widgets::Block::inner) area, exactly
+//! like [`List`](rstui_widgets::List)/[`Table`](rstui_widgets::Table).
 //!
 //! # Total, never a panic
 //!
-//! Per the [`Gauge`](crate::Gauge) rule (a pure projection must be *total*):
+//! Per the [`Gauge`](rstui_widgets::Gauge) rule (a pure projection must be *total*):
 //! an empty area, a one-cell inner, a document far larger than the panel, a
 //! multi-byte line, a scroll past the end, and an empty document are all safe
 //! clips/no-ops — never a panic. [`TextArea`] already
@@ -69,9 +69,9 @@
 
 use std::borrow::Cow;
 
-use crate::block::Block;
-use crate::extmark::{self, Extmark};
 use rstui_core::{Buffer, DocSelection, Modifier, Position, Rect, Style, TextArea, Widget};
+use rstui_widgets::Block;
+use rstui_widgets::extmark::{self, Extmark};
 
 /// One rendered terminal cell of a logical line: the glyph to draw and the
 /// **character index** in that logical line it stands for.
@@ -135,7 +135,7 @@ struct VRow {
 /// The base [`style`](Self::style) fills the whole inner panel (so a
 /// background reads as one block); when [`focused`](Self::focused),
 /// [`focus_style`](Self::focus_style) is patched **last** over it — the same
-/// highlight-wins-last fill [`List`](crate::List)/[`Input`](crate::Input) use
+/// highlight-wins-last fill [`List`](rstui_widgets::List)/[`Input`](rstui_widgets::Input) use
 /// — and the cell under the cursor additionally gets
 /// [`cursor_style`](Self::cursor_style). When the document is empty an
 /// optional [`placeholder`](Self::placeholder) hint is shown on the first
@@ -156,7 +156,7 @@ struct VRow {
 ///   the **flattened** document char index (rows joined by `'\n'`, *exactly*
 ///   the [`extmarks`](Self::extmarks) index space, so the two compose),
 ///   beneath both extmarks and the selection. The reducer builds it with
-///   [`rstui_widgets::syntax::line_overlay`](crate::syntax::line_overlay)
+///   [`rstui_code::syntax::line_overlay`](crate::syntax::line_overlay)
 ///   threading [`LexState`](crate::syntax::LexState) line to line; the widget
 ///   just reads it. Empty (the default) is today's behaviour byte for byte.
 /// - [`extmarks`](Self::extmarks) (the @-mention / pasted-file "pill" model)
@@ -181,8 +181,8 @@ struct VRow {
 /// # Example
 ///
 /// ```
+/// use rstui_code::Editor;
 /// use rstui_core::{Buffer, Position, Rect, TextArea, Widget};
-/// use rstui_widgets::Editor;
 ///
 /// // `doc` is plain caller-owned model state the widget only reads.
 /// let mut doc = TextArea::from_value("line one\nline two");
@@ -275,8 +275,9 @@ impl<'a> Editor<'a> {
     /// ranges are all total.
     ///
     /// ```
+    /// use rstui_code::Editor;
     /// use rstui_core::{Buffer, Color, Position, Rect, Style, TextArea, Widget};
-    /// use rstui_widgets::{Editor, Extmark};
+    /// use rstui_widgets::Extmark;
     ///
     /// let doc = TextArea::from_value("hi @ada\nbye");
     /// // Flattened char index: '@' is char 3 of "hi @ada\nbye".
@@ -318,7 +319,7 @@ impl<'a> Editor<'a> {
     ///
     /// ```
     /// use rstui_core::{Buffer, Color, Position, Rect, Style, TextArea, Widget};
-    /// use rstui_widgets::Editor;
+    /// use rstui_code::Editor;
     ///
     /// let doc = TextArea::from_value("let x");
     /// // The reducer would build this with `syntax::line_overlay`; here a
@@ -357,7 +358,7 @@ impl<'a> Editor<'a> {
     ///
     /// ```
     /// use rstui_core::{Buffer, Color, DocSelection, Modifier, Position, Rect, Style, TextArea, Widget};
-    /// use rstui_widgets::Editor;
+    /// use rstui_code::Editor;
     ///
     /// let doc = TextArea::from_value("hello");
     /// // Caller-owned: Shift+Right ×2 from col 1 selected "el" ([1, 3)).
@@ -417,7 +418,7 @@ impl<'a> Editor<'a> {
     ///
     /// ```
     /// use rstui_core::{Buffer, Position, Rect, TextArea, Widget};
-    /// use rstui_widgets::Editor;
+    /// use rstui_code::Editor;
     ///
     /// let doc = TextArea::from_value("\tx"); // a tab then 'x'
     /// let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
@@ -466,7 +467,7 @@ impl<'a> Editor<'a> {
     ///
     /// ```
     /// use rstui_core::{Buffer, Position, Rect, TextArea, Widget};
-    /// use rstui_widgets::Editor;
+    /// use rstui_code::Editor;
     ///
     /// // One 6-char logical line wrapped into two visual rows at width 4.
     /// let doc = TextArea::from_value("abcdef");
@@ -487,7 +488,7 @@ impl<'a> Editor<'a> {
     /// The number of terminal rows the document needs if every logical line
     /// is soft-wrapped at `width` columns — a **pure measurement** of the
     /// borrowed model, owning no state and touching no [`Buffer`], exactly as
-    /// [`Block::inner`](crate::Block::inner) is a pure geometry accessor.
+    /// [`Block::inner`](rstui_widgets::Block::inner) is a pure geometry accessor.
     ///
     /// This is the composer auto-grow input: a chat/commit-message panel asks
     /// "how tall must I be to show all of this at my current width?" and sizes
@@ -674,7 +675,7 @@ impl<'a> Editor<'a> {
     }
 
     /// Frames the editor in `block`; the document renders into
-    /// [`block.inner`](crate::Block::inner).
+    /// [`block.inner`](rstui_widgets::Block::inner).
     #[must_use]
     pub fn block(mut self, block: Block<'a>) -> Self {
         self.block = Some(block);
@@ -693,7 +694,7 @@ impl<'a> Editor<'a> {
     ///
     /// Patched **last** across the inner panel, so the focus emphasis
     /// overrides the base and reads as one block — the same role
-    /// [`List`](crate::List)'s `highlight_style` plays for selection.
+    /// [`List`](rstui_widgets::List)'s `highlight_style` plays for selection.
     #[must_use]
     pub fn focus_style(mut self, style: Style) -> Self {
         self.focus_style = style;

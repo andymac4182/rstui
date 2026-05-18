@@ -15,8 +15,9 @@
 //! cargo run -p rstui-widgets --example line_number_gutter_demo
 //! ```
 
+use rstui_code::LineNumberGutter;
 use rstui_core::{Color, Style, Terminal, TestBackend};
-use rstui_widgets::{Block, LineNumberGutter};
+use rstui_widgets::Block;
 
 fn main() {
     let mut terminal = Terminal::new(TestBackend::new(36, 7)).expect("TestBackend is infallible");

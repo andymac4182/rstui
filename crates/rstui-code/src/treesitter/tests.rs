@@ -9,7 +9,7 @@
 //! - representative keyword / string / comment / number spans land in the
 //!   right [`SyntaxStyles`] bucket (proving a *real* parse colours them);
 //! - `outline()` finds the expected symbols with the right
-//!   [`SymbolKind`](rstui_widgets::SymbolKind) / `line` / nesting;
+//!   [`SymbolKind`](crate::SymbolKind) / `line` / nesting;
 //! - [`TsLanguage::from_path`] resolves by extension;
 //! - a fixed-seed-LCG fuzz over garbage source for **every** enabled
 //!   language never panics and the overlay-length invariant always holds
@@ -19,9 +19,9 @@
 #![allow(unused_imports)]
 
 use super::*;
+use crate::SymbolKind;
+use crate::syntax::SyntaxStyles;
 use rstui_core::{Color, Style};
-use rstui_widgets::SymbolKind;
-use rstui_widgets::syntax::SyntaxStyles;
 
 /// Distinct, easily-identified bucket styles so a test can read back which
 /// classifier painted each char (the same trick the Tier-0 `syntax.rs`
@@ -41,7 +41,7 @@ fn count(ov: &[Style], s: Style) -> usize {
 }
 
 /// Build an analyzer, set the source, return `(overlay, outline)`.
-fn analyze(lang: TsLanguage, src: &str) -> (Vec<Style>, rstui_widgets::Outline) {
+fn analyze(lang: TsLanguage, src: &str) -> (Vec<Style>, crate::Outline) {
     let mut a = Analyzer::new(lang);
     a.set_source(src);
     (a.highlight(&styles()), a.outline())
@@ -57,7 +57,7 @@ fn assert_overlay_len(ov: &[Style], src: &str) {
     );
 }
 
-fn has(o: &rstui_widgets::Outline, name: &str, kind: SymbolKind) -> bool {
+fn has(o: &crate::Outline, name: &str, kind: SymbolKind) -> bool {
     o.0.iter().any(|s| s.name == name && s.kind == kind)
 }
 

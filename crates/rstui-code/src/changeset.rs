@@ -43,7 +43,7 @@
 //! # Example
 //!
 //! ```
-//! use rstui_widgets::{Changeset, Diff, FileStatus};
+//! use rstui_code::{Changeset, Diff, FileStatus};
 //!
 //! let patch = "\
 //! diff --git a/added.txt b/added.txt

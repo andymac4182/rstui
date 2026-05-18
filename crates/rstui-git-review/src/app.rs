@@ -16,10 +16,15 @@ use rstui_core::{
 };
 use rstui_keymap::{Action, Capture, Chord, Dispatch, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd};
+// ADR 0024: the code-editing widgets moved to `rstui-code`; the general
+// chrome stays in `rstui-widgets`. git-review's behaviour is unchanged — it
+// keeps lexing with the dependency-free Tier-0 `syntax::line_overlay`.
+use rstui_code::{
+    Changeset, Diff, Editor, Language, LineNumberGutter, Outline, SymbolKind, outline, syntax,
+};
 use rstui_widgets::{
-    Block, BorderType, Changeset, Diff, Editor, HelpEntry, HelpOverlay, KeymapRow, KeymapView,
-    Language, LineNumberGutter, List, Outline, Paragraph, RowState, StatusBar, SymbolKind, outline,
-    syntax,
+    Block, BorderType, HelpEntry, HelpOverlay, KeymapRow, KeymapView, List, Paragraph, RowState,
+    StatusBar,
 };
 
 use crate::{Commit, Config, Loaded};
@@ -1389,8 +1394,8 @@ fn kind_glyph(k: SymbolKind) -> &'static str {
 }
 
 /// A one-glyph badge for a changed file's status.
-fn status_glyph(f: &rstui_widgets::DiffFile) -> &'static str {
-    use rstui_widgets::FileStatus::{Added, Binary, Copied, Deleted, Modified, Renamed};
+fn status_glyph(f: &rstui_code::DiffFile) -> &'static str {
+    use rstui_code::FileStatus::{Added, Binary, Copied, Deleted, Modified, Renamed};
     match f.status {
         Added => "A",
         Deleted => "D",

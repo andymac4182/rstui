@@ -16,8 +16,9 @@
 //! cargo run -p rstui-widgets --example editor_demo
 //! ```
 
+use rstui_code::Editor;
 use rstui_core::{Color, Style, Terminal, TestBackend, TextArea};
-use rstui_widgets::{Block, Editor};
+use rstui_widgets::Block;
 
 fn main() {
     let mut terminal = Terminal::new(TestBackend::new(28, 7)).expect("TestBackend is infallible");

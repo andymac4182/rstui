@@ -32,6 +32,12 @@ rstui-core = { path = "../rstui-core", version = "0.0.1" }
 rstui-runtime = { path = "../rstui-runtime", version = "0.0.1" }
 rstui-crossterm = { path = "../rstui-crossterm", version = "0.0.1" }
 rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# ADR 0024: the code-editing widgets (Editor, Diff, Outline, Changeset,
+# LineNumberGutter, the syntax overlay) moved out of `rstui-widgets` into
+# `rstui-code` (which depends on tree-sitter first-class). git-review keeps
+# using the dependency-free Tier-0 `syntax::line_overlay` exactly as before;
+# it does not wire the tree-sitter Analyzer (out of scope for this slice).
+rstui-code = { path = "../rstui-code", version = "0.0.1" }
 # All gpui-component themes + the reusable ThemePicker widget.
 rstui-theme = { path = "../rstui-theme", version = "0.0.1" }
 # The shared keymap engine: git-review's commands are semantic Actions

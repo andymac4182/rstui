@@ -80,9 +80,6 @@
 //!   activation event shape; documents expose links in reading order and the
 //!   app owns the focused index, the same pure-projection discipline as
 //!   [`List`] selection (activation is the reducer's concern, not smuggled in).
-//! - [`diff`]: [`Diff`] — a unified-diff view (hunk headers, +/- gutters,
-//!   line numbers, word-level intra-line highlight), the document analogue of
-//!   `Paragraph` for code review panes.
 //! - [`mermaid`]: [`Mermaid`] — a narrow Mermaid flowchart subset parsed to a
 //!   public AST ([`mermaid::MermaidGraph`]) and laid out as a deterministic
 //!   Unicode box-and-arrow diagram.
@@ -126,11 +123,6 @@
 //!   caller-owned `open`/`selected`/`highlight`/`offset` that **reuses**
 //!   [`List`] for the panel and [`Modal`]'s clear-region opacity (but is
 //!   deliberately not a [`Modal`] — anchored, not modal/centred).
-//! - [`editor`]: [`Editor`] — a multi-line text-entry widget, the [`Input`]
-//!   dual for documents; a pure projection of a borrowed caller-owned
-//!   [`TextArea`](rstui_core::TextArea) model plus caller-owned 2D `scroll`
-//!   and `focused`, with a rendered (not terminal) 2D caret. The reducer owns
-//!   the edit and the scroll (ADR 0004 §1); the widget only reads.
 //! - [`slider`]: [`Slider`] — a horizontal value selector, a pure projection
 //!   of a caller-owned `value` in `min..=max` plus `focused`; sub-cell
 //!   precision (the [`Gauge`] eighth-block ramp). A leaf control, no `Block`.
@@ -265,13 +257,9 @@
 //!   anchored [`Calendar`] panel (the [`Select`] anchored-panel idiom,
 //!   self-contained); caller-owned open/selected day numbers, no date math.
 //! - [`extmark`]: [`Extmark`] — a caller-owned `(range, Style, atomic)`
-//!   overlay [`Editor`]/[`Input`] project as styled, optionally cursor-atomic
-//!   "pills" (@-mention/paste chips); the reducer owns and re-derives the
-//!   ranges, the widget only reads (ADR 0012 §P1).
-//! - [`line_number_gutter`]: [`LineNumberGutter`] — a pure layout widget
-//!   drawing a numeric (+ optional per-row sign) gutter and exposing the
-//!   inner content [`Rect`](rstui_core::Rect) (the [`Block::inner`](block::Block::inner)
-//!   pattern), for code/diff/editor panes.
+//!   overlay [`Input`] (and `rstui-code`'s `Editor`) project as styled,
+//!   optionally cursor-atomic "pills" (@-mention/paste chips); the reducer
+//!   owns and re-derives the ranges, the widget only reads (ADR 0012 §P1).
 //! - [`flow`]: [`Flow`] — a wrapped horizontal run of [`Line`](rstui_core::Line)
 //!   items packed across rows within the area with a configurable gap (the
 //!   `flex-wrap` pill-row); a pure layout projection with a `layout` accessor.
@@ -332,7 +320,6 @@ pub mod calendar_heatmap;
 pub mod candlestick;
 pub mod canvas;
 pub mod card;
-pub mod changeset;
 pub mod checkbox;
 pub mod command_palette;
 pub mod data_table;
@@ -341,10 +328,8 @@ pub mod description_list;
 /// The shared diagram drawing surface reused by the Mermaid and Structurizr
 /// renderers. Crate-internal, not part of the public API.
 mod diagram;
-pub mod diff;
 pub mod divider;
 pub mod drawer;
-pub mod editor;
 pub mod extmark;
 pub mod flame_graph;
 pub mod flow;
@@ -362,7 +347,6 @@ pub mod json_canvas;
 pub mod kbd;
 pub mod keymap_view;
 pub mod line_chart;
-pub mod line_number_gutter;
 pub mod link;
 pub mod list;
 pub mod log_stream;
@@ -371,7 +355,6 @@ pub mod masked_input;
 pub mod menu;
 pub mod mermaid;
 pub mod modal;
-pub mod outline;
 pub mod pagination;
 pub mod paragraph;
 pub mod pie_chart;
@@ -395,7 +378,6 @@ pub mod status_bar;
 pub mod stepper;
 pub mod structurizr;
 pub mod switch;
-pub mod syntax;
 pub mod table;
 pub mod tabs;
 pub mod toast;
@@ -417,7 +399,6 @@ pub use button::Button;
 pub use calendar::Calendar;
 pub use canvas::{Canvas, CanvasLine, Context, Marker, Painter, Points, Rectangle, Shape};
 pub use card::Card;
-pub use changeset::{Changeset, DiffFile, FileStatus, HunkRef};
 pub use checkbox::Checkbox;
 pub use command_palette::CommandPalette;
 pub use data_table::{
@@ -425,21 +406,16 @@ pub use data_table::{
     SortDirection, VisualRow, cell_truthy,
 };
 pub use description_list::{DescriptionList, DescriptionRow};
-pub use diff::{Diff, DiffLayout, DiffTheme};
 pub use divider::{Divider, DividerOrientation};
-pub use editor::Editor;
 pub use extmark::Extmark;
 pub use form::{Form, FormField};
 pub use fps::{FpsCounter, FpsMeter};
 pub use gauge::Gauge;
 pub use input::Input;
-pub use line_number_gutter::LineNumberGutter;
 pub use link::{Link, LinkActivation};
 pub use list::{List, ListItem};
 pub use markdown::{LinkRegion, Markdown, MarkdownTheme};
 pub use menu::{Menu, MenuItem};
-pub use outline::{Outline, Symbol, SymbolKind};
-pub use syntax::{Language, LexState, SyntaxStyles};
 // The Mermaid AST types (`Direction`, `Node`, `Edge`, `EdgeKind`, `Shape`,
 // `MermaidGraph`) are intentionally reached via `mermaid::` rather than
 // re-exported at the crate root: `Direction`/`Node`/`Edge` are generic enough

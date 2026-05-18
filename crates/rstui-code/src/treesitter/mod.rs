@@ -1,21 +1,22 @@
-//! ADR 0022 **Tier-1** — an opt-in, feature-gated tree-sitter back end that
-//! is a *better producer of the SAME shapes* the always-compiled,
-//! dependency-free **Tier-0** (`rstui_widgets::syntax` +
-//! `rstui_widgets::outline`) already feeds. It is a **drop-in, never a new
-//! widget**: one real parse yields *both* the per-character syntax overlay
-//! `Editor`/`Diff` already read (`Editor::syntax`) *and* the
+//! ADR 0022 **Tier-1** — a feature-gated tree-sitter back end that is a
+//! *better producer of the SAME shapes* the dependency-free **Tier-0**
+//! ([`crate::syntax`] + [`crate::outline`]) already feeds. It is a
+//! **drop-in, never a new widget**: one real parse yields *both* the
+//! per-character syntax overlay [`Editor`](crate::Editor)/[`Diff`](crate::Diff)
+//! already read ([`Editor::syntax`](crate::Editor)) *and* the
 //! [`Outline`] the symbol panel already projects.
 //!
-//! # Why a workspace-excluded leaf (ADR 0023)
+//! # First-class in `rstui-code` (ADR 0024)
 //!
-//! tree-sitter grammars carry generated C. ADR 0002 §4 / ADR 0018's opt-in
-//! leaf posture say a heavy, optional, conceptually-alien engine lives
-//! outside the dependency-free core and is **never** on the default path.
-//! This crate is therefore **excluded from the workspace**: `cargo xtask ci`
-//! and the five gates never compile it, and it is never a dependency of
-//! `rstui-core`/`-widgets`/`-runtime` (the dependency direction is one-way).
-//! It is gated *itself*, with `--manifest-path`. Tier-0 is always present;
-//! Tier-1 is the accuracy upgrade you opt into.
+//! tree-sitter grammars carry generated C. ADR 0024 supersedes ADR 0023:
+//! rather than a workspace-excluded leaf, this back end is folded **into the
+//! `rstui-code` crate** and depended on first-class. The dependency-free
+//! floor still lives in `rstui-core`/`rstui-widgets`, which stay
+//! tree-sitter-free; only `rstui-code` (and its consumers) pull tree-sitter,
+//! so the dependency direction is still one-way. The five CI gates *do* now
+//! compile this back end on the `rstui-code` leg (accepted by ADR 0024).
+//! Tier-0 is always present; Tier-1 is the accuracy upgrade, default-on per
+//! language behind a Cargo feature each.
 //!
 //! # One parse → two outputs (ADR 0022 driver 1)
 //!
@@ -57,8 +58,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "rust")] {
-//! use rstui_treesitter::{Analyzer, TsLanguage};
-//! use rstui_widgets::syntax::SyntaxStyles;
+//! use rstui_code::{Analyzer, TsLanguage};
+//! use rstui_code::syntax::SyntaxStyles;
 //! use rstui_core::{Color, Style};
 //!
 //! let styles = SyntaxStyles {
@@ -73,7 +74,7 @@
 //! let overlay = a.highlight(&styles);          // drop-in for Editor::syntax
 //! assert_eq!(overlay.len(), "fn main() {\n    let n = 42; // hi\n}\n".chars().count());
 //!
-//! let o = a.outline();                          // rstui_widgets::Outline
+//! let o = a.outline();                          // rstui_code::Outline
 //! assert!(o.0.iter().any(|s| s.name == "main"));
 //! # }
 //! ```
@@ -82,9 +83,9 @@ mod highlight;
 mod lang;
 mod symbols;
 
+use crate::Outline;
+use crate::syntax::SyntaxStyles;
 use rstui_core::Style;
-use rstui_widgets::Outline;
-use rstui_widgets::syntax::SyntaxStyles;
 use tree_sitter::{Parser, Query, Tree};
 
 /// A source language Tier-1 can parse. **Only the variants whose crate
@@ -124,7 +125,7 @@ pub enum TsLanguage {
 impl TsLanguage {
     /// Picks a language from a file path by extension, case-insensitive
     /// (the same extension rule as
-    /// [`rstui_widgets::syntax::Language::from_path`]). `None` for an
+    /// [`crate::syntax::Language::from_path`]). `None` for an
     /// unrecognised, extension-less, or feature-disabled language — so a
     /// caller can fall back to Tier-0.
     ///
@@ -132,7 +133,7 @@ impl TsLanguage {
     ///
     /// ```
     /// # #[cfg(feature = "rust")] {
-    /// use rstui_treesitter::TsLanguage;
+    /// use rstui_code::TsLanguage;
     /// assert_eq!(TsLanguage::from_path("src/Main.RS"), Some(TsLanguage::Rust));
     /// assert_eq!(TsLanguage::from_path("Makefile"), None);
     /// # }
@@ -275,7 +276,7 @@ impl Analyzer {
     /// painted from the parse tree's `highlights.scm` captures into the
     /// caller's four theme buckets (`styles`).
     ///
-    /// **Drop-in for [`Editor::syntax`](rstui_widgets::Editor)**: the
+    /// **Drop-in for [`Editor::syntax`](crate::Editor)**: the
     /// returned `Vec<Style>` has exactly `current_source.chars().count()`
     /// slots — one per source char *including each `'\n'`* — the identical
     /// layout/length `rstui-git-review`'s `rebuild_edit_overlays` builds, so
@@ -294,7 +295,7 @@ impl Analyzer {
 
     /// The symbol [`Outline`] for the current source, from the parse tree's
     /// `tags.scm` definition captures — the **exact**
-    /// [`rstui_widgets::Outline`] shape Tier-0 produces, so it is a drop-in
+    /// [`crate::Outline`] shape Tier-0 produces, so it is a drop-in
     /// for the symbol panel. A language whose grammar ships no `tags.scm`
     /// (JSON, Markdown) yields an empty outline. Total: never panics; before
     /// [`set_source`](Self::set_source) it is empty.

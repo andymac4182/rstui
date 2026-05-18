@@ -46,8 +46,9 @@
 //! and a document taller than the panel are all safe clips/no-ops (the
 //! [`Gauge`](rstui_widgets::Gauge) totality rule).
 
+use rstui_code::Editor; // ADR 0024: Editor moved to rstui-code
 use rstui_core::{Buffer, Color, Line, Position, Rect, Span, Style, TextArea, Widget};
-use rstui_widgets::{Block, Borders, Editor};
+use rstui_widgets::{Block, Borders};
 
 use crate::model::ChatStatus;
 
@@ -158,7 +159,7 @@ impl<'a> PromptInput<'a> {
 
     /// Sets the caller-owned 2D editor scroll `(row, col)` (the reducer
     /// drives it from the cursor, exactly as with
-    /// [`Editor::scroll`](rstui_widgets::Editor::scroll)).
+    /// [`Editor::scroll`](rstui_code::Editor::scroll)).
     #[must_use]
     pub fn scroll(mut self, scroll: (usize, usize)) -> Self {
         self.scroll = scroll;

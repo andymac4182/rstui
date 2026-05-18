@@ -1,7 +1,7 @@
 //! [`Outline`] — a dependency-free **heuristic symbol scanner** that turns any
 //! source text into a flat, pre-order list of [`Symbol`]s with a nesting
 //! `depth`, the caller then projects through the existing
-//! [`Tree`](crate::Tree) / [`List`](crate::List) widgets.
+//! [`Tree`](rstui_widgets::Tree) / [`List`](rstui_widgets::List) widgets.
 //!
 //! # Model + scanner, not a widget
 //!
@@ -11,7 +11,7 @@
 //! [`Outline::scan`] once (it owns the resulting `Vec<Symbol>` like every other
 //! reducer-owned bit of state), then feeds it to a tree/list view — exactly the
 //! caller-owns-it, the-widget-only-projects-it discipline the rest of the crate
-//! follows (the [`Extmark`](crate::Extmark) precedent). A symbol carries the
+//! follows (the [`Extmark`](rstui_widgets::Extmark) precedent). A symbol carries the
 //! line range and `depth` a `Tree` node needs and nothing more, so the
 //! projection stays the app's choice.
 //!
@@ -35,7 +35,7 @@
 //! own-crate split is reserved for *heavy, optional, conceptually alien*
 //! engines). A line-oriented symbol heuristic is none of those: it is the same
 //! kind of small character classifier [`Diff`](crate::Diff)'s syntax mode and
-//! [`Markdown`](crate::Markdown)'s parser already use, so it lives here as a
+//! [`Markdown`](rstui_widgets::Markdown)'s parser already use, so it lives here as a
 //! plain module with zero new dependencies.
 //!
 //! # Total — any `&str`, any language, never panics
@@ -51,7 +51,7 @@
 //! # Example
 //!
 //! ```
-//! use rstui_widgets::outline::{Language, Outline, SymbolKind};
+//! use rstui_code::outline::{Language, Outline, SymbolKind};
 //!
 //! let src = "\
 //! pub mod parser {
@@ -118,7 +118,7 @@ pub enum SymbolKind {
 /// `0` = top level).
 ///
 /// The fields are public so a caller can cheaply re-bucket or filter the list
-/// (the same "the reducer owns it" stance [`Extmark`](crate::Extmark) takes).
+/// (the same "the reducer owns it" stance [`Extmark`](rstui_widgets::Extmark) takes).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
     /// The declared identifier (best-effort; empty only if none could be
@@ -138,8 +138,8 @@ pub struct Symbol {
 
 /// A scanned outline: a flat **pre-order** list of [`Symbol`]s where `depth`
 /// encodes the tree (a child immediately follows its parent and has a strictly
-/// greater `depth`). Project it through [`Tree`](crate::Tree) /
-/// [`List`](crate::List); the app owns this value.
+/// greater `depth`). Project it through [`Tree`](rstui_widgets::Tree) /
+/// [`List`](rstui_widgets::List); the app owns this value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outline(pub Vec<Symbol>);
 
@@ -173,7 +173,7 @@ impl Language {
     /// # Example
     ///
     /// ```
-    /// use rstui_widgets::outline::Language;
+    /// use rstui_code::outline::Language;
     /// assert_eq!(Language::from_path("src/App.RS"), Language::Rust);
     /// assert_eq!(Language::from_path("README.md"), Language::Markdown);
     /// assert_eq!(Language::from_path("Makefile"), Language::Unknown);
@@ -218,7 +218,7 @@ impl Outline {
     /// # Example
     ///
     /// ```
-    /// use rstui_widgets::outline::{Language, Outline, SymbolKind};
+    /// use rstui_code::outline::{Language, Outline, SymbolKind};
     /// let o = Outline::scan("# Title\n## Sub\n", Language::Markdown);
     /// assert_eq!(o.0[0].kind, SymbolKind::Heading);
     /// assert_eq!(o.0[0].depth, 0);

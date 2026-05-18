@@ -20,6 +20,10 @@ workspace = true
 [dependencies]
 rstui-core = { path = "../rstui-core" }
 rstui-widgets = { path = "../rstui-widgets" }
+# ADR 0024: the IDE / Agent-UI screens use the `Editor` + `LineNumberGutter`
+# code-editing widgets, which moved out of `rstui-widgets` into `rstui-code`
+# (tree-sitter first-class). Everything else stays in `rstui-widgets`.
+rstui-code = { path = "../rstui-code" }
 rstui-runtime = { path = "../rstui-runtime" }
 # The shared keymap engine (extracted from this crate's former local
 # module so the ACP client can use the exact same model — ADR 0015).
