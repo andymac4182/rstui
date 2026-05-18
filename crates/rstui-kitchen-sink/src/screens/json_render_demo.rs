@@ -1,79 +1,57 @@
-//! The **json-render** scene: the verbatim Vercel json-render flat spec
-//! an agent sent on the left, its live `rstui-jsonui` projection on the
-//! right.
+//! The **json-render** scene: an editable code editor holding the Vercel
+//! json-render flat spec an agent sent on the left, its live
+//! `rstui-jsonui` projection on the right.
 //!
-//! ←/→ switches between the worked examples; ↑/↓ scrolls the spec. The
-//! screen owns only `(example, scroll)`; `view` re-parses and
-//! re-projects every frame — the same pure projection the ACP client
-//! uses for agent-driven UI.
+//! Type to edit the spec and the right pane re-renders live;
+//! `PgUp`/`PgDn` switch the worked examples (edits persist per example).
+//! All real state is the caller-owned [`TextArea`](rstui_core::TextArea)
+//! the [`Editor`](rstui_widgets::Editor) projects — the same pure
+//! projection the ACP client uses for agent-driven UI.
 
-use rstui_core::{KeyCode, Rect};
+use rstui_core::{KeyCode, Position, Rect};
 use rstui_runtime::Frame;
 
 use crate::screens::ScreenOutcome;
-use crate::screens::agent_ui::{self, JSON_RENDER_SAMPLES};
+use crate::screens::agent_ui::{Format, Scene};
 use crate::theme::Theme;
 
-/// Caller-owned scene state: which worked example, and the source-pane
-/// scroll offset.
+/// The json-render scene (a [`Scene`] fixed to [`Format::JsonRender`]).
 #[derive(Debug)]
-pub(crate) struct State {
-    example: usize,
-    scroll: u16,
-}
+pub(crate) struct State(Scene);
 
 impl State {
-    /// The scene, opened on the first example.
+    /// The scene, seeded from the json-render worked examples.
     pub(crate) fn new() -> Self {
-        Self {
-            example: 0,
-            scroll: 0,
-        }
+        Self(Scene::new(Format::JsonRender))
     }
 
-    /// ←/→ cycle examples (resetting scroll); ↑/↓ scroll the spec.
+    /// Editing keys + `PgUp`/`PgDn` example switch (see [`Scene::on_key`]).
     pub(crate) fn on_key(&mut self, code: KeyCode) -> ScreenOutcome {
-        let count = JSON_RENDER_SAMPLES.len().max(1);
-        match code {
-            KeyCode::Right | KeyCode::Tab => {
-                self.example = (self.example + 1) % count;
-                self.scroll = 0;
-            }
-            KeyCode::Left | KeyCode::BackTab => {
-                self.example = (self.example + count - 1) % count;
-                self.scroll = 0;
-            }
-            KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
-            KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            _ => return ScreenOutcome::ignored(),
-        }
-        ScreenOutcome::consumed()
+        self.0.on_key(code)
     }
 
-    /// Mouse-wheel scrolls the spec pane.
+    /// Paste into the buffer.
+    pub(crate) fn on_paste(&mut self, text: &str) {
+        self.0.on_paste(text);
+    }
+
+    /// Cut `sel` from the buffer.
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        self.0.cut(sel)
+    }
+
+    /// Wheel scroll moves the caret.
     pub(crate) fn on_scroll(&mut self, up: bool) {
-        if up {
-            self.scroll = self.scroll.saturating_sub(1);
-        } else {
-            self.scroll = self.scroll.saturating_add(1);
-        }
+        self.0.on_scroll(up);
     }
 
-    /// Re-project the selected document and draw the split.
+    /// The editor text rect, so a drag-select stays in the buffer.
+    pub(crate) fn selection_region(&self, pos: Position, content: Rect) -> Option<Rect> {
+        self.0.selection_region(pos, content)
+    }
+
+    /// Draw the editor ⇆ live-projection split.
     pub(crate) fn view(&self, theme: &Theme, frame: &mut Frame<'_>, area: Rect) {
-        let index = self
-            .example
-            .min(JSON_RENDER_SAMPLES.len().saturating_sub(1));
-        let node = agent_ui::json_render_node(JSON_RENDER_SAMPLES[index].source);
-        agent_ui::render_split(
-            theme,
-            frame,
-            area,
-            "json-render",
-            JSON_RENDER_SAMPLES,
-            self.example,
-            self.scroll,
-            node,
-        );
+        self.0.view(theme, frame, area);
     }
 }

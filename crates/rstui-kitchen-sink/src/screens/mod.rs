@@ -274,7 +274,13 @@ impl Screen {
     pub(crate) fn is_text_entry(self) -> bool {
         matches!(
             self,
-            Screen::Chat | Screen::Ide | Screen::Login | Screen::Logs | Screen::DataGrid
+            Screen::Chat
+                | Screen::Ide
+                | Screen::Login
+                | Screen::Logs
+                | Screen::DataGrid
+                | Screen::A2ui
+                | Screen::JsonRender
         )
     }
 
@@ -645,6 +651,8 @@ impl ScreenState {
             Screen::Mail => self.mail.selection_region(pos, content),
             Screen::Logs => logs::selection_region(pos, content),
             Screen::Ide => self.ide.selection_region(pos, content),
+            Screen::A2ui => self.a2ui.selection_region(pos, content),
+            Screen::JsonRender => self.json_render.selection_region(pos, content),
             Screen::Chat => chat::selection_region(pos, content),
             Screen::Containers => containers::selection_region(pos, content),
             // Single-surface screens: confine to the whole content (still
@@ -660,6 +668,8 @@ impl ScreenState {
             Screen::Chat => self.chat.on_paste(text),
             Screen::Login => self.login.on_paste(text),
             Screen::Ide => self.ide.on_paste(text),
+            Screen::A2ui => self.a2ui.on_paste(text),
+            Screen::JsonRender => self.json_render.on_paste(text),
             Screen::Logs => self.logs.on_paste(text),
             _ => {}
         }
@@ -672,7 +682,13 @@ impl ScreenState {
     pub(crate) fn selection_auto_copy(&self, screen: Screen) -> bool {
         !matches!(
             screen,
-            Screen::Forms | Screen::Chat | Screen::Login | Screen::Ide | Screen::Logs
+            Screen::Forms
+                | Screen::Chat
+                | Screen::Login
+                | Screen::Ide
+                | Screen::Logs
+                | Screen::A2ui
+                | Screen::JsonRender
         )
     }
 
@@ -685,6 +701,8 @@ impl ScreenState {
             Screen::Chat => self.chat.cut(sel),
             Screen::Login => self.login.cut(sel),
             Screen::Ide => self.ide.cut(sel),
+            Screen::A2ui => self.a2ui.cut(sel),
+            Screen::JsonRender => self.json_render.cut(sel),
             Screen::Logs => self.logs.cut(sel),
             _ => false,
         }

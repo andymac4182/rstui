@@ -75,6 +75,8 @@ surface to justify it.
 | `rstui-crossterm` | crossterm `Backend` + `EventSource` + panic-safe lifecycle, `run_app` | `rstui-core`, `rstui-runtime`, crossterm | [Runtime](runtime.md#crossterm-the-live-terminal) |
 | `rstui-plugin-host` | Capability model, manifest, policy, frame protocol, host mediation, plugin SDK | *nothing*, no `unsafe` | [Plugin system](plugins.md) |
 | `rstui-acp-client` | A full-screen ACP chat client with a TUI plugin layer | the above | [ACP client](acp-client.md) |
+| `rstui-ai` | The AI-app widget set: the AI-SDK message model, a streaming-markdown view, the ai-elements vocabulary | `rstui-core`, `rstui-widgets` | [Agent UI](agent-ui.md) |
+| `rstui-jsonui` | The declarative agent-UI engine: parses A2UI + json-render, projects them to one `UiNode` tree | core, widgets, `rstui-ai` | [Agent UI](agent-ui.md) |
 | `rstui-git-review` | A full-screen git history review + code editing app (git is a `Cmd`-seam subprocess) | core, runtime, crossterm, widgets | [git review](git-review.md) |
 | `rstui-kitchen-sink` | The interactive showcase of every widget | the above | [Kitchen sink](kitchen-sink.md) |
 | `rstui-bench` / `xtask` | Non-gating benchmarks; workspace automation | — | [development.md](development.md) / [benchmarking.md](benchmarking.md) |
@@ -131,5 +133,8 @@ you are changing.
 | [0012](adr/0012-widget-composition-and-layout-model.md) | The immediate-mode pure-projection composition model |
 | [0013](adr/0013-terminal-emulator-compatibility.md) | Terminal-emulator compatibility & control-code posture |
 | [0014](adr/0014-comprehensive-interactive-datatable.md) | Comprehensive interactive DataTable: reducer-run pipeline, pure projection, borrowed-`TextEdit` editing |
+| [0015](adr/0015-keymap-architecture.md) | Customisable keymap engine as a shared crate (`rstui-keymap`) |
+| [0016](adr/0016-shared-memory-plugin-transport.md) | Shared-memory plugin transport (opt-in, Rust-only, spin) |
+| [0017](adr/0017-ai-app-widgets-and-declarative-agent-ui.md) | AI-app widgets + declarative agent-driven UI rendering (`rstui-ai`, `rstui-jsonui`) |
 
 See [`docs/adr/README.md`](adr/README.md) for the ADR format and statuses.

@@ -265,12 +265,12 @@ fn a2ui_screen_renders_the_agent_document_beside_its_output() {
         s.contains("Create your account") && s.contains("ada@example.com"),
         "the projected, data-bound form rendered:\n{s}"
     );
-    // ←/→ switches examples (and resets scroll).
-    h.handle(key(KeyCode::Right));
+    // PgUp/PgDn switches examples (edits persist per example).
+    h.handle(key(KeyCode::PageDown));
     let s2 = h.snapshot();
     assert!(
         s2.contains("example 2/3") && s2.contains("Ada Lovelace"),
-        "→ advances to the profile-card example:\n{s2}"
+        "PgDn advances to the profile-card example:\n{s2}"
     );
     assert!(h.is_running());
 }
@@ -285,7 +285,12 @@ fn json_render_screen_renders_the_agent_spec_beside_its_output() {
         "json-render screen shows the source⇆output split:\n{s}"
     );
     assert!(s.contains("example 1/3"));
-    assert!(s.contains("\"flexDirection\""), "the raw spec is shown");
+    // The code editor shows the raw spec (no soft-wrap — assert a token
+    // at a line start, which is visible without horizontal scroll).
+    assert!(
+        s.contains("\"root\""),
+        "the raw spec is shown in the editor"
+    );
     // `✔` is produced only by the rendered StatusLine widget (the source
     // JSON has the text but not the glyph) — proof the right pane is a
     // live projection, not an echo of the source.
@@ -293,11 +298,34 @@ fn json_render_screen_renders_the_agent_spec_beside_its_output() {
         s.contains("api-gateway") && s.contains('✔'),
         "the projected StatusLine rendered with its glyph:\n{s}"
     );
-    h.handle(key(KeyCode::Right));
+    h.handle(key(KeyCode::PageDown));
     let s2 = h.snapshot();
     assert!(
         s2.contains("example 2/3") && s2.contains("Cache hit rate"),
-        "→ advances to the metrics example:\n{s2}"
+        "PgDn advances to the metrics example:\n{s2}"
+    );
+    assert!(h.is_running());
+}
+
+#[test]
+fn editing_the_agent_document_re_renders_the_output_live() {
+    // The left pane is the real code-editor widget; the right pane
+    // re-projects the *buffer* every frame. Type a stray char at the
+    // top of a valid json-render spec → the spec no longer parses → the
+    // right pane must change to the engine's placeholder. That can only
+    // happen if the output is a live projection of the edited buffer.
+    let mut h = harness();
+    goto(&mut h, "json-render");
+    assert!(
+        h.snapshot().contains("api-gateway"),
+        "example 1 renders before editing"
+    );
+    typed(&mut h, "x"); // inserted at the caret (top of the buffer)
+    let s = h.snapshot();
+    assert!(
+        s.contains("invalid json-render"),
+        "editing the buffer re-projected to the invalid-document \
+         placeholder (the output tracks the edited source live):\n{s}"
     );
     assert!(h.is_running());
 }

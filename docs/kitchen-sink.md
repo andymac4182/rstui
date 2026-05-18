@@ -89,6 +89,29 @@ carries its app-scale coverage in the same `data_viz_e2e.rs` suite. The
 business-dashboard chart widgets themselves live on the `Dashboard`
 experience screen.
 
+## The agent-UI suite
+
+A fifth rail section — render an agent's declarative UI document, via
+[`rstui-jsonui`](agent-ui.md):
+
+| Screen | What it shows |
+|--------|---------------|
+| A2UI | A Google **A2UI v0.10** document an agent sent — editable on the left, its live projection on the right |
+| json-render | A Vercel **json-render** flat spec an agent sent — editable on the left, its live projection on the right |
+
+Reach them from the `Agent UI` rail group, the command palette
+(`:a2ui` / `:json-render`), or the sidebar. The left pane is the real
+[`Editor`](widgets/core-set.md) code-editor widget over a caller-owned
+`TextArea`; the right pane re-parses that buffer and re-projects it
+**every frame**, so editing the JSON live-updates the rendered UI —
+the same pure projection the [ACP client](acp-client.md) uses for
+agent-driven UI (ADR 0017). `PgUp`/`PgDn` switch the three worked
+examples per format (edits persist per example); typing edits the
+buffer. Being editor screens they are `is_text_entry` (they own every
+char key) and palette-only, so they carry app-scale coverage in
+`crates/rstui-kitchen-sink/tests/experiences.rs` plus the real-binary
+`vhs/e2e/agent-ui.{tape,expect}` gate (`cargo xtask record e2e --check`).
+
 ## Keybindings
 
 | Key(s) | Action |

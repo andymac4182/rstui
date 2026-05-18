@@ -1,23 +1,26 @@
 //! Shared scaffolding for the two **Agent UI** screens ([`a2ui_demo`],
-//! [`json_render_demo`](super::json_render_demo)): the worked example
-//! documents an agent would send, the split renderer (the raw agent
-//! response on the left, its live `rstui-jsonui` projection on the
-//! right), and a [`Widget`] adapter so a parsed
-//! [`UiNode`](rstui_jsonui::tree::UiNode) drops straight into a
-//! [`Frame`].
+//! [`json_render_demo`](super::json_render_demo)): an editable code
+//! editor holding the document an agent would send on the left, its
+//! **live** `rstui-jsonui` projection on the right.
 //!
-//! This is a normal kitchen-sink scene, so it obeys the same rules: the
-//! screen owns only `(example, scroll)` as caller state; `view` re-parses
-//! the selected document and re-projects it every frame (pure projection,
-//! no retained UI tree — exactly how the ACP client renders agent UI).
+//! The left pane is the real [`Editor`] code-editor widget over a
+//! caller-owned [`TextArea`] (line-number gutter, caret, typing, paste —
+//! the same composition the IDE scene uses). The right pane re-parses
+//! that buffer and re-projects it **every frame**, so editing the JSON
+//! live-updates the rendered UI — pure projection, no retained tree,
+//! exactly how the ACP client renders agent UI. `PgUp`/`PgDn` switch
+//! between the worked examples (edits persist per example).
 
-use rstui_core::{Buffer, Constraint, Layout, Line, Position, Rect, Widget};
+use rstui_core::{
+    Buffer, Constraint, KeyCode, Layout, Line, Position, Rect, Style, TextArea, Widget,
+};
 use rstui_jsonui::a2ui::A2uiSurface;
 use rstui_jsonui::jsonrender::JsonRenderDoc;
 use rstui_jsonui::tree::{HitMap, UiNode};
 use rstui_runtime::Frame;
-use rstui_widgets::{Block, BorderType, Paragraph, Wrap};
+use rstui_widgets::{Block, BorderType, Editor, LineNumberGutter, Paragraph};
 
+use crate::screens::ScreenOutcome;
 use crate::theme::Theme;
 
 /// One worked agent document: a short label and the verbatim payload an
@@ -69,52 +72,195 @@ pub(crate) fn json_render_node(source: &str) -> UiNode {
     }
 }
 
-/// Draws the scene: a one-row header (which example, how to drive it),
-/// then the body split 50/50 — the verbatim agent response (scrollable)
-/// on the left, its live projection on the right.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn render_split(
-    theme: &Theme,
-    frame: &mut Frame<'_>,
-    area: Rect,
-    format_label: &str,
-    samples: &[Sample],
-    example: usize,
-    scroll: u16,
-    node: UiNode,
-) {
-    let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+/// Which agent-UI format a [`Scene`] hosts: it picks the projector, the
+/// header label, and the seed examples.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Format {
+    /// Google A2UI v0.10 (a server→client JSONL envelope stream).
+    A2ui,
+    /// Vercel json-render (a flat `{root,elements}` spec).
+    JsonRender,
+}
 
-    let index = example.min(samples.len().saturating_sub(1));
-    let name = samples.get(index).map(|s| s.name).unwrap_or("");
-    let header_line = Line::from(format!(
-        " {format_label}  ·  example {}/{}: {name}   ←/→ switch · ↑/↓ scroll source ",
-        index + 1,
-        samples.len().max(1),
-    ));
-    frame.render_widget(Paragraph::new(header_line).style(theme.caption()), header);
+impl Format {
+    /// The header / panel label.
+    fn label(self) -> &'static str {
+        match self {
+            Self::A2ui => "A2UI v0.10",
+            Self::JsonRender => "json-render",
+        }
+    }
 
-    let [left, right] =
-        Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(body);
+    /// The worked examples that seed the editable buffers.
+    fn samples(self) -> &'static [Sample] {
+        match self {
+            Self::A2ui => A2UI_SAMPLES,
+            Self::JsonRender => JSON_RENDER_SAMPLES,
+        }
+    }
 
-    // Left: exactly what the agent sent.
-    let left_block = framed(theme, &format!("Agent response · {format_label}"));
-    let left_inner = left_block.inner(left);
-    frame.render_widget(left_block, left);
-    let source = samples.get(index).map(|s| s.source).unwrap_or("");
-    frame.render_widget(
-        Paragraph::new(source)
-            .wrap(Wrap { trim: false })
-            .scroll(Position::new(0, scroll))
-            .style(theme.body()),
-        left_inner,
-    );
+    /// Project a document's current text to a renderable node (total).
+    fn project(self, source: &str) -> UiNode {
+        match self {
+            Self::A2ui => a2ui_node(source),
+            Self::JsonRender => json_render_node(source),
+        }
+    }
+}
 
-    // Right: the live rstui-jsonui projection of that response.
-    let right_block = framed(theme, "Rendered output");
-    let right_inner = right_block.inner(right);
-    frame.render_widget(right_block, right);
-    frame.render_widget(NodeView(node), right_inner);
+/// The shared **Agent UI** scene: an editable code editor of the agent
+/// document on the left, its live `rstui-jsonui` projection on the
+/// right. Caller-owned state in the IDE pattern — one editable
+/// [`TextArea`] per worked example, edits persist when you switch back.
+#[derive(Debug)]
+pub(crate) struct Scene {
+    format: Format,
+    docs: Vec<(&'static str, TextArea)>,
+    active: usize,
+}
+
+impl Scene {
+    /// A scene seeded from the format's worked examples, opened on the
+    /// first one with the caret at the top.
+    pub(crate) fn new(format: Format) -> Self {
+        let docs = format
+            .samples()
+            .iter()
+            .map(|sample| {
+                let mut doc = TextArea::from_value(sample.source);
+                doc.set_cursor(0, 0);
+                (sample.name, doc)
+            })
+            .collect();
+        Self {
+            format,
+            docs,
+            active: 0,
+        }
+    }
+
+    fn doc(&mut self) -> &mut TextArea {
+        &mut self.docs[self.active].1
+    }
+
+    /// `PgUp`/`PgDn` switch examples (edits persist per example); arrows
+    /// move the caret; typing / `Enter` / `Backspace` edit the buffer —
+    /// the right pane re-projects it live. Like a real editor, `←` is a
+    /// caret move, not a rail fall-back (use the rail / palette to leave).
+    pub(crate) fn on_key(&mut self, code: KeyCode) -> ScreenOutcome {
+        match code {
+            KeyCode::PageUp => self.active = self.active.saturating_sub(1),
+            KeyCode::PageDown => {
+                self.active = (self.active + 1).min(self.docs.len().saturating_sub(1));
+            }
+            KeyCode::Left => {
+                self.doc().move_left();
+            }
+            KeyCode::Right => {
+                self.doc().move_right();
+            }
+            KeyCode::Up => {
+                self.doc().move_up();
+            }
+            KeyCode::Down => {
+                self.doc().move_down();
+            }
+            KeyCode::Enter => self.doc().insert_newline(),
+            KeyCode::Backspace => {
+                self.doc().delete_backward();
+            }
+            KeyCode::Char(c) => self.doc().insert_char(c),
+            _ => return ScreenOutcome::ignored(),
+        }
+        ScreenOutcome::consumed()
+    }
+
+    /// Pasted text is inserted at the caret.
+    pub(crate) fn on_paste(&mut self, text: &str) {
+        self.doc().insert_str(text);
+    }
+
+    /// Cut `sel` out of the active buffer.
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        crate::screens::cut_area(self.doc(), sel)
+    }
+
+    /// Wheel scroll nudges the caret a line at a time (the IDE idiom).
+    pub(crate) fn on_scroll(&mut self, up: bool) {
+        if up {
+            self.doc().move_up();
+        } else {
+            self.doc().move_down();
+        }
+    }
+
+    /// The editor's text rect — after the header split, the left half,
+    /// the frame, and the line-number gutter — so a drag-select stays
+    /// inside the buffer and never the gutter or the rendered pane.
+    /// Mirrors [`view`](Self::view)'s composition exactly.
+    pub(crate) fn selection_region(&self, pos: Position, content: Rect) -> Option<Rect> {
+        let [_, body] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(content);
+        let [left, _] =
+            Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(body);
+        if !left.contains(pos) {
+            return None;
+        }
+        let ia = crate::screens::block_inner(left);
+        let rows = self.docs[self.active].1.row_count();
+        Some(LineNumberGutter::new(1, rows).min_number_width(3).inner(ia))
+    }
+
+    /// Draw the editor ⇆ live-projection split.
+    pub(crate) fn view(&self, theme: &Theme, frame: &mut Frame<'_>, area: Rect) {
+        let [header, body] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        let (name, doc) = &self.docs[self.active];
+
+        frame.render_widget(
+            Paragraph::new(Line::from(format!(
+                " {}  ·  example {}/{}: {name}   PgUp/PgDn switch · \
+                 type to edit — the output re-renders live ",
+                self.format.label(),
+                self.active + 1,
+                self.docs.len(),
+            )))
+            .style(theme.caption()),
+            header,
+        );
+
+        let [left, right] =
+            Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(body);
+
+        // Left: the editable agent document (line-number gutter + Editor).
+        let left_block = framed(
+            theme,
+            &format!("Agent response · {} (editable)", self.format.label()),
+        );
+        let ia = left_block.inner(left);
+        frame.render_widget(left_block, left);
+        let gutter = LineNumberGutter::new(1, doc.row_count())
+            .style(theme.caption())
+            .min_number_width(3);
+        let text_rect = gutter.inner(ia);
+        frame.render_widget(gutter, ia);
+        frame.render_widget(
+            Editor::new(doc)
+                .focused(true)
+                .style(theme.body())
+                .focus_style(theme.border_focused())
+                .cursor_style(Style::new().fg(theme.base).bg(theme.accent)),
+            text_rect,
+        );
+
+        // Right: the live projection of whatever is in the buffer *now*
+        // (re-parsed every frame — edit the JSON, watch it re-render).
+        let right_block = framed(theme, "Rendered output (live)");
+        let right_inner = right_block.inner(right);
+        frame.render_widget(right_block, right);
+        let source = doc.lines().join("\n");
+        frame.render_widget(NodeView(self.format.project(&source)), right_inner);
+    }
 }
 
 /// The three worked A2UI documents (each a v0.10 server→client JSONL

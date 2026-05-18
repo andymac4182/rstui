@@ -55,6 +55,25 @@ Sleep 1400ms
 Type "f"
 Sleep 1200ms
 
+# The Agent-UI suite: an agent's A2UI document, editable on the left,
+# its live rstui-jsonui projection on the right (ADR 0017).
+Type ":"
+Sleep 400ms
+Type "a2ui"
+Sleep 700ms
+Enter
+Sleep 1600ms
+# Tab is a non-char key: it leaves the editor text-entry screen so the
+# palette works again; then jump to the json-render screen.
+Tab
+Sleep 400ms
+Type ":"
+Sleep 400ms
+Type "json-render"
+Sleep 700ms
+Enter
+Sleep 1600ms
+
 # Command palette: jump back to Forms by name.
 Type ":"
 Sleep 500ms

@@ -23,6 +23,7 @@ fits what you are doing.
 
 - **Architecture decisions** — [`docs/adr/`](adr/README.md) (20 ADRs; the *why* behind every boundary)
 - **Composition model** — [`docs/composition.md`](composition.md) (how widgets compose into a screen; ADR 0012)
+- **Agent-driven UI** — [`docs/agent-ui.md`](agent-ui.md) (render an agent's A2UI / json-render document; the AI-app widget set; ADR 0017)
 - **Keymaps** — [`docs/keymaps.md`](keymaps.md) (customisable, per-OS, multi-keymap keybindings; ADR 0015/0020) · [`keymap-review.md`](keymap-review.md) (the comparative audit vs opencode/Textual/VS Code/Vim/Helix)
 - **Code review & editing roadmap** — [`docs/code-review-and-editing.md`](code-review-and-editing.md) (vim-grade editing + hunk-grade review: capability audit and wave plan)
 - **Theming** — [`docs/theming.md`](theming.md) (every gpui-component theme, as a terminal palette)
@@ -43,6 +44,8 @@ fits what you are doing.
 | [`rstui-crossterm`](runtime.md#crossterm-the-live-terminal) | The crossterm-backed terminal driver — the only external dependency, isolated here |
 | [`rstui-plugin-host`](plugins.md) | Dependency-free permissioned plugin host: plugins run as separate OS processes, deny-by-default |
 | [`rstui-acp-client`](acp-client.md) | A full-screen Agent Client Protocol chat client built on the framework |
+| [`rstui-ai`](agent-ui.md) | The AI-app widget set: the AI-SDK message model, a streaming-markdown view, the ai-elements vocabulary (ADR 0017) |
+| [`rstui-jsonui`](agent-ui.md) | The declarative agent-UI engine: parses A2UI + json-render, projects them through the widget set (ADR 0017) |
 | [`rstui-git-review`](git-review.md) | A full-screen git history review + code editing app — git reached only as a `Cmd`-seam subprocess; the worked proof of [code-review-and-editing.md](code-review-and-editing.md) |
 | [`rstui-theme`](theming.md) | Optional: every gpui-component theme as a terminal-ready palette + `Style` constructors |
 | `rstui-kitchen-sink` | The interactive full-screen showcase exercising every widget — see [Kitchen sink](kitchen-sink.md) |

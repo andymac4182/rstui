@@ -1,76 +1,57 @@
-//! The **A2UI** scene: the verbatim Google A2UI v0.10 document an agent
-//! sent on the left, its live `rstui-jsonui` projection on the right.
+//! The **A2UI** scene: an editable code editor holding the Google A2UI
+//! v0.10 document an agent sent on the left, its live `rstui-jsonui`
+//! projection on the right.
 //!
-//! ←/→ switches between the worked examples; ↑/↓ scrolls the (often
-//! multi-line) agent response. The screen owns only `(example, scroll)`;
-//! `view` re-parses and re-projects every frame — the same pure
+//! Type to edit the JSON and the right pane re-renders live;
+//! `PgUp`/`PgDn` switch the worked examples (edits persist per example).
+//! All real state is the caller-owned [`TextArea`](rstui_core::TextArea)
+//! the [`Editor`](rstui_widgets::Editor) projects — the same pure
 //! projection the ACP client uses for agent-driven UI.
 
-use rstui_core::{KeyCode, Rect};
+use rstui_core::{KeyCode, Position, Rect};
 use rstui_runtime::Frame;
 
 use crate::screens::ScreenOutcome;
-use crate::screens::agent_ui::{self, A2UI_SAMPLES};
+use crate::screens::agent_ui::{Format, Scene};
 use crate::theme::Theme;
 
-/// Caller-owned scene state: which worked example, and the source-pane
-/// scroll offset.
+/// The A2UI scene (a [`Scene`] fixed to [`Format::A2ui`]).
 #[derive(Debug)]
-pub(crate) struct State {
-    example: usize,
-    scroll: u16,
-}
+pub(crate) struct State(Scene);
 
 impl State {
-    /// The scene, opened on the first example.
+    /// The scene, seeded from the A2UI worked examples.
     pub(crate) fn new() -> Self {
-        Self {
-            example: 0,
-            scroll: 0,
-        }
+        Self(Scene::new(Format::A2ui))
     }
 
-    /// ←/→ cycle examples (resetting scroll); ↑/↓ scroll the response.
+    /// Editing keys + `PgUp`/`PgDn` example switch (see [`Scene::on_key`]).
     pub(crate) fn on_key(&mut self, code: KeyCode) -> ScreenOutcome {
-        let count = A2UI_SAMPLES.len().max(1);
-        match code {
-            KeyCode::Right | KeyCode::Tab => {
-                self.example = (self.example + 1) % count;
-                self.scroll = 0;
-            }
-            KeyCode::Left | KeyCode::BackTab => {
-                self.example = (self.example + count - 1) % count;
-                self.scroll = 0;
-            }
-            KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
-            KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            _ => return ScreenOutcome::ignored(),
-        }
-        ScreenOutcome::consumed()
+        self.0.on_key(code)
     }
 
-    /// Mouse-wheel scrolls the agent-response pane.
+    /// Paste into the buffer.
+    pub(crate) fn on_paste(&mut self, text: &str) {
+        self.0.on_paste(text);
+    }
+
+    /// Cut `sel` from the buffer.
+    pub(crate) fn cut(&mut self, sel: &str) -> bool {
+        self.0.cut(sel)
+    }
+
+    /// Wheel scroll moves the caret.
     pub(crate) fn on_scroll(&mut self, up: bool) {
-        if up {
-            self.scroll = self.scroll.saturating_sub(1);
-        } else {
-            self.scroll = self.scroll.saturating_add(1);
-        }
+        self.0.on_scroll(up);
     }
 
-    /// Re-project the selected document and draw the split.
+    /// The editor text rect, so a drag-select stays in the buffer.
+    pub(crate) fn selection_region(&self, pos: Position, content: Rect) -> Option<Rect> {
+        self.0.selection_region(pos, content)
+    }
+
+    /// Draw the editor ⇆ live-projection split.
     pub(crate) fn view(&self, theme: &Theme, frame: &mut Frame<'_>, area: Rect) {
-        let index = self.example.min(A2UI_SAMPLES.len().saturating_sub(1));
-        let node = agent_ui::a2ui_node(A2UI_SAMPLES[index].source);
-        agent_ui::render_split(
-            theme,
-            frame,
-            area,
-            "A2UI v0.10",
-            A2UI_SAMPLES,
-            self.example,
-            self.scroll,
-            node,
-        );
+        self.0.view(theme, frame, area);
     }
 }
