@@ -45,9 +45,25 @@ as the pattern**, not to rewrite the engine.
 > - **R3-5 — DONE (for R3-1/2).** `widget/markdown/cached` scenario added
 >   (the diagrams `_render`/`_cached` template); render vs cached measured
 >   apples-to-apples on one shared doc.
-> - **R3-3 / R3-4 — pending** (next slices; `from_parsed` for
->   Structurizr/JsonCanvas/Mermaid-keyword, then the runtime
->   `FRAME_BUDGET`). The conflict-free batch order below stands.
+> - **R3-3 — DONE (Structurizr + JSON Canvas).** Additive parse-free
+>   `Structurizr::from_workspace(&Workspace)` /
+>   `JsonCanvas::from_parsed(&Canvas)` (their `parse()` was already public)
+>   — the exact `Mermaid::from_graph` shape: `render` lays a caller-held
+>   AST out directly and never parses. Byte-identical to `new(src)`
+>   (gate-enforced, cell-for-cell × sizes/view-pager); the kitchen-sink
+>   `rich_text` Structurizr/JSON-Canvas tabs now parse the `const` once in
+>   `State` (the MM-1/2 seam) since the global tick re-renders every frame.
+>   `widget/{structurizr,json_canvas}/{render,cached}` benches added.
+>   **Mermaid-keyword `from_parsed` — deliberately deferred:** the 22
+>   keyword types have no shared AST (22 bespoke per-type parsers); a
+>   `from_parsed` each is a large, higher-risk refactor disproportionate to
+>   the leverage — the *embedded* case (a keyword diagram in a Markdown
+>   doc) is already fully covered by `MarkdownCache`/`DiagramCache`, and a
+>   standalone keyword diagram re-parsed every animated frame is not a
+>   real app hot path (flowchart, the common one, has `from_graph`). Noted,
+>   not a residual defect.
+> - **R3-4 — pending** (next slice; the runtime `FRAME_BUDGET`). The
+>   conflict-free batch order below stands.
 
 ## The budget
 

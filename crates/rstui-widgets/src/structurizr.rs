@@ -403,6 +403,11 @@ pub struct Structurizr<'a> {
     style: Style,
     theme: StructurizrTheme,
     view: Option<usize>,
+    /// A caller-held pre-parsed workspace ([`from_workspace`](Self::from_workspace)):
+    /// when set, `render` lays it out directly and **never parses the DSL**
+    /// — the parse-free seam (perf-review-3 R3-3, the
+    /// [`Mermaid::from_graph`](crate::Mermaid::from_graph) precedent).
+    workspace: Option<&'a Workspace>,
 }
 
 impl<'a> Structurizr<'a> {
@@ -415,6 +420,29 @@ impl<'a> Structurizr<'a> {
             style: Style::new(),
             theme: StructurizrTheme::default(),
             view: None,
+            workspace: None,
+        }
+    }
+
+    /// A Structurizr view of a **pre-parsed** [`Workspace`] the caller holds
+    /// in its model — `render` lays it out directly and **never runs the
+    /// DSL parser** (which `new(..)` does every frame). Parse once with
+    /// [`parse`](Self::parse) when the source changes, render parse-free
+    /// every frame.
+    ///
+    /// The parse-free seam perf-review-3 R3-3 calls for, identical in shape
+    /// to [`Mermaid::from_graph`](crate::Mermaid::from_graph): purely
+    /// additive, byte-identical to `new(src)` for a source that parses to
+    /// the same workspace (gate-enforced).
+    #[must_use]
+    pub fn from_workspace(workspace: &'a Workspace) -> Self {
+        Self {
+            source: Cow::Borrowed(""),
+            block: None,
+            style: Style::new(),
+            theme: StructurizrTheme::default(),
+            view: None,
+            workspace: Some(workspace),
         }
     }
 
@@ -477,6 +505,14 @@ impl Widget for Structurizr<'_> {
         }
         buf.set_style(inner, self.style);
 
+        // Parse-free fast path: a caller-held pre-parsed workspace lays out
+        // directly (the R3-3 seam), byte-identical to the parse path's Ok
+        // arm. Otherwise parse the DSL as before.
+        if let Some(ws) = self.workspace {
+            let surface = lay_out(ws, self.view, &self.theme);
+            surface.blit(inner, buf, self.style);
+            return;
+        }
         match parse_workspace(self.source.as_ref()) {
             Ok(ws) => {
                 let surface = lay_out(&ws, self.view, &self.theme);
@@ -1767,5 +1803,27 @@ mod tests {
         let out = lines(Structurizr::new(BIGBANK).block(Block::bordered()), 40, 12);
         assert!(out.starts_with('┌'), "block frame:\n{out}");
         assert!(out.contains("Big Bank"), "content inside block:\n{out}");
+    }
+
+    /// R3-3: `from_workspace(&ws)` (the parse-free seam — caller holds the
+    /// parse) renders **byte-identical** to `new(src)` (which parses every
+    /// frame), across sizes and the view pager. The cell-for-cell
+    /// equivalence the `Mermaid::from_graph` test pins.
+    #[test]
+    fn from_workspace_is_byte_identical_to_new() {
+        let ws = Structurizr::parse(BIGBANK).expect("BIGBANK parses");
+        for (w, h) in [(40u16, 12u16), (80, 24), (20, 6)] {
+            assert_eq!(
+                lines(Structurizr::from_workspace(&ws), w, h),
+                lines(Structurizr::new(BIGBANK), w, h),
+                "parse-free == parse at {w}x{h}"
+            );
+            // Builders still apply on the parse-free path (view pager).
+            assert_eq!(
+                lines(Structurizr::from_workspace(&ws).view(1), w, h),
+                lines(Structurizr::new(BIGBANK).view(1), w, h),
+                "view(1) parse-free == parse at {w}x{h}"
+            );
+        }
     }
 }

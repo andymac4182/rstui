@@ -11,7 +11,9 @@ use rstui_core::{
     stylize::Stylize,
 };
 use rstui_runtime::Frame;
+use rstui_widgets::json_canvas::Canvas;
 use rstui_widgets::mermaid::MermaidGraph;
+use rstui_widgets::structurizr::Workspace;
 use rstui_widgets::{
     Block, BorderType, DiagramCache, JsonCanvas, Kbd, Markdown, MarkdownCache, Mermaid, Paragraph,
     Structurizr, Tabs, Wrap,
@@ -380,6 +382,15 @@ pub(crate) struct State {
     /// the entire CommonMark handbook twice every frame. Same caller-owned
     /// model-state seam as `diagrams`.
     md: MarkdownCache,
+    /// R3-3: the standalone Structurizr / JSON Canvas tabs' `const` source
+    /// parsed **once** here (the MM-1/2 `mermaid` precedent) and rendered
+    /// parse-free via `from_workspace`/`from_parsed`. The kitchen-sink
+    /// re-renders every frame (the global animation tick), so the active
+    /// tab would otherwise re-run the DSL/JSON parser every frame. `None`
+    /// only if the `const` ever fails to parse → byte-identical fallback to
+    /// `new(src)`.
+    structurizr: Option<Workspace>,
+    canvas: Option<Canvas>,
 }
 
 impl State {
@@ -391,6 +402,8 @@ impl State {
             mermaid: Mermaid::parse(GRAPH).ok(),
             diagrams: DiagramCache::new(),
             md: MarkdownCache::new(),
+            structurizr: Structurizr::parse(WORKSPACE).ok(),
+            canvas: JsonCanvas::parse(CANVAS).ok(),
         }
     }
 
@@ -543,18 +556,32 @@ impl State {
                     body,
                 );
             }
-            3 => frame.render_widget(
-                Structurizr::new(WORKSPACE)
-                    .style(theme.body())
-                    .block(framed(theme, "Structurizr · C4 (auto-layout)")),
-                body,
-            ),
-            4 => frame.render_widget(
-                JsonCanvas::new(CANVAS)
-                    .style(theme.body())
-                    .block(framed(theme, "JSON Canvas · explicit placement")),
-                body,
-            ),
+            3 => {
+                // R3-3: render the parse cached once in `State::new`; fall
+                // back to parsing the const only if it ever failed
+                // (byte-identical — `from_workspace` is the exact `Ok` arm,
+                // `new` reproduces the identical placeholder).
+                let sz = match &self.structurizr {
+                    Some(ws) => Structurizr::from_workspace(ws),
+                    None => Structurizr::new(WORKSPACE),
+                };
+                frame.render_widget(
+                    sz.style(theme.body())
+                        .block(framed(theme, "Structurizr · C4 (auto-layout)")),
+                    body,
+                );
+            }
+            4 => {
+                let jc = match &self.canvas {
+                    Some(c) => JsonCanvas::from_parsed(c),
+                    None => JsonCanvas::new(CANVAS),
+                };
+                frame.render_widget(
+                    jc.style(theme.body())
+                        .block(framed(theme, "JSON Canvas · explicit placement")),
+                    body,
+                );
+            }
             _ => self.view_spans(theme, frame, body),
         }
 

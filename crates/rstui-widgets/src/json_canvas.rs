@@ -600,6 +600,11 @@ pub struct JsonCanvas<'a> {
     block: Option<Block<'a>>,
     style: Style,
     theme: JsonCanvasTheme,
+    /// A caller-held pre-parsed canvas ([`from_parsed`](Self::from_parsed)):
+    /// when set, `render` lays it out directly and **never scans the JSON**
+    /// — the parse-free seam (perf-review-3 R3-3, the
+    /// [`Mermaid::from_graph`](crate::Mermaid::from_graph) precedent).
+    canvas: Option<&'a Canvas>,
 }
 
 impl<'a> JsonCanvas<'a> {
@@ -611,6 +616,28 @@ impl<'a> JsonCanvas<'a> {
             block: None,
             style: Style::new(),
             theme: JsonCanvasTheme::default(),
+            canvas: None,
+        }
+    }
+
+    /// A view of a **pre-parsed** [`Canvas`] the caller holds in its model —
+    /// `render` lays it out directly and **never runs the JSON scanner**
+    /// (which `new(..)` does every frame). Parse once with
+    /// [`parse`](Self::parse) when the source changes, render parse-free
+    /// every frame.
+    ///
+    /// The parse-free seam perf-review-3 R3-3 calls for, identical in shape
+    /// to [`Mermaid::from_graph`](crate::Mermaid::from_graph): purely
+    /// additive, byte-identical to `new(src)` for a source that parses to
+    /// the same canvas (gate-enforced).
+    #[must_use]
+    pub fn from_parsed(canvas: &'a Canvas) -> Self {
+        Self {
+            source: Cow::Borrowed(""),
+            block: None,
+            style: Style::new(),
+            theme: JsonCanvasTheme::default(),
+            canvas: Some(canvas),
         }
     }
 
@@ -666,13 +693,18 @@ impl Widget for JsonCanvas<'_> {
         }
         buf.set_style(inner, self.style);
 
-        let canvas = JsonCanvas::parse(self.source.as_ref()).unwrap_or_default();
-        let surface = lay_out(
-            &canvas,
-            inner.width as i32,
-            inner.height as i32,
-            &self.theme,
-        );
+        // Parse-free fast path: a caller-held pre-parsed canvas lays out
+        // directly (the R3-3 seam), byte-identical to the parse path.
+        // Otherwise scan the JSON as before.
+        let owned;
+        let canvas: &Canvas = match self.canvas {
+            Some(c) => c,
+            None => {
+                owned = JsonCanvas::parse(self.source.as_ref()).unwrap_or_default();
+                &owned
+            }
+        };
+        let surface = lay_out(canvas, inner.width as i32, inner.height as i32, &self.theme);
         surface.blit(inner, buf, self.style);
     }
 }
@@ -1033,5 +1065,21 @@ mod tests {
     fn block_frames_the_canvas() {
         let out = lines(JsonCanvas::new(SAMPLE).block(Block::bordered()), 30, 10);
         assert!(out.starts_with('┌'), "block frame:\n{out}");
+    }
+
+    /// R3-3: `from_parsed(&canvas)` (the parse-free seam — caller holds the
+    /// parse) renders **byte-identical** to `new(src)` (which scans the
+    /// JSON every frame), across sizes. The `Mermaid::from_graph`-class
+    /// cell-for-cell equivalence.
+    #[test]
+    fn from_parsed_is_byte_identical_to_new() {
+        let canvas = JsonCanvas::parse(SAMPLE).expect("SAMPLE parses");
+        for (w, h) in [(30u16, 10u16), (60, 20), (16, 6)] {
+            assert_eq!(
+                lines(JsonCanvas::from_parsed(&canvas), w, h),
+                lines(JsonCanvas::new(SAMPLE), w, h),
+                "parse-free == parse at {w}x{h}"
+            );
+        }
     }
 }

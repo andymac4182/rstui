@@ -21,7 +21,9 @@ use rstui_core::{
     Rect, Selection, Style, TextArea, Widget, selected_text,
 };
 use rstui_runtime::{App, Cmd, Frame, Harness};
-use rstui_widgets::{List, ListItem, Markdown, Paragraph, Row, Table, Tree, TreeItem, Wrap};
+use rstui_widgets::{
+    JsonCanvas, List, ListItem, Markdown, Paragraph, Row, Structurizr, Table, Tree, TreeItem, Wrap,
+};
 
 use crate::measure::{Bench, Stats};
 
@@ -351,6 +353,81 @@ fn widget_markdown_diagrams_cached(bench: &Bench) -> Stats {
     })
 }
 
+/// A representative Structurizr C4 workspace (the `rich_text` shape).
+fn structurizr_doc() -> &'static str {
+    "workspace \"Sys\" \"A service.\" {\n  model {\n    \
+     u = person \"User\" \"An end user.\"\n    \
+     s = softwareSystem \"App\" \"The product.\" {\n      \
+     web = container \"Web\" \"SPA.\" \"TS\"\n      \
+     api = container \"API\" \"Logic.\" \"Rust\"\n      \
+     db = container \"DB\" \"State.\" \"SQL\"\n    }\n    \
+     ext = softwareSystem \"Email\" \"SMTP\" \"External\"\n    \
+     u -> web \"Uses\"\n    web -> api \"Calls\"\n    \
+     api -> db \"Reads/writes\"\n    api -> ext \"Sends via\"\n  }\n  \
+     views {\n    systemContext s \"ctx\" { include * autolayout }\n    \
+     container s \"cont\" { include * autolayout }\n  }\n}"
+}
+
+/// `widget/structurizr/render` — `Structurizr::new(src)` re-parses the C4
+/// DSL **every frame** (`render` → `parse_workspace`); the Class-C cost.
+fn widget_structurizr_render(bench: &Bench) -> Stats {
+    let src = structurizr_doc();
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        Structurizr::new(src).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/structurizr/cached` — R3-3 `from_workspace(&ws)`: the caller
+/// holds the parse, `render` lays it out parse-free. Steady-state cost
+/// after the fix.
+fn widget_structurizr_cached(bench: &Bench) -> Stats {
+    let ws = Structurizr::parse(structurizr_doc()).expect("parses");
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        Structurizr::from_workspace(&ws).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// A representative JSON Canvas document (the `rich_text` shape).
+fn json_canvas_doc() -> &'static str {
+    r##"{"nodes":[
+      {"id":"g","type":"group","x":-20,"y":-20,"width":640,"height":360,"label":"Loop"},
+      {"id":"ev","type":"text","text":"Event","x":0,"y":0,"width":160,"height":80},
+      {"id":"up","type":"text","text":"update()","x":240,"y":0,"width":160,"height":80,"color":"4"},
+      {"id":"vw","type":"text","text":"view()","x":240,"y":140,"width":160,"height":80},
+      {"id":"d","type":"link","url":"https://jsoncanvas.org","x":480,"y":60,"width":150,"height":70}
+    ],"edges":[
+      {"id":"a","fromNode":"ev","fromSide":"right","toNode":"up","toSide":"left","label":"msg"},
+      {"id":"b","fromNode":"up","fromSide":"bottom","toNode":"vw","toSide":"top"},
+      {"id":"c","fromNode":"vw","fromSide":"left","toNode":"ev","toSide":"bottom","label":"redraw"}
+    ]}"##
+}
+
+/// `widget/json_canvas/render` — `JsonCanvas::new(src)` re-scans the JSON
+/// **every frame** (`render` → `JsonCanvas::parse`); the Class-C cost.
+fn widget_json_canvas_render(bench: &Bench) -> Stats {
+    let src = json_canvas_doc();
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        JsonCanvas::new(src).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/json_canvas/cached` — R3-3 `from_parsed(&canvas)`: the caller
+/// holds the parse, `render` lays it out parse-free.
+fn widget_json_canvas_cached(bench: &Bench) -> Stats {
+    let canvas = JsonCanvas::parse(json_canvas_doc()).expect("parses");
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        JsonCanvas::from_parsed(&canvas).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
 /// A representative multi-widget app: a selectable `List` beside a wrapped
 /// `Paragraph`, split by `Layout` — the shape a real screen's `view`
 /// projects every frame. State is caller-owned (immediate-mode); the
@@ -473,6 +550,10 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
         "widget/markdown/diagrams_cached",
         widget_markdown_diagrams_cached,
     ),
+    ("widget/structurizr/render", widget_structurizr_render),
+    ("widget/structurizr/cached", widget_structurizr_cached),
+    ("widget/json_canvas/render", widget_json_canvas_render),
+    ("widget/json_canvas/cached", widget_json_canvas_cached),
     ("runtime/frame/idle", runtime_frame_idle),
     ("runtime/frame/changed", runtime_frame_changed),
     ("runtime/input/mouse_move", runtime_input_mouse_move),
