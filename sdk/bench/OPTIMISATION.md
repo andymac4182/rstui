@@ -106,6 +106,13 @@ The only ways to push p95 (and p99) under 10 µs:
    stdio stays the default, byte-for-byte unchanged). End-to-end through
    the full SDK JSON-RPC stack it measured **p50 ≈ 1.3 µs / p95 ≈ 3.3 µs**
    (vs stdio `--lp` ≈ 10 / 70 µs same run) — p95 < 10 µs *including* serde.
+   A napi-rs Node addon was then built and measured ([ADR 0019]):
+   Node-over-shm p50 ≈ **15 µs ≈ Node-stdio** (min 0.92 µs proves the
+   native path, but the Node *event loop* is the floor, not the ring).
+   So shm stays the **Rust-plugin** fast path; it is not productionised
+   for Node — the runtime, not the IPC, is the limit there.
+
+[ADR 0019]: ../../docs/adr/0019-node-shared-memory-via-napi.md
 
 Recommendation: **default stdio with `--lp` already meets "< 10 µs"
 for p50/typical** — ship that. Treat sub-10 µs *p95* as opt-in spin

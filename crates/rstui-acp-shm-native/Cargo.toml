@@ -1,0 +1,54 @@
+# ADR 0016/0019: the OPTIONAL Node/Bun shared-memory addon. Now a full
+# workspace member so it gets the same gates as everything else (xtask
+# ci / cargo-deny / cargo-machete / MSRV). It does NOT inherit
+# `[lints] workspace = true`: like `rstui-acp-shm`, it is a sanctioned
+# `unsafe` boundary (ADR 0003 §1) — napi-rs's `#[napi]` macros expand to
+# `unsafe extern "C"` bindings — so it replicates every other workspace
+# lint verbatim but allows `unsafe`. The crate's own code has no
+# `unsafe`; the audited mmap/atomic/semaphore `unsafe` stays in
+# `rstui-acp-shm`, on which this path-depends one-way.
+[package]
+name = "rstui-acp-shm-native"
+version.workspace = true
+edition = "2021" # napi-rs targets edition 2021; a member may pin its own
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "Optional napi-rs addon exposing rstui-acp-shm's ShmChannel to Node/Bun (ADR 0019)."
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "allow"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+invalid_codeblock_attributes = "deny"
+unescaped_backticks = "warn"
+
+[lints.clippy]
+uninlined_format_args = "warn"
+# `needless_pass_by_value` is deliberately NOT inherited here (the
+# workspace sets it `warn`): every `#[napi]`-exported function MUST take
+# its arguments by value (`String`, `Buffer`, …) — napi-rs cannot bind a
+# borrowed parameter — so the lint is fundamentally incompatible with
+# this crate's binding contract. Same per-crate-deviation rationale as
+# `unsafe_code` above (ADR 0003 §1 — per-crate opt-in, documented).
+needless_pass_by_value = "allow"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# napi-rs (MIT). N-API 8 = a stable ABI across Node 12.22+/16+ and Bun;
+# one `.node` runs everywhere, no per-Node-version rebuild.
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+rstui-acp-shm = { path = "../rstui-acp-shm" }
+
+[build-dependencies]
+napi-build = "2"
+# No `[profile.*]` here — profiles are workspace-root only; a member's is
+# ignored. The release `.node` is built with the workspace release profile.

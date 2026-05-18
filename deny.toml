@@ -41,11 +41,19 @@ version = 2
 # present and none is allowed: a new dependency under any other license
 # fails the gate until the license is reviewed and added here — that review
 # is exactly the point of the gate.
+#
+# ISC: reviewed and accepted 2026-05-18. Pulled solely by `libloading`
+# (the de-facto Rust dynamic-loader) via the napi-rs tree of the optional
+# `rstui-acp-shm-native` addon (ADR 0017). ISC is an OSI-approved,
+# permissive, GPL-compatible licence with **no copyleft** — functionally
+# equivalent to MIT/BSD-2-Clause (used by npm, OpenBSD). It does not
+# weaken the "no copyleft" posture above.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
     "Unicode-3.0",
+    "ISC",
 ]
 confidence-threshold = 0.9
 
