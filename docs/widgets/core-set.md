@@ -64,6 +64,7 @@ A vertical scrollable single-select column with a highlight bar/gutter. The
 List::new(items: impl IntoIterator)
 .highlight_symbol(impl Into<Cow<str>>) .highlight_style(Style)
 .selected(Option<usize>) .offset(usize)
+.row_at(area: Rect, pos: Position) -> Option<usize>  // click/drag hit seam (border+offset aware)
 ```
 
 **Demo:** `cargo run -p rstui-widgets --example list_demo`
@@ -82,6 +83,7 @@ model on the other axis.
 ```rust
 Tabs::new(titles: impl IntoIterator)
 .selected(Option<usize>) .highlight_style(Style) .divider(impl Into<Span>)
+.tab_at(area: Rect, pos: Position) -> Option<usize>  // variable-width hit seam (not an even split)
 ```
 
 **Demo:** `cargo run -p rstui-widgets --example tabs_demo`
@@ -355,6 +357,7 @@ live in your model.
 ```rust
 Tree::new(items: impl IntoIterator)
 .selected(Option<usize>) .offset(usize) .guides(TreeGuides)
+.row_at(area: Rect, pos: Position) -> Option<usize>  // flattened-visible click hit seam
 ```
 
 **Demo:** `cargo run -p rstui-widgets --example tree_demo`

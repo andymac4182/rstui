@@ -216,6 +216,28 @@ impl<'a> List<'a> {
         self.offset = offset;
         self
     }
+
+    /// The item index at cell `pos` for `area`, if a row is there.
+    ///
+    /// The pure inverse of the render layout — clicking what you see picks
+    /// that item. It accounts for the framing [`block`](Self::block) and the
+    /// caller-owned scroll [`offset`](Self::offset) once, here, instead of
+    /// every app re-deriving it (and getting the border/offset wrong).
+    /// `None` outside the populated rows; the gutter and the trailing pad
+    /// share a row's index, so a click anywhere on a row hits it. Hit-test
+    /// on a click to select, or on press+drag to reorder.
+    #[must_use]
+    pub fn row_at(&self, area: Rect, pos: Position) -> Option<usize> {
+        let inner = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        };
+        if inner.is_empty() || !inner.contains(pos) {
+            return None;
+        }
+        let idx = self.offset + usize::from(pos.y - inner.top());
+        (idx < self.items.len()).then_some(idx)
+    }
 }
 
 impl Widget for List<'_> {
@@ -493,5 +515,26 @@ mod tests {
             .offset(1)
             .render(area, &mut borrowed);
         assert_eq!(owned.cells(), borrowed.cells());
+    }
+
+    #[test]
+    fn row_at_inverts_the_layout_with_offset_and_block() {
+        let l = List::new(["a", "b", "c", "d", "e"]);
+        let area = Rect::new(0, 0, 10, 5);
+        assert_eq!(l.row_at(area, Position::new(3, 0)), Some(0));
+        assert_eq!(l.row_at(area, Position::new(0, 2)), Some(2));
+        assert_eq!(l.row_at(area, Position::new(9, 4)), Some(4));
+        assert_eq!(l.row_at(area, Position::new(0, 9)), None); // off-area
+        // The scroll offset shifts the mapping; past the last item ⇒ None.
+        let s = List::new(["a", "b", "c", "d", "e"]).offset(2);
+        assert_eq!(s.row_at(area, Position::new(0, 0)), Some(2));
+        assert_eq!(s.row_at(area, Position::new(0, 2)), Some(4));
+        assert_eq!(s.row_at(area, Position::new(0, 3)), None); // idx 5 ≥ len
+        // A framing block insets the rows by its border.
+        let b = List::new(["a", "b", "c"]).block(crate::Block::bordered());
+        let ba = Rect::new(0, 0, 10, 7);
+        assert_eq!(b.row_at(ba, Position::new(0, 0)), None); // on the border
+        assert_eq!(b.row_at(ba, Position::new(2, 1)), Some(0)); // first inner row
+        assert_eq!(b.row_at(ba, Position::new(2, 3)), Some(2));
     }
 }

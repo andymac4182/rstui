@@ -281,6 +281,27 @@ impl<'a> Tree<'a> {
         self.guide_style = style;
         self
     }
+
+    /// The visible-row index at cell `pos` for `area`, if a row is there.
+    ///
+    /// Tree is a flattened one-row-per-visible-node projection, so the
+    /// click→index math is identical to [`List::row_at`](crate::List::row_at):
+    /// account for the framing [`block`](Self::block) and the caller-owned
+    /// [`offset`](Self::offset) once, here. The returned index is into the
+    /// caller's flattened visible `Vec` — map it to expand/collapse/select
+    /// in the reducer. `None` outside the populated rows.
+    #[must_use]
+    pub fn row_at(&self, area: Rect, pos: Position) -> Option<usize> {
+        let inner = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        };
+        if inner.is_empty() || !inner.contains(pos) {
+            return None;
+        }
+        let idx = self.offset + usize::from(pos.y - inner.top());
+        (idx < self.items.len()).then_some(idx)
+    }
 }
 
 impl Widget for Tree<'_> {
@@ -655,5 +676,22 @@ mod tests {
             .selected(Some(0))
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    #[test]
+    fn row_at_maps_a_click_to_the_flattened_visible_index() {
+        let t = Tree::new(["root", "child-a", "child-b", "leaf"]);
+        let area = Rect::new(0, 0, 12, 4);
+        assert_eq!(t.row_at(area, Position::new(0, 0)), Some(0));
+        assert_eq!(t.row_at(area, Position::new(5, 2)), Some(2));
+        assert_eq!(t.row_at(area, Position::new(0, 9)), None);
+        // offset + block, same as List.
+        let b = Tree::new(["root", "a", "b"])
+            .offset(1)
+            .block(crate::Block::bordered());
+        let ba = Rect::new(0, 0, 12, 6);
+        assert_eq!(b.row_at(ba, Position::new(0, 0)), None); // border
+        assert_eq!(b.row_at(ba, Position::new(2, 1)), Some(1)); // offset 1
+        assert_eq!(b.row_at(ba, Position::new(2, 3)), None); // idx 3 ≥ len
     }
 }

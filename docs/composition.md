@@ -222,9 +222,12 @@ reducer owns the drag/selection.
 | | `Scrollbar` / `ScrollView` | draggable thumb: `thumb_rect` + `position_at` (`*_scrollbar_rect` on `ScrollView`) |
 | | `Slider` | drag-to-set: `track_rect` + `value_at` (pure, clamped to `min..=max`, both axes) |
 | **Pure layout** (resize = change its input `Constraint`s, plain model state) | `Layout` (core), `Grid`, `Align`, `Flow`, `Card`, `Block` | `split` / `cell` / `inner` `Rect` accessors |
-| **Pointer-navigable** (app hit-tests a `Rect` accessor; click/drag, not resize) | `Tabs`, `Accordion`, `Sidebar`, `List`, `Tree`, `Table`, `Menu`, `Select`, `Pagination`, `Stepper`, `DataTable`, `Calendar`/`DatePicker`, `Link`/`Markdown` (link regions), `Modal`/`Popover`/`Drawer` (`area`/`panel` focus accessors) | the screen maps a click to an index/region against the widget's geometry; full drag-and-drop uses the pointer-gesture recipe above |
+| **Click/drag hit seam** | `List` / `Tree` | `row_at(area,pos) -> Option<usize>` (border + scroll-offset aware) — click to select, press+drag to reorder |
+| | `Tabs` | `tab_at(area,pos) -> Option<usize>` (variable-width, divider-aware — an even split mis-hits) |
+| | `DataTable` | `hit(area,pos) -> Option<DataTableHit>` + `cell_rect` (already shipped) |
+| **Pointer-navigable** (app hit-tests a `Rect` accessor; click/drag, not resize) | `Accordion`, `Sidebar`, `Menu`, `Select`, `Pagination`, `Stepper`, `Calendar`/`DatePicker`, `Link`/`Markdown` (link regions), `Modal`/`Popover`/`Drawer` (`area`/`panel` focus accessors) | the screen maps a click to an index/region against the widget's geometry; full drag-and-drop uses the pointer-gesture recipe above |
 | **Decorative** (no pointer surface by design) | `Paragraph`, `Gauge`, `Badge`, `Spinner`, `Skeleton`, `Divider`, charts, `StatusBar`, `Toast`, `Kbd`, `Avatar` | — |
-| **Candidate follow-ups** (no seam yet) | `Grid` resizable rows/columns; `Drawer` drag-the-edge resize; `Table` column-resize drag | would each add a divider/edge `Rect` accessor + a pointer→`Constraint` converter, mirroring `SplitPane` |
+| **Remaining backlog** (audited; no seam yet — each would add a `Rect` accessor + pointer→state converter, mirroring `SplitPane`/`Slider`) | **P1** `Table` column-resize drag (drag a header boundary → per-column width state); **P2** `Drawer` drag-the-edge resize; `Calendar`/`DatePicker` `day_at` (click a day / drag a date range); **P3** `Grid` resizable rows/columns (an N-way `SplitPane`); `Editor`/`TextArea` logical `DocSelection` drag-select (the roadmap's E1e — a *content* selection over the document, distinct from the screen-cell `Selection`) | tracked here so "what mouse work is left" is one answer, prioritised |
 
 ## Totality
 

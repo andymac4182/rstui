@@ -158,6 +158,50 @@ impl<'a> Tabs<'a> {
         self.selected = selected;
         self
     }
+
+    /// The title index at cell `pos` for `area`, if a tab is there.
+    ///
+    /// The pure inverse of the render walk — clicking the tab you see
+    /// selects it, **including its variable width**: an even-split guess
+    /// mis-hits (the kitchen-sink has a regression test for exactly that),
+    /// so this advances title-by-title (` title ` plus the inter-tab
+    /// [`divider`](Self::divider)) just as `render` stamps it, accounting
+    /// for the framing [`block`](Self::block). The pads belong to their
+    /// tab; a click on a divider or past the last tab is `None`. (Assumes
+    /// one cell per title `char`, the norm — same basis as the render.)
+    #[must_use]
+    pub fn tab_at(&self, area: Rect, pos: Position) -> Option<usize> {
+        let inner = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        };
+        if inner.is_empty() || pos.y != inner.top() {
+            return None;
+        }
+        let right = inner.right();
+        if pos.x < inner.left() || pos.x >= right {
+            return None;
+        }
+        let div_w = self.divider.content.chars().count() as u16;
+        let mut x = inner.left();
+        for (i, title) in self.titles.iter().enumerate() {
+            if i > 0 {
+                x = x.saturating_add(div_w); // the divider belongs to no tab
+            }
+            let start = x;
+            // `␣title␣`: a one-cell pad on each side of the title.
+            let w = (title.width() as u16).saturating_add(2);
+            let end = start.saturating_add(w).min(right);
+            if pos.x >= start && pos.x < end {
+                return Some(i);
+            }
+            x = end;
+            if x >= right {
+                break;
+            }
+        }
+        None
+    }
 }
 
 impl Widget for Tabs<'_> {
@@ -417,5 +461,27 @@ mod tests {
             .selected(Some(1))
             .render(area, &mut borrowed);
         assert_eq!(owned.cells(), borrowed.cells());
+    }
+
+    #[test]
+    fn tab_at_hits_variable_width_tabs_not_an_even_split() {
+        // ` One ` = [0,5), `│` divider at 5, ` Two ` = [6,11), `│` at 11,
+        // ` Three ` = [12,19).
+        let t = Tabs::new(["One", "Two", "Three"]);
+        let area = Rect::new(0, 0, 30, 1);
+        assert_eq!(t.tab_at(area, Position::new(0, 0)), Some(0));
+        assert_eq!(t.tab_at(area, Position::new(4, 0)), Some(0));
+        assert_eq!(t.tab_at(area, Position::new(5, 0)), None); // the divider
+        assert_eq!(t.tab_at(area, Position::new(6, 0)), Some(1));
+        assert_eq!(t.tab_at(area, Position::new(10, 0)), Some(1));
+        assert_eq!(t.tab_at(area, Position::new(12, 0)), Some(2));
+        assert_eq!(t.tab_at(area, Position::new(18, 0)), Some(2));
+        assert_eq!(t.tab_at(area, Position::new(25, 0)), None); // past the last
+        assert_eq!(t.tab_at(area, Position::new(2, 1)), None); // not the strip row
+        // A framing block insets the strip by its border.
+        let b = Tabs::new(["A", "B"]).block(crate::Block::bordered());
+        let ba = Rect::new(0, 0, 20, 3);
+        assert_eq!(b.tab_at(ba, Position::new(2, 1)), Some(0)); // inner row
+        assert_eq!(b.tab_at(ba, Position::new(2, 0)), None); // on the border
     }
 }
