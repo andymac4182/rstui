@@ -20,10 +20,13 @@
 //!   It is *model state you own* — the ADR-0012 `ScrollState`/`Input`
 //!   seam — not retained widget state.
 //!
-//! (The runtime `FrameObserver` seam that feeds a `PerfSession`
-//! automatically, and the on-screen DevTools overlay widget, are added by
-//! ADR 0018 §3/§5 in following slices and will appear here as `observer`
-//! and `overlay` modules.)
+//! - [`DevToolsAdapter`] — bridges the runtime
+//!   [`FrameObserver`](rstui_runtime::FrameObserver) (ADR 0018 §3) to a
+//!   caller-owned [`PerfMeter`], pairing each frame's phase timings with
+//!   its [`CountingAllocator`](alloc::CountingAllocator) heap delta.
+//! - [`DevTools`] — a Chrome-DevTools-style overlay (ADR 0018 §5), a pure
+//!   projection of the [`PerfMeter`] (Performance / Memory / Events /
+//!   Inspect tabs), built only from existing `rstui-widgets` primitives.
 //!
 //! # Allocation tracking — one line
 //!
@@ -49,6 +52,10 @@
 //! except that single line.
 
 pub mod alloc;
+mod observer;
+pub mod overlay;
 mod session;
 
+pub use observer::{DevToolsAdapter, PerfMeter};
+pub use overlay::DevTools;
 pub use session::{Aggregate, FrameSample, PerfSession};
