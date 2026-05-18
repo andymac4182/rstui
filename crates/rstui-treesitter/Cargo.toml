@@ -1,0 +1,114 @@
+# ADR 0023: an empty `[workspace]` table makes this crate its OWN
+# standalone (non-member) workspace root. The root `Cargo.toml` *also*
+# carries `exclude = ["crates/rstui-treesitter"]` (the integrator's
+# committed target state, mirrored here). This empty table is what lets the
+# crate build via `--manifest-path` regardless of where the enclosing repo
+# checkout sits, and is precisely the "workspace-EXCLUDED opt-in leaf"
+# posture (ADR 0022 Tier-1 / ADR 0002 §4): the five `cargo xtask ci` gates
+# operate on the real workspace and never see this crate.
+[workspace]
+
+[package]
+name = "rstui-treesitter"
+# ADR 0023: this crate is a workspace-EXCLUDED opt-in leaf, so it can NOT use
+# `version.workspace = true` / `edition.workspace = true` (it is not a
+# workspace member — `[workspace.package]` is invisible to it). The package
+# fields are therefore set with explicit literals, mirroring the sibling
+# `rstui-core`'s values (version "0.0.1", edition 2024, rust 1.85).
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/andymac4182/rstui"
+authors = ["The rstui authors"]
+publish = false
+description = "ADR 0022 Tier-1: an opt-in, feature-gated tree-sitter back end that produces the SAME syntax-overlay + symbol-outline shapes the dependency-free Tier-0 (rstui_widgets::syntax/outline) already feeds — a drop-in, never a new widget. Workspace-excluded; the five CI gates never compile it (ADR 0023)."
+
+# ADR 0023 / ADR 0002 §4: an opt-in leaf carrying a transitive C-grammar
+# dependency lives outside the workspace and is default-off per language. It
+# is a *better producer of the same shapes* — never a dependency of
+# rstui-core/-widgets/-runtime; the dependency direction is one-way.
+
+# ADR 0003 §1 makes `[workspace.lints]` the single source of truth, but a
+# workspace-EXCLUDED crate cannot say `[lints] workspace = true` (the
+# workspace table is invisible to it — same situation as `rstui-devtools`).
+# So mirror the *entire* workspace lint policy verbatim. Unlike
+# `rstui-devtools` this crate writes NO unsafe (tree-sitter's Rust API is
+# safe), so `unsafe_code` stays at the workspace bar: "forbid". Keep this
+# block in sync with `[workspace.lints]` in the root `Cargo.toml`.
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+invalid_codeblock_attributes = "deny"
+unescaped_backticks = "warn"
+
+[lints.clippy]
+uninlined_format_args = "warn"
+needless_pass_by_value = "warn"
+
+[dependencies]
+# Path deps carry an explicit `version` (an excluded crate cannot inherit
+# `version.workspace = true`); these mirror the sibling crates' "0.0.1".
+rstui-core = { path = "../rstui-core", version = "0.0.1" }
+rstui-widgets = { path = "../rstui-widgets", version = "0.0.1" }
+# The incremental GLR parser. Its Rust API is entirely safe (no `unsafe`
+# here); the `unsafe` is contained inside the grammar crates' generated C
+# bindings, exactly the ADR 0018 opt-in-leaf containment.
+tree-sitter = "0.26"
+
+# One OPTIONAL grammar crate per language, each behind its own feature so a
+# build pays only for the languages it enables (ADR 0002 §4). Every grammar
+# exposes `pub const LANGUAGE: tree_sitter_language::LanguageFn` (TypeScript:
+# `LANGUAGE_TYPESCRIPT`) consumed via `tree_sitter::Language::from(..)`, and
+# bundles a `HIGHLIGHTS_QUERY`/`HIGHLIGHT_QUERY` (+ a `TAGS_QUERY` for the
+# languages that ship one — JSON & Markdown do not, so they have no outline).
+[dependencies.tree-sitter-rust]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-python]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-javascript]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-typescript]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-go]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-c]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-json]
+version = "0.24"
+optional = true
+
+[dependencies.tree-sitter-md]
+version = "0.5"
+optional = true
+
+[features]
+# Every shipped language is on by default; disable `default-features` and
+# pick a subset to shrink an opt-in build. Each feature gates exactly one
+# grammar crate AND the matching `cfg(feature = "..")` `TsLanguage` variant
+# + `lang` adapter, so the public surface is exactly the enabled languages.
+default = ["rust", "python", "javascript", "typescript", "go", "c", "json", "markdown"]
+rust = ["dep:tree-sitter-rust"]
+python = ["dep:tree-sitter-python"]
+javascript = ["dep:tree-sitter-javascript"]
+typescript = ["dep:tree-sitter-typescript"]
+go = ["dep:tree-sitter-go"]
+c = ["dep:tree-sitter-c"]
+json = ["dep:tree-sitter-json"]
+markdown = ["dep:tree-sitter-md"]
