@@ -523,3 +523,34 @@ fn help_then_k_is_the_universal_gateway_into_the_keymap_editor() {
     );
     assert!(h.is_running());
 }
+
+#[test]
+fn a_command_key_typed_in_the_filter_is_text_not_a_command() {
+    // The Capture::Text "input" context (ADR 0020) makes the filter row
+    // swallow command keys as raw text — no hand-ordered guard; the
+    // command *cannot* fire mid-type, by construction.
+    let dir = fixture(&["alpha apple", "beta banana"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    assert!(
+        h.snapshot().contains('≡') && !h.snapshot().contains('◫'),
+        "default detail title is the unified `≡` marker, not split `◫`"
+    );
+    h.handle(ch('/')); // enter the filter (activates the text context)
+    h.handle(ch('s')); // `s` is the global "side-by-side" command…
+    h.handle(ch('z')); // …both are now plain filter text.
+    let s = h.snapshot();
+    assert!(
+        s.contains("/sz") && s.contains("Commits 0"),
+        "`s`/`z` were typed into the filter ('/sz' → 0 matches), \
+         NOT executed as commands:\n{s}"
+    );
+    assert!(
+        !s.contains('◫'),
+        "the `s` side-by-side command did NOT fire while typing:\n{s}"
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}

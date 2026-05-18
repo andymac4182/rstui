@@ -158,5 +158,12 @@ reverse lookup that the immediate-mode UI consumes.
     [`docs/keymaps.md`](../keymaps.md).
 - Resolution is shell-level only by design — per-widget keymaps are not
   modelled; screens still own their raw keys (ADR 0004 routing).
+  - *Amended (2026-05-18) by [ADR 0020](0020-keymap-contexts.md):* the
+    *shell-level-only* stance is lifted. `bind_in(context, …)` +
+    `Keymaps::set_context` add a pure-data context layer (Vim modes / VS
+    Code `when` / Textual focus), so a focused field/mode is expressed
+    declaratively instead of via hand-ordered reducer guards. Purely
+    additive — an app that sets no context is byte-identical to this
+    decision.
 - Chord vocabulary is the crate's (`bs`/`del` for Backspace/Delete);
   apps and plugins now normalise through it, so the spec is the contract.
