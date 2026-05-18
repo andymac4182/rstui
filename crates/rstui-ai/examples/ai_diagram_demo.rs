@@ -36,6 +36,18 @@ const TURNS: &[&str] = &[
      s = softwareSystem \"Storefront\"\n    u -> s \"Buys via\"\n  }\n  \
      views {\n    systemContext s {\n      include *\n    }\n  }\n}\n\
      ```\n",
+    // The model controls the exact layout itself — JSON Canvas, explicit
+    // x/y/width/height (auto-layout DSLs cannot place a node at a point).
+    "I placed the boxes exactly:\n\n\
+     ```canvas\n\
+     {\"nodes\":[\
+     {\"id\":\"in\",\"type\":\"text\",\"text\":\"Ingest\",\"x\":0,\"y\":0,\"width\":160,\"height\":80},\
+     {\"id\":\"proc\",\"type\":\"text\",\"text\":\"Process\",\"x\":300,\"y\":0,\"width\":160,\"height\":80},\
+     {\"id\":\"out\",\"type\":\"text\",\"text\":\"Store\",\"x\":600,\"y\":0,\"width\":160,\"height\":80}],\
+     \"edges\":[\
+     {\"id\":\"e1\",\"fromNode\":\"in\",\"toNode\":\"proc\",\"label\":\"raw\"},\
+     {\"id\":\"e2\",\"fromNode\":\"proc\",\"toNode\":\"out\",\"label\":\"clean\"}]}\n\
+     ```\n",
 ];
 
 /// What the reducer can do — the Elm message (ADR 0011/0012): a raw event
@@ -85,6 +97,7 @@ impl App for AgentDiagram {
         let kind = match diagram.language() {
             DiagramLanguage::Mermaid => "Mermaid",
             DiagramLanguage::Structurizr => "Structurizr (C4)",
+            DiagramLanguage::JsonCanvas => "JSON Canvas (explicit placement)",
         };
         let artifact = Artifact::new("Agent diagram").description(kind);
         let body = artifact.body(area);
@@ -102,22 +115,28 @@ fn main() {
     println!("\nturn 1 — a ```structurizr (C4) block:");
     println!("{}", harness.snapshot());
 
+    harness.handle(Event::from(KeyEvent::char(' ')));
+    println!("\nturn 2 — a ```canvas block (the model placed the boxes):");
+    let snap = harness.snapshot();
+    println!("{snap}");
+
     // Assert the full loop on the model + the projection, so a regression
     // panics this example (the ai-crate's deterministic-smoke discipline).
-    assert_eq!(harness.app().turn, 1, "the reducer advanced the turn");
+    assert_eq!(harness.app().turn, 2, "the reducer advanced the turn");
     let m = Diagram::extract(TURNS[0]).expect("turn 0 carries a diagram");
     assert_eq!(m.language(), DiagramLanguage::Mermaid);
     let c = Diagram::extract(TURNS[1]).expect("turn 1 carries a diagram");
     assert_eq!(c.language(), DiagramLanguage::Structurizr);
-    let snap = harness.snapshot();
+    let j = Diagram::extract(TURNS[2]).expect("turn 2 carries a diagram");
+    assert_eq!(j.language(), DiagramLanguage::JsonCanvas);
     assert!(
-        snap.contains("Agent diagram") && snap.contains("Customer"),
-        "the C4 diagram rendered inside the artifact:\n{snap}"
+        snap.contains("Agent diagram") && snap.contains("Ingest") && snap.contains("Store"),
+        "the JSON Canvas placed nodes rendered inside the artifact:\n{snap}"
     );
 
     harness.handle(Event::from(KeyEvent::from_code(KeyCode::Esc)));
     println!(
-        "\n✓ agent turn → Diagram::extract → rendered; \
-         languages: mermaid + structurizr, deterministic"
+        "\n✓ agent turn → Diagram::extract → rendered; languages: \
+         mermaid + structurizr + jsoncanvas (explicit placement), deterministic"
     );
 }

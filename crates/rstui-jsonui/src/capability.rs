@@ -46,16 +46,24 @@ pub const JSON_RENDER_CATALOG_ID: &str = "rstui-jsonui/json-render/standard";
 /// The diagram DSL this client renders, stated as the contract an agent
 /// follows to *output a diagram* — delegated to the deterministic
 /// `rstui_ai::diagram::Diagram` →
-/// [`Mermaid`](rstui_widgets::Mermaid)/[`Structurizr`](rstui_widgets::Structurizr)
+/// [`Mermaid`](rstui_widgets::Mermaid)/[`Structurizr`](rstui_widgets::Structurizr)/[`JsonCanvas`](rstui_widgets::JsonCanvas)
 /// renderers. Injecting this into a system prompt / ACP client-capabilities
-/// lets a model answer *with* a diagram instead of describing one in prose.
-pub const DIAGRAM_DSL_NOTE: &str = "To output a diagram, emit a fenced code block: \
-    ```mermaid … ``` for any Mermaid diagram type (flowchart/graph, sequenceDiagram, \
-    classDiagram, stateDiagram-v2, erDiagram, gantt, pie, gitGraph, mindmap, timeline, \
-    journey, quadrantChart, requirementDiagram, sankey-beta, xychart-beta, block-beta, \
-    packet-beta, kanban, architecture-beta, radar-beta, C4*, zenuml), or \
-    ```structurizr … ``` for a Structurizr DSL / C4 workspace. It renders as a \
-    deterministic terminal diagram; an unterminated block still renders while streaming.";
+/// lets a model answer *with* a diagram instead of describing one in prose —
+/// and, via JSON Canvas, control the exact layout when it needs to.
+pub const DIAGRAM_DSL_NOTE: &str = "To output a diagram, emit a fenced code block. \
+    For auto-laid-out diagrams: ```mermaid … ``` for any Mermaid diagram type \
+    (flowchart/graph, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, \
+    pie, gitGraph, mindmap, timeline, journey, quadrantChart, requirementDiagram, \
+    sankey-beta, xychart-beta, block-beta, packet-beta, kanban, architecture-beta, \
+    radar-beta, C4*, zenuml), or ```structurizr … ``` for a Structurizr DSL / C4 \
+    workspace. To control the exact layout yourself (Mermaid/Structurizr are \
+    auto-layout and cannot place a node at a position), emit ```canvas … ``` \
+    containing JSON Canvas 1.0 — {\"nodes\":[{\"id\",\"type\":text|file|link|group,\
+    \"x\",\"y\",\"width\",\"height\",\"text\"|\"file\"|\"url\"|\"label\",\"color\"}],\
+    \"edges\":[{\"id\",\"fromNode\",\"toNode\",\"fromSide\",\"toSide\",\
+    \"toEnd\":none|arrow,\"label\"}]} — where every node carries integer pixel \
+    coordinates. All render as a deterministic terminal diagram; an unterminated \
+    block still renders while streaming.";
 
 /// The canonical A2UI v0.10 basic catalog (verbatim upstream schema,
 /// vendored — see `assets/a2ui/PROVENANCE.md`).
@@ -70,8 +78,10 @@ const COMMON_TYPES_JSON: &str = include_str!("../assets/a2ui/common_types.json")
 #[must_use]
 pub fn diagram_capability() -> Value {
     json!({
-        "languages": ["mermaid", "structurizr"],
-        "fencedAs": ["```mermaid", "```structurizr"],
+        "languages": ["mermaid", "structurizr", "jsoncanvas"],
+        "fencedAs": ["```mermaid", "```structurizr", "```canvas"],
+        "autoLayout": ["mermaid", "structurizr"],
+        "explicitLayout": ["jsoncanvas"],
         "note": DIAGRAM_DSL_NOTE,
     })
 }
@@ -463,13 +473,24 @@ mod tests {
         let langs = cap["languages"].as_array().unwrap();
         assert!(langs.iter().any(|l| l == "mermaid"));
         assert!(langs.iter().any(|l| l == "structurizr"));
+        assert!(langs.iter().any(|l| l == "jsoncanvas"));
         assert!(cap["note"].as_str().unwrap().contains("```mermaid"));
+        // JSON Canvas is advertised as the explicit-layout escape hatch.
+        assert!(
+            cap["explicitLayout"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l == "jsoncanvas")
+        );
+        assert!(cap["note"].as_str().unwrap().contains("```canvas"));
         // Folded into the agent-readable render summary.
         let summary = render_capability_summary();
         assert_eq!(summary["rstuiJsonUi"]["diagram"]["languages"][0], "mermaid");
         assert!(
             DIAGRAM_DSL_NOTE.contains("structurizr")
-                && DIAGRAM_DSL_NOTE.contains("Mermaid diagram type")
+                && DIAGRAM_DSL_NOTE.contains("JSON Canvas")
+                && DIAGRAM_DSL_NOTE.contains("control the exact layout")
         );
     }
 }

@@ -16,6 +16,14 @@
 //! - **[`Structurizr`]** — the Structurizr DSL /
 //!   C4 model (`workspace { model { … } views { … } }`), in a
 //!   ```` ```structurizr ```` block.
+//! - **[`JsonCanvas`]** — [JSON Canvas 1.0](https://jsoncanvas.org/), the
+//!   *explicit-placement* answer: Mermaid and Structurizr are auto-layout
+//!   (a model cannot say "put this box here"); JSON Canvas is a tiny
+//!   `{ "nodes": [...], "edges": [...] }` document where every node carries
+//!   integer `x`/`y`/`width`/`height`, so a model that *wants* to control
+//!   the layout emits it (in a ```` ```canvas ````/```` ```jsoncanvas ````
+//!   block, or just a JSON body with `nodes`/`edges`). It is the format
+//!   Obsidian Canvas writes, so models already know it.
 //!
 //! An AI tool/agent "outputs a diagram" by emitting that DSL — typically a
 //! fenced code block inside a [`Text`](crate::model::UiPart::Text) part or a
@@ -53,7 +61,7 @@
 use std::borrow::Cow;
 
 use rstui_core::{Buffer, Rect, Style, Widget};
-use rstui_widgets::{Block, Mermaid, Structurizr};
+use rstui_widgets::{Block, JsonCanvas, Mermaid, Structurizr};
 
 /// Which diagram DSL a [`Diagram`] source is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,16 +73,22 @@ pub enum DiagramLanguage {
     /// The Structurizr DSL (C4 model), rendered by
     /// [`rstui_widgets::Structurizr`].
     Structurizr,
+    /// [JSON Canvas 1.0](https://jsoncanvas.org/) — the *explicit
+    /// placement* format (every node carries `x`/`y`/`width`/`height`), the
+    /// one a model emits when it wants to control the layout instead of
+    /// leaving it to auto-layout. Rendered by [`rstui_widgets::JsonCanvas`].
+    JsonCanvas,
 }
 
 impl DiagramLanguage {
     /// The canonical fenced-code info string an agent should use for this
-    /// language (`mermaid` / `structurizr`).
+    /// language (`mermaid` / `structurizr` / `canvas`).
     #[must_use]
     pub const fn fence_tag(self) -> &'static str {
         match self {
             Self::Mermaid => "mermaid",
             Self::Structurizr => "structurizr",
+            Self::JsonCanvas => "canvas",
         }
     }
 }
@@ -209,6 +223,13 @@ impl Widget for Diagram<'_> {
                 }
                 w.render(area, buf);
             }
+            DiagramLanguage::JsonCanvas => {
+                let mut w = JsonCanvas::new(body).style(style);
+                if let Some(b) = block {
+                    w = w.block(b);
+                }
+                w.render(area, buf);
+            }
         }
     }
 }
@@ -228,16 +249,27 @@ fn lang_from_info(info: &str) -> Option<DiagramLanguage> {
     match info.trim().to_ascii_lowercase().as_str() {
         "mermaid" | "mmd" => Some(DiagramLanguage::Mermaid),
         "structurizr" | "c4" | "dsl" | "workspace" => Some(DiagramLanguage::Structurizr),
+        "canvas" | "jsoncanvas" => Some(DiagramLanguage::JsonCanvas),
         _ => None,
     }
 }
 
-/// Sniffs a *bare* (unfenced) body's language from its first significant
-/// line: a Structurizr workspace opens with `workspace`; everything else is
-/// treated as Mermaid (its own dispatcher handles the 22 types and degrades
-/// an unknown header to a placeholder — and an unlabelled LLM diagram is
-/// overwhelmingly Mermaid).
+/// Whether a body looks like a JSON Canvas document: a JSON object that
+/// carries a `nodes`/`edges` array.
+fn is_json_canvas(body: &str) -> bool {
+    let t = body.trim_start();
+    t.starts_with('{') && (t.contains("\"nodes\"") || t.contains("\"edges\""))
+}
+
+/// Sniffs a *bare* (unfenced) body's language: a JSON object with
+/// `nodes`/`edges` is JSON Canvas; a body opening with `workspace` is the
+/// Structurizr DSL; everything else is treated as Mermaid (its own
+/// dispatcher handles the 22 types and degrades an unknown header to a
+/// placeholder — and an unlabelled LLM diagram is overwhelmingly Mermaid).
 fn sniff(body: &str) -> DiagramLanguage {
+    if is_json_canvas(body) {
+        return DiagramLanguage::JsonCanvas;
+    }
     for line in body.lines() {
         let t = line.trim();
         if t.is_empty() || t.starts_with("//") || t.starts_with('#') || t.starts_with("%%") {
@@ -336,6 +368,9 @@ fn first_fenced_diagram(text: &str) -> Option<(&str, DiagramLanguage)> {
 /// Whether a bare body's first significant token is a recognised diagram
 /// header (used only to rescue an *unlabelled* fenced block).
 fn looks_like_diagram(body: &str) -> bool {
+    if is_json_canvas(body) {
+        return true;
+    }
     let Some(line) = body
         .lines()
         .map(str::trim)
@@ -440,6 +475,51 @@ mod tests {
         );
         assert_eq!(DiagramLanguage::Mermaid.fence_tag(), "mermaid");
         assert_eq!(DiagramLanguage::Structurizr.fence_tag(), "structurizr");
+    }
+
+    /// JSON Canvas — the explicit-placement path.
+    const CANVAS: &str = r#"{"nodes":[
+      {"id":"a","type":"text","text":"Start","x":0,"y":0,"width":120,"height":60},
+      {"id":"b","type":"text","text":"Finish","x":400,"y":0,"width":120,"height":60}],
+      "edges":[{"id":"e","fromNode":"a","toNode":"b","label":"go"}]}"#;
+
+    #[test]
+    fn json_canvas_is_detected_bare_fenced_and_forced() {
+        // A bare JSON object with nodes/edges.
+        assert_eq!(Diagram::new(CANVAS).language(), DiagramLanguage::JsonCanvas);
+        // A ```canvas / ```jsoncanvas fence.
+        assert_eq!(
+            Diagram::new("```canvas\n{\"nodes\":[]}\n```").language(),
+            DiagramLanguage::JsonCanvas
+        );
+        assert_eq!(
+            Diagram::new("```jsoncanvas\n{\"edges\":[]}\n```").language(),
+            DiagramLanguage::JsonCanvas
+        );
+        assert_eq!(DiagramLanguage::JsonCanvas.fence_tag(), "canvas");
+        // Not confused with Mermaid/Structurizr.
+        assert_eq!(
+            Diagram::new("graph TD\nA-->B").language(),
+            DiagramLanguage::Mermaid
+        );
+    }
+
+    #[test]
+    fn json_canvas_extracts_from_prose_and_renders_placed() {
+        let turn = "Here's the layout I want:\n\n```canvas\n".to_string()
+            + CANVAS
+            + "\n```\n\nLooks good?";
+        let d = Diagram::extract(&turn).expect("a fenced canvas");
+        assert_eq!(d.language(), DiagramLanguage::JsonCanvas);
+        let out = lines(Diagram::new(CANVAS), 48, 8);
+        assert!(out.contains("Start") && out.contains("Finish"), "{out}");
+        // Explicit x: Start (x0) is left of Finish (x400).
+        let row = out.lines().find(|l| l.contains("Start")).unwrap();
+        let frow = out.lines().find(|l| l.contains("Finish")).unwrap();
+        assert!(
+            row.find("Start").unwrap() < frow.find("Finish").unwrap(),
+            "placement honoured:\n{out}"
+        );
     }
 
     #[test]

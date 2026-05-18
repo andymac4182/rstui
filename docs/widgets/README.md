@@ -30,7 +30,7 @@ caller-owned state it projects — this is the part that matters most), the
 | Family | Widgets | Reference |
 |--------|---------|-----------|
 | **Core set** | Block, Paragraph, List, Tabs, Gauge, Scrollbar, Spinner, FpsCounter, Table, Checkbox, Button, Radio, Input, Modal, StatusBar, Toast, Tree, Select, Editor | [core-set.md](core-set.md) |
-| **Rich rendering** | Markdown, Link, Diff, Mermaid, Structurizr, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
+| **Rich rendering** | Markdown, Link, Diff, Mermaid, Structurizr, JsonCanvas, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
 | **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider, DataTable | [forms-and-data.md](forms-and-data.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
 | **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, KeymapView, Flow | [overlays-and-control.md](overlays-and-control.md) |
@@ -78,6 +78,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [HelpOverlay](overlays-and-control.md#helpoverlay) | overlays | `help_overlay_demo` |
 | [Histogram](observability.md#histogram) | observability | `histogram_demo` |
 | [Input](core-set.md#input) | core | `input_demo` |
+| [JsonCanvas](rich-rendering.md#jsoncanvas) | rich | `json_canvas_demo` |
 | [Kbd](overlays-and-control.md#kbd) | overlays | `kbd_demo` |
 | [KeymapView](overlays-and-control.md#keymapview) | overlays | `keymap_view_demo` |
 | [LineChart](observability.md#linechart) | observability | `line_chart_demo` |

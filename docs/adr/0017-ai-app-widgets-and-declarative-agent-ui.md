@@ -62,13 +62,19 @@ integration**. No existing crate's public API changes.
   `rstui_widgets::Markdown`/`Mermaid`. Streaming markdown is a *new
   behavior over an existing parser*, exactly the ADR 0002 §4 precedent.
 - `diagram` — the diagram DSL an AI tool *outputs*: a pure projection that
-  unwraps a fenced ```` ```mermaid ````/```` ```structurizr ```` block (or
-  `Diagram::extract`s the first one from a chat turn) and delegates to the
-  deterministic, total `rstui_widgets::Mermaid`/`Structurizr` — the same
-  "new behavior over an existing parser" precedent as `stream_markdown`.
-  Its contract is *advertised* to the agent by the
+  unwraps a fenced ```` ```mermaid ````/```` ```structurizr ````/
+  ```` ```canvas ```` block (or `Diagram::extract`s the first one from a
+  chat turn) and delegates to the deterministic, total
+  `rstui_widgets::Mermaid`/`Structurizr`/`JsonCanvas` — the same "new
+  behavior over an existing parser" precedent as `stream_markdown`. Mermaid
+  and Structurizr are auto-layout; [JSON Canvas 1.0](https://jsoncanvas.org/)
+  (`JsonCanvas`, a hand-written zero-dep total scanner in `rstui-widgets`,
+  ADR 0002 §4) is the **explicit-placement** complement — every node carries
+  integer `x`/`y`/`width`/`height`, so a model that needs to control the
+  layout can. The contract is *advertised* to the agent by the
   `rstui-jsonui::capability` `diagram` descriptor (§2), so a model answers
-  *with* a diagram instead of describing one in prose.
+  *with* a diagram (auto-laid-out or hand-placed) instead of describing one
+  in prose.
 - One module per AI-app widget (the ai-elements vocabulary), each a pure
   projection of caller-owned state in the ADR 0012 discipline: a
   collapsible/disclosure family (`Reasoning`, `Tool`, `Task`, `Plan`,
@@ -105,8 +111,10 @@ integration**. No existing crate's public API changes.
 - `capability` — the descriptors each format advertises to an agent,
   including the **diagram DSL** descriptor (`DIAGRAM_DSL_NOTE` /
   `diagram_capability()`): the contract a model follows to *output a
-  diagram* (a fenced ```` ```mermaid ````/```` ```structurizr ```` block,
-  rendered by `rstui-ai::diagram`), folded into `render_capability_summary`.
+  diagram* — a fenced ```` ```mermaid ````/```` ```structurizr ```` block
+  for auto-layout, or ```` ```canvas ```` (JSON Canvas 1.0) for explicit
+  placement — rendered by `rstui-ai::diagram`, with the `autoLayout` vs
+  `explicitLayout` split folded into `render_capability_summary`.
 - Depends on `rstui-core` + `rstui-widgets` + `rstui-ai` +
   `serde`/`serde_json`.
 

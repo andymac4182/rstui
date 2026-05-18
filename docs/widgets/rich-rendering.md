@@ -130,6 +130,39 @@ Structurizr::parse(src) -> Result<Workspace, StructurizrError>
 
 ---
 
+## JsonCanvas
+
+![JsonCanvas demo](media/json_canvas_demo.gif)
+
+A read-only [JSON Canvas 1.0](https://jsoncanvas.org/) renderer — the
+**explicit-placement** complement to auto-layout Mermaid/Structurizr.
+Mermaid and the Structurizr DSL describe structure and a layout engine
+positions it; JSON Canvas is a `{ "nodes": [...], "edges": [...] }`
+document where every node carries integer `x`/`y`/`width`/`height`, so the
+author (an AI tool, Obsidian Canvas, a human) controls the layout. A
+hand-written **zero-dependency, total** JSON scanner (the ADR 0002 §4
+precedent, like [Mermaid](#mermaid)/[Structurizr](#structurizr)) parses the
+whole 1.0 spec; the bounding box is scaled to fit the area so the chosen
+*relative* placement is preserved and snapshot-testable. Malformed/hostile
+input never panics. Shares the internal `crate::diagram` surface the other
+diagram widgets render onto. It is the format an agent emits when it needs
+to place objects itself (advertised via `rstui_jsonui::capability`).
+
+- **Companion types:** `JsonCanvasError`, `JsonCanvasTheme`,
+  `json_canvas::Canvas` (AST: `CanvasNode`/`NodeKind`/`CanvasEdge`/
+  `Side`/`Endpoint`/`CanvasColor`)
+- **State model:** pure projection of caller/agent-owned JSON Canvas source.
+
+```rust
+JsonCanvas::new(src: &str)
+.block(Block) .style(Style) .theme(JsonCanvasTheme)
+JsonCanvas::parse(src) -> Result<Canvas, JsonCanvasError>
+```
+
+**Demo:** `cargo run -p rstui-widgets --example json_canvas_demo`
+
+---
+
 ## Extmark
 
 ![Extmark demo](media/extmark_demo.gif)

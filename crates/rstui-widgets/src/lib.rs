@@ -93,6 +93,13 @@
 //!   Deployment) with stereotyped element cards, boundary boxes, and labelled
 //!   relationship arrows. A separate diagramming language from Mermaid, so a
 //!   separate widget.
+//! - [`json_canvas`]: [`JsonCanvas`] — a [JSON
+//!   Canvas 1.0](https://jsoncanvas.org/) document (the Obsidian
+//!   infinite-canvas format) parsed by a hand-written zero-dep total JSON
+//!   scanner to a public [`Canvas`](json_canvas::Canvas) AST and rendered with each node at its
+//!   **explicit author-chosen `(x, y, width, height)`** scaled to fit — the
+//!   *placement* complement to auto-layout Mermaid/Structurizr, the format
+//!   an AI tool emits when it wants to control the layout.
 //! - [`modal`]: [`Modal`] — a centred, **opaque**, optionally-[`Block`]-framed
 //!   dialog over an overlay area; the visual half of the
 //!   [`FocusRing`](rstui_core::FocusRing) scope-stack modal model (ADR 0004
@@ -350,6 +357,7 @@ pub mod heatmap;
 pub mod help_overlay;
 pub mod histogram;
 pub mod input;
+pub mod json_canvas;
 pub mod kbd;
 pub mod keymap_view;
 pub mod line_chart;
@@ -440,6 +448,7 @@ pub use grid::Grid;
 pub use heatmap::Heatmap;
 pub use help_overlay::{HelpEntry, HelpOverlay};
 pub use histogram::{Histogram, HistogramBucket, Percentile};
+pub use json_canvas::{JsonCanvas, JsonCanvasError, JsonCanvasTheme};
 pub use kbd::Kbd;
 pub use keymap_view::{KeymapRow, KeymapView, RowState};
 pub use line_chart::{AxisBounds, LineChart, Series};
