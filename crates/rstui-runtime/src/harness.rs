@@ -62,11 +62,13 @@
 //! assert!(harness.is_running());
 //! ```
 
+use std::time::{Duration, Instant};
+
 use rstui_core::{Event, Terminal, TestBackend};
 
 use crate::app::App;
 use crate::cmd::InlineExecutor;
-use crate::run::{DEFAULT_COMMAND_BUDGET, Settled, settle};
+use crate::run::{DEFAULT_COMMAND_BUDGET, FrameMetrics, Settled, settle};
 
 /// Drives an [`App`] over an in-memory [`TestBackend`] with no terminal.
 ///
@@ -80,6 +82,11 @@ pub struct Harness<A: App> {
     terminal: Terminal<TestBackend>,
     running: bool,
     command_budget: usize,
+    /// ADR 0018 §3: the last driven iteration's metrics, for deterministic
+    /// headless perf testing. `None` until the first
+    /// `handle`/`message`/`tick` (the initial `new` render has no `logic`
+    /// phase to attribute).
+    last_frame: Option<FrameMetrics>,
 }
 
 impl<A: App> Harness<A> {
@@ -97,6 +104,7 @@ impl<A: App> Harness<A> {
             terminal,
             running: true,
             command_budget: DEFAULT_COMMAND_BUDGET,
+            last_frame: None,
         };
         let cmd = harness.app.init();
         harness.settle(cmd);
@@ -121,11 +129,13 @@ impl<A: App> Harness<A> {
         if !self.running {
             return;
         }
+        let t0 = Instant::now();
         if let Some(message) = self.app.on_event(event) {
             let cmd = self.app.update(message);
             self.settle(cmd);
         }
-        self.render();
+        let logic = t0.elapsed();
+        self.record_render(logic, 1);
     }
 
     /// Injects `message` straight into [`update`](App::update), bypassing
@@ -137,9 +147,11 @@ impl<A: App> Harness<A> {
         if !self.running {
             return;
         }
+        let t0 = Instant::now();
         let cmd = self.app.update(message);
         self.settle(cmd);
-        self.render();
+        let logic = t0.elapsed();
+        self.record_render(logic, 0);
     }
 
     /// Resizes the surface to `width` × `height`, delivers a matching
@@ -178,11 +190,13 @@ impl<A: App> Harness<A> {
         if !self.running {
             return;
         }
+        let t0 = Instant::now();
         if let Some(message) = self.app.on_tick() {
             let cmd = self.app.update(message);
             self.settle(cmd);
         }
-        self.render();
+        let logic = t0.elapsed();
+        self.record_render(logic, 0);
     }
 
     /// A shared reference to the app, for asserting on its state.
@@ -234,6 +248,45 @@ impl<A: App> Harness<A> {
         self.terminal
             .draw(|frame| app.view(frame))
             .expect("TestBackend is infallible");
+    }
+
+    /// Renders like [`render`](Self::render) but splits `view`/`flush` and
+    /// stores a [`FrameMetrics`] in `last_frame` — the deterministic twin
+    /// of the live loop's observed path (ADR 0018 §3).
+    fn record_render(&mut self, logic: Duration, events_coalesced: u32) {
+        let app = &self.app;
+        let mut view = Duration::ZERO;
+        let t0 = Instant::now();
+        self.terminal
+            .draw(|frame| {
+                let v = Instant::now();
+                app.view(frame);
+                view = v.elapsed();
+            })
+            .expect("TestBackend is infallible");
+        let draw = t0.elapsed();
+        let flush = draw.saturating_sub(view);
+        let total = logic + draw;
+        let frame = self.last_frame.map_or(0, |m| m.frame + 1);
+        self.last_frame = Some(FrameMetrics {
+            frame,
+            logic,
+            view,
+            flush,
+            total,
+            produced: true,
+            events_coalesced,
+            input_latency: total,
+        });
+    }
+
+    /// The last `handle`/`message`/`tick` iteration's [`FrameMetrics`], or
+    /// `None` before the first one. The headless, deterministic mirror of
+    /// the live loop's [`FrameObserver`](crate::FrameObserver) — drive the
+    /// harness, then assert on phase durations / `produced` in a test.
+    #[must_use]
+    pub fn last_frame(&self) -> Option<&FrameMetrics> {
+        self.last_frame.as_ref()
     }
 }
 
@@ -507,5 +560,45 @@ mod tests {
         assert!(!harness.is_running());
         harness.tick();
         assert_eq!(harness.app().value, 1);
+    }
+
+    // ADR 0018 §3: the headless FrameObserver mirror. Structural asserts
+    // only (relationships, counts, the monotonic frame index) — never
+    // absolute wall times, so the test is deterministic.
+    #[test]
+    fn last_frame_records_observed_metrics_for_every_drive() {
+        let mut h = Harness::new(Counter::default(), 6, 1);
+        // None until the first drive — the init render has no `logic`
+        // phase to attribute.
+        assert!(h.last_frame().is_none());
+
+        h.handle(Event::from(KeyEvent::char('+')));
+        let f0 = *h.last_frame().expect("recorded after handle");
+        assert_eq!(f0.frame, 0);
+        assert!(f0.produced);
+        assert_eq!(f0.events_coalesced, 1); // one input event
+        assert!(f0.total >= f0.view + f0.flush);
+        assert!(f0.total >= f0.logic);
+
+        h.message(Msg::Inc);
+        let f1 = *h.last_frame().unwrap();
+        assert_eq!(f1.frame, 1); // monotonic across drive kinds
+        assert_eq!(f1.events_coalesced, 0); // a direct message — no input event
+        assert!(f1.produced);
+
+        h.tick();
+        let f2 = *h.last_frame().unwrap();
+        assert_eq!(f2.frame, 2);
+        assert_eq!(f2.events_coalesced, 0);
+
+        // The quit iteration still renders+records (the live loop paints
+        // the final frame too); a *subsequent* drive is a no-op and must
+        // not advance the recorded frame.
+        h.handle(Event::from(KeyEvent::char('q')));
+        assert!(!h.is_running());
+        let quit_frame = h.last_frame().unwrap().frame;
+        assert_eq!(quit_frame, 3);
+        h.handle(Event::from(KeyEvent::char('+')));
+        assert_eq!(h.last_frame().unwrap().frame, quit_frame); // unchanged
     }
 }

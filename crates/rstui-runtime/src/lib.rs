@@ -84,7 +84,10 @@ pub mod run;
 pub use app::App;
 pub use cmd::Cmd;
 pub use harness::Harness;
-pub use run::{DEFAULT_COMMAND_BUDGET, RunError, run, run_pooled, run_threaded};
+pub use run::{
+    DEFAULT_COMMAND_BUDGET, FrameMetrics, FrameObserver, RunError, run, run_pooled,
+    run_pooled_with_observer, run_threaded, run_threaded_with_observer, run_with_observer,
+};
 
 /// The `tokio::select!` async event loop and its async input seam, available
 /// only with the `async` cargo feature (the default build stays

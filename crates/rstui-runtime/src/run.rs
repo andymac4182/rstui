@@ -623,6 +623,69 @@ fn render<A: App, B: Backend>(terminal: &mut Terminal<B>, app: &A) -> Result<(),
     Ok(())
 }
 
+/// Renders like [`render`] but splits the cost into the `view` projection
+/// (the `App::view` closure) and the `flush` (buffer diff + backend write)
+/// — used only on the observed path (ADR 0018 §3), so the default loop's
+/// cost is unchanged.
+fn render_timed<A: App, B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &A,
+) -> Result<(Duration, Duration), B::Error> {
+    let mut view = Duration::ZERO;
+    let t0 = Instant::now();
+    terminal.draw(|frame| {
+        let v = Instant::now();
+        app.view(frame);
+        view = v.elapsed();
+    })?;
+    let total = t0.elapsed();
+    Ok((view, total.saturating_sub(view)))
+}
+
+/// One event-loop iteration's measurements, handed **by value** to a
+/// [`FrameObserver`] (ADR 0018 §3). `Duration`s are wall time;
+/// `logic + view + flush ≈ total` (the active work since the event
+/// arrived — the idle `poll` wait is excluded). `produced` is the RT-01
+/// flag: `false` means the iteration changed nothing and the repaint was
+/// skipped. The Chrome-DevTools analogy is direct: `logic` ≈ Scripting,
+/// `view` ≈ Rendering, `flush` ≈ Painting.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FrameMetrics {
+    /// Monotonic iteration index since the loop started observing.
+    pub frame: u64,
+    /// Input decode + `on_event` + `update` + `settle` + coalescing.
+    pub logic: Duration,
+    /// `App::view` projection into the back buffer.
+    pub view: Duration,
+    /// Buffer diff + terminal write.
+    pub flush: Duration,
+    /// Active work this iteration (`logic + view + flush`); excludes the
+    /// idle wait blocked in `poll_event`.
+    pub total: Duration,
+    /// Did this iteration change state / repaint (RT-01)? A coalesced
+    /// no-op flood reports `false`.
+    pub produced: bool,
+    /// Events folded into this iteration (the first event plus every one
+    /// coalesced) — a high value during pointer motion is the
+    /// input-flood / latency-risk signal.
+    pub events_coalesced: u32,
+    /// First-event-arrival → frame-presented wall time this iteration.
+    pub input_latency: Duration,
+}
+
+/// A caller-supplied per-iteration observer (ADR 0018 §3).
+///
+/// Installed via [`run_with_observer`] / the `*_with_observer` entrypoints
+/// (or read off [`Harness`](crate::Harness) headlessly). It is handed a
+/// by-value [`FrameMetrics`] and **retains no widget state** — the
+/// ADR-0012 caller-owned seam, not a retained tree. The zero-observer
+/// path (`run`/`run_threaded`/`run_pooled`) is byte-identical and pays no
+/// timing cost.
+pub trait FrameObserver {
+    /// Called once per event-loop iteration that rendered.
+    fn on_frame(&mut self, metrics: &FrameMetrics);
+}
+
 /// Runs `app` to completion on a real terminal with **inline** commands,
 /// returning the final app state.
 ///
@@ -659,7 +722,36 @@ where
     S: EventSource,
 {
     // Inline executor, no result channel: identical to the pre-async loop.
-    run_core(app, backend, events, &mut InlineExecutor, None)
+    run_core(app, backend, events, &mut InlineExecutor, None, None)
+}
+
+/// [`run`] with an ADR-0018 [`FrameObserver`] installed: the observer is
+/// invoked once per event-loop iteration with by-value [`FrameMetrics`].
+/// Behaviour is otherwise byte-identical to [`run`]; the only added cost
+/// is the per-iteration `Instant` reads, paid solely while observing.
+///
+/// # Errors
+///
+/// Identical to [`run`].
+pub fn run_with_observer<A, B, S>(
+    app: A,
+    backend: B,
+    events: &mut S,
+    observer: &mut dyn FrameObserver,
+) -> Result<A, RunError<B::Error, S::Error>>
+where
+    A: App,
+    B: Backend,
+    S: EventSource,
+{
+    run_core(
+        app,
+        backend,
+        events,
+        &mut InlineExecutor,
+        None,
+        Some(observer),
+    )
 }
 
 /// Runs `app` like [`run`], but performs each [`Cmd::perform`](crate::Cmd::perform)
@@ -700,7 +792,36 @@ where
     // `results` lives in this frame for the whole loop; `run_core` only drains
     // it, so it borrows rather than owns it (the channel's `Sender` lives in
     // `exec`, which also outlives the call).
-    run_core(app, backend, events, &mut exec, Some(&results))
+    run_core(app, backend, events, &mut exec, Some(&results), None)
+}
+
+/// [`run_threaded`] with an ADR-0018 [`FrameObserver`] installed.
+///
+/// # Errors
+///
+/// Identical to [`run`].
+pub fn run_threaded_with_observer<A, B, S>(
+    app: A,
+    backend: B,
+    events: &mut S,
+    observer: &mut dyn FrameObserver,
+) -> Result<A, RunError<B::Error, S::Error>>
+where
+    A: App,
+    A::Message: Send + 'static,
+    B: Backend,
+    S: EventSource,
+{
+    let (sender, results) = mpsc::channel();
+    let mut exec = ThreadCommandExecutor { sender };
+    run_core(
+        app,
+        backend,
+        events,
+        &mut exec,
+        Some(&results),
+        Some(observer),
+    )
 }
 
 /// Runs `app` like [`run_threaded`], but performs commands on a **bounded
@@ -736,7 +857,37 @@ where
 {
     let (sender, results) = mpsc::channel();
     let mut exec = PooledCommandExecutor::new(sender, workers);
-    run_core(app, backend, events, &mut exec, Some(&results))
+    run_core(app, backend, events, &mut exec, Some(&results), None)
+}
+
+/// [`run_pooled`] with an ADR-0018 [`FrameObserver`] installed.
+///
+/// # Errors
+///
+/// Identical to [`run`].
+pub fn run_pooled_with_observer<A, B, S>(
+    app: A,
+    backend: B,
+    events: &mut S,
+    workers: NonZeroUsize,
+    observer: &mut dyn FrameObserver,
+) -> Result<A, RunError<B::Error, S::Error>>
+where
+    A: App,
+    A::Message: Send + 'static,
+    B: Backend,
+    S: EventSource,
+{
+    let (sender, results) = mpsc::channel();
+    let mut exec = PooledCommandExecutor::new(sender, workers);
+    run_core(
+        app,
+        backend,
+        events,
+        &mut exec,
+        Some(&results),
+        Some(observer),
+    )
 }
 
 /// The **async event loop**: drives `app` over an [`AsyncEventSource`] with a
@@ -951,6 +1102,7 @@ fn run_core<A, B, S>(
     events: &mut S,
     exec: &mut dyn CommandExecutor<A::Message>,
     results: Option<&Receiver<A::Message>>,
+    mut observer: Option<&mut dyn FrameObserver>,
 ) -> Result<A, RunError<B::Error, S::Error>>
 where
     A: App,
@@ -958,6 +1110,10 @@ where
     S: EventSource,
 {
     let mut terminal = Terminal::new(backend).map_err(RunError::Backend)?;
+    // ADR 0018 §3: monotonic observed-frame index; only touched on the
+    // observed path (`observer.is_some()`), so the default loop is
+    // byte-identical and pays no timing cost.
+    let mut frame_no: u64 = 0;
 
     // Mirror `Harness::new`: run `init`, settle its command, render the first
     // frame — so the screen is meaningful before the first input and an
@@ -1092,7 +1248,45 @@ where
                 // exact — every event was still folded — so a skipped
                 // repaint is never observable.
                 if changed {
-                    render(&mut terminal, &app).map_err(RunError::Backend)?;
+                    if let Some(obs) = observer.as_deref_mut() {
+                        let (view, flush) =
+                            render_timed(&mut terminal, &app).map_err(RunError::Backend)?;
+                        let total = batch_start.elapsed();
+                        obs.on_frame(&FrameMetrics {
+                            frame: frame_no,
+                            logic: total.saturating_sub(view + flush),
+                            view,
+                            flush,
+                            total,
+                            produced: true,
+                            events_coalesced: u32::try_from(coalesced)
+                                .unwrap_or(u32::MAX)
+                                .saturating_add(1),
+                            input_latency: total,
+                        });
+                        frame_no += 1;
+                    } else {
+                        render(&mut terminal, &app).map_err(RunError::Backend)?;
+                    }
+                } else if let Some(obs) = observer.as_deref_mut() {
+                    // RT-01: a no-op coalesced flood skipped the repaint.
+                    // Still report the iteration so the overlay can *show*
+                    // the skip working (high `events_coalesced`,
+                    // `produced: false`, zero `view`/`flush`).
+                    let total = batch_start.elapsed();
+                    obs.on_frame(&FrameMetrics {
+                        frame: frame_no,
+                        logic: total,
+                        view: Duration::ZERO,
+                        flush: Duration::ZERO,
+                        total,
+                        produced: false,
+                        events_coalesced: u32::try_from(coalesced)
+                            .unwrap_or(u32::MAX)
+                            .saturating_add(1),
+                        input_latency: total,
+                    });
+                    frame_no += 1;
                 }
             }
             None => match rate {
@@ -1101,13 +1295,31 @@ where
                 // ticks coalesce, then route the tick through the **same**
                 // `update`/`settle` path as input.
                 Some(rate) => {
+                    let tick_t0 = observer.as_ref().map(|_| Instant::now());
                     next_tick = Some(Instant::now() + rate);
                     if let Some(message) = app.on_tick() {
                         if step(&mut app, message, exec) == Settled::Quit {
                             running = false;
                         }
                     }
-                    render(&mut terminal, &app).map_err(RunError::Backend)?;
+                    if let Some(obs) = observer.as_deref_mut() {
+                        let (view, flush) =
+                            render_timed(&mut terminal, &app).map_err(RunError::Backend)?;
+                        let total = tick_t0.map(|t| t.elapsed()).unwrap_or_default();
+                        obs.on_frame(&FrameMetrics {
+                            frame: frame_no,
+                            logic: total.saturating_sub(view + flush),
+                            view,
+                            flush,
+                            total,
+                            produced: true,
+                            events_coalesced: 0,
+                            input_latency: Duration::ZERO,
+                        });
+                        frame_no += 1;
+                    } else {
+                        render(&mut terminal, &app).map_err(RunError::Backend)?;
+                    }
                 }
                 // No tick rate and `Ok(None)`. Inline: an *unbounded* wait
                 // ended => input exhausted for good, stop (terminal closed /
