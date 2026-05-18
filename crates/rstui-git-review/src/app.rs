@@ -132,6 +132,11 @@ struct Geom {
     list: Rect,
     /// The detail pane (outer, including its border).
     detail: Rect,
+    /// The Edit-mode editor text rect (inside the block + line-number
+    /// gutter), recorded by `view_detail` so the reducer can
+    /// `scroll_into_view` against the *real* laid-out viewport — the
+    /// model←geometry feedback the scroll fix needs. `None` outside Edit.
+    edit_text: Option<Rect>,
     /// `true` when the split is vertical (history on top).
     vertical: bool,
 }
@@ -154,7 +159,16 @@ pub struct GitReview {
     diff: String,
     /// The sha `diff`/`files` belong to, so a stale async result is ignored.
     detail_for: Option<String>,
-    diff_scroll: u16,
+    /// Vertical scroll of the diff (now `usize`: `Diff::scroll` widened so
+    /// patches taller than 65 535 rows are reachable — gap K).
+    diff_scroll: usize,
+    /// First content column drawn in the diff — horizontal scroll for long
+    /// code lines (`Diff::col`, gap B).
+    diff_col: usize,
+    /// Caller-owned 2D editor scroll, kept caret-visible by
+    /// [`TextArea::scroll_into_view`] after every motion/edit (the deferred
+    /// `scroll_into_view` seam — fixes the computed/unclamped scroll defect).
+    editor_scroll: (usize, usize),
     files: Vec<(String, String)>,
     mode: Mode,
     focus: Focus,
@@ -255,6 +269,8 @@ impl GitReview {
             diff: String::new(),
             detail_for: None,
             diff_scroll: 0,
+            diff_col: 0,
+            editor_scroll: (0, 0),
             files: Vec::new(),
             mode: Mode::Review,
             focus: Focus::History,
@@ -665,6 +681,16 @@ impl GitReview {
             }
             _ => {}
         }
+        // Keep the caret on screen: recompute the caller-owned editor
+        // scroll against the real text viewport the last frame laid out
+        // (the deferred scroll_into_view seam — no more caret-off-screen,
+        // no scrolling past the end). `None` only before the first frame,
+        // where the caret is at the origin anyway.
+        if let Some(tr) = self.geom.get().and_then(|g| g.edit_text) {
+            self.editor_scroll =
+                self.editor
+                    .scroll_into_view(self.editor_scroll, (tr.width, tr.height), 3);
+        }
         Cmd::none()
     }
 
@@ -688,14 +714,45 @@ impl GitReview {
             },
             KeyCode::PageDown => self.diff_scroll = self.diff_scroll.saturating_add(15),
             KeyCode::PageUp => self.diff_scroll = self.diff_scroll.saturating_sub(15),
-            KeyCode::Home if self.focus == Focus::Detail => self.diff_scroll = 0,
+            KeyCode::Left if self.focus == Focus::Detail => {
+                self.diff_col = self.diff_col.saturating_sub(8);
+            }
+            KeyCode::Right if self.focus == Focus::Detail => {
+                self.diff_col = self.diff_col.saturating_add(8);
+            }
+            KeyCode::Home if self.focus == Focus::Detail => {
+                self.diff_scroll = 0;
+                self.diff_col = 0;
+            }
             _ => {}
         }
-        let max = self.diff.lines().count() as u16;
-        if self.diff_scroll > max {
-            self.diff_scroll = max;
-        }
+        // Clamp to the real viewport so the diff never scrolls into blank
+        // space past the end (fixes the clamp-to-total-rows defect; uses
+        // the cheap `Diff::row_count` seam, not an O(parse) `lines()` per
+        // key).
+        self.clamp_detail_scroll();
         Cmd::none()
+    }
+
+    /// Clamp [`diff_scroll`](Self::diff_scroll) so the diff never scrolls
+    /// past the last screenful into blank space. Reads the real detail-pane
+    /// viewport recorded by the last frame ([`Geom`]) and the cheap
+    /// [`Diff::row_count`] accessor — the model←geometry feedback the
+    /// scroll fix needs (ADR 0004: scroll is reducer-owned; the reducer
+    /// learns the laid-out extent from the frame it drew).
+    fn clamp_detail_scroll(&mut self) {
+        let Some(g) = self.geom.get() else { return };
+        let vw = g.detail.width.saturating_sub(2); // pane border
+        let vh = g.detail.height.saturating_sub(2) as usize;
+        if self.diff.is_empty() || vw == 0 {
+            return;
+        }
+        let mut d = Diff::new(self.diff.as_str()).syntax(true);
+        if self.diff_split {
+            d = d.side_by_side();
+        }
+        let max = d.row_count(vw).saturating_sub(vh);
+        self.diff_scroll = self.diff_scroll.min(max);
     }
 
     /// The keymap settings panel rows, projected from the **live** keymap
@@ -893,6 +950,7 @@ impl GitReview {
             }
             _ => {}
         }
+        self.clamp_detail_scroll();
         Cmd::none()
     }
 
@@ -904,16 +962,27 @@ impl GitReview {
             let block = self.pane(format!(" {path}{dirty}  ·  Ctrl-S save · Esc back "), true);
             let inner = block.inner(area);
             frame.render_widget(block, area);
-            let gutter = LineNumberGutter::new(1, self.editor.row_count())
-                .style(self.theme.dim())
-                .min_number_width(3);
+            // The gutter is scrolled WITH the text (first visible number =
+            // first visible doc row + 1) — fixes the gutter/content desync.
+            let gutter = LineNumberGutter::new(
+                self.editor_scroll.0 as u64 + 1,
+                self.editor.row_count().saturating_sub(self.editor_scroll.0),
+            )
+            .style(self.theme.dim())
+            .min_number_width(3);
             let text_rect = gutter.inner(inner);
             frame.render_widget(gutter, inner);
-            let (crow, _) = self.editor.cursor();
+            // Record the real laid-out text viewport so the reducer can
+            // scroll_into_view against it (model←geometry feedback).
+            let mut gm = self.geom.get();
+            if let Some(g) = gm.as_mut() {
+                g.edit_text = Some(text_rect);
+            }
+            self.geom.set(gm);
             frame.render_widget(
                 Editor::new(&self.editor)
                     .focused(true)
-                    .scroll((crow.saturating_sub(4), 0))
+                    .scroll(self.editor_scroll)
                     .cursor_style(self.theme.selection()),
                 text_rect,
             );
@@ -944,7 +1013,8 @@ impl GitReview {
         } else {
             let d = Diff::new(self.diff.as_str())
                 .syntax(true)
-                .scroll(self.diff_scroll);
+                .scroll(self.diff_scroll)
+                .col(self.diff_col);
             let d = if self.diff_split { d.side_by_side() } else { d };
             frame.render_widget(d.block(block), area);
         }
@@ -1110,6 +1180,7 @@ impl App for GitReview {
             body,
             list: list_a,
             detail: detail_a,
+            edit_text: None, // set by view_detail's Edit branch below
             vertical: self.orient == Orient::Top,
         }));
         self.view_history(frame, list_a);
