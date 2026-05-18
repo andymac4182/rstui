@@ -12,6 +12,12 @@
 //!   map ship; the user cycles them at runtime and the whole UI (help,
 //!   footer, settings) re-derives from the active one — fixing the Textual
 //!   bug where the footer didn't follow a remap.
+//! - **Contexts (modes & text input).** A binding can be scoped to a
+//!   named [`Capture`] context ([`Keymap::bind_in`]); the app activates
+//!   one with [`Keymaps::set_context`] on focus/mode change. A
+//!   [`Capture::Text`] context makes a focused field swallow its raw
+//!   keystrokes automatically — the Vim-mode / VS Code-`when` /
+//!   Textual-focus model, as pure data. See the section below.
 //! - **Per-OS layers.** Bindings are built with `cfg!(target_os = …)` so
 //!   macOS gets `⌘`-native chords while Linux/Windows get `Ctrl`/`Super`,
 //!   and [`Chord::display`] renders `⌘⌥⌃⇧` vs `Ctrl/Alt/Super/Shift`.
@@ -24,6 +30,40 @@
 //!   picks a map by name. A user customises keys by editing a file; no
 //!   bespoke app UI required (the kitchen sink wires both through
 //!   `RSTUI_KEYMAP`, mirroring `RSTUI_THEME`).
+//!
+//! # Contexts (modes & text input)
+//!
+//! A key often means different things in different places — `q` quits the
+//! shell but *types* into a focused field. Rather than hand-ordering
+//! `if focused { … }` guards (silent when wrong), scope the binding and
+//! flip one value on focus/mode change — the model Vim (modes), VS Code
+//! (`when`) and Textual (per-widget focus) all use:
+//!
+//! ```
+//! use rstui_keymap::{Action, Capture, Keymap, Keymaps};
+//! const SAVE: Action = Action::Custom("app.save");
+//!
+//! let mut keymaps = Keymaps::from_maps(vec![
+//!     Keymap::new("app")
+//!         .bound(Action::Quit, &["q"])            // global
+//!         .bound_in("editor", SAVE, &["ctrl+s"])  // only while editing
+//!         .bound_in("editor", Action::Quit, &["esc"]),
+//! ]);
+//! keymaps.register_context("editor", Capture::Text);
+//!
+//! // …on focus change, one call (no guard cascade):
+//! keymaps.set_context("editor");   // entering the text field
+//! // now `q` is `Dispatch::Fall` (typed), `ctrl+s` still fires SAVE.
+//! keymaps.set_context(None);       // leaving it — globals are back
+//! ```
+//!
+//! [`Capture::Layer`] (the default) is a normal mode: its binds shadow
+//! globals but unbound keys fall back to the global map.
+//! [`Capture::Text`] is a focused input / Vim-insert: only that context's
+//! *explicit* binds resolve, everything else is `Fall` (raw to the
+//! widget). Nest with [`Keymaps::push_context`] / `pop_context` (a modal
+//! over an editor). An app that never sets a context behaves exactly as
+//! before — contexts are purely additive.
 //!
 //! # The user config file
 //!
@@ -402,11 +442,30 @@ impl Trigger {
     }
 }
 
-/// One action bound to its triggers.
+/// One action bound to its triggers, optionally scoped to a **context**
+/// (`None` = global, eligible in every context — today's behaviour).
 #[derive(Debug, Clone)]
 struct Bind {
     action: Action,
     triggers: Vec<Trigger>,
+    context: Option<&'static str>,
+}
+
+/// How an active context treats keys it does not explicitly bind — the
+/// Vim-mode / VS Code-`when` axis, as pure data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Capture {
+    /// A normal mode/scope (e.g. a "diff pane"): its binds **shadow**
+    /// globals, but a key it doesn't bind still falls back to the global
+    /// map. The default.
+    #[default]
+    Layer,
+    /// A **text-input** context (a focused field, an editor, Vim insert
+    /// mode): only this context's *explicit* binds resolve — every other
+    /// key is `Dispatch::Fall`, so the widget gets its raw keystrokes and
+    /// `q` types `q`. Bind the few in-field commands with
+    /// [`Keymap::bind_in`] (e.g. `ctrl+s` → Save) and they still fire.
+    Text,
 }
 
 /// A named, self-contained keymap.
@@ -457,6 +516,22 @@ impl Keymap {
         self
     }
 
+    /// Bind `action` **only while `context` is active** (Vim-mode / VS Code
+    /// `when`). The app activates the context with
+    /// [`Keymaps::set_context`]/[`push_context`](Keymaps::push_context) on
+    /// focus or mode change; outside it this binding does not exist. A
+    /// context binding **shadows** a global one for the same chord.
+    pub fn bind_in(&mut self, context: &'static str, action: Action, specs: &[&str]) {
+        self.bind_ctx(Some(context), action, specs);
+    }
+
+    /// Builder form of [`Keymap::bind_in`] (chainable).
+    #[must_use]
+    pub fn bound_in(mut self, context: &'static str, action: Action, specs: &[&str]) -> Self {
+        self.bind_ctx(Some(context), action, specs);
+        self
+    }
+
     /// A `Key` trigger equal to this keymap's leader is invalid — the
     /// prefix is reserved, it can never also fire a plain action.
     fn keeps(&self, t: &Trigger) -> bool {
@@ -464,9 +539,16 @@ impl Keymap {
     }
 
     /// Bind `action` to one or more trigger specs (`"ctrl+s"`, `"g s"`,
-    /// `"<leader> p"`). Per-keymap-leader-safe and de-duped; call once per
-    /// action when building a map.
+    /// `"<leader> p"`), **globally** (eligible in every context).
+    /// Per-keymap-leader-safe and de-duped; call once per action.
     pub fn bind(&mut self, action: Action, specs: &[&str]) {
+        self.bind_ctx(None, action, specs);
+    }
+
+    /// Shared implementation of [`bind`](Self::bind) /
+    /// [`bind_in`](Self::bind_in): a global (`context == None`) or
+    /// context-scoped binding.
+    fn bind_ctx(&mut self, context: Option<&'static str>, action: Action, specs: &[&str]) {
         let mut triggers: Vec<Trigger> = Vec::new();
         for s in specs {
             if let Some(t) = Trigger::parse(s, self.leader) {
@@ -477,7 +559,11 @@ impl Keymap {
                 }
             }
         }
-        self.binds.push(Bind { action, triggers });
+        self.binds.push(Bind {
+            action,
+            triggers,
+            context,
+        });
     }
 
     /// Bind the nine screen-jump digits, each to its own `Goto(n)` so
@@ -489,6 +575,7 @@ impl Keymap {
                 self.binds.push(Bind {
                     action: Action::Goto(n),
                     triggers: vec![t],
+                    context: None,
                 });
             }
         }
@@ -510,7 +597,11 @@ impl Keymap {
         if let Some(b) = self.binds.iter_mut().find(|b| b.action == action) {
             b.triggers = triggers;
         } else {
-            self.binds.push(Bind { action, triggers });
+            self.binds.push(Bind {
+                action,
+                triggers,
+                context: None,
+            });
         }
     }
 
@@ -588,6 +679,13 @@ pub struct Keymaps {
     overrides: Vec<(Action, String)>,
     /// The first chord of an in-flight sequence + the tick it must beat.
     pending: Option<(Chord, u64)>,
+    /// The active **context stack** (Vim modes / VS Code focus chain). The
+    /// top decides eligibility + [`Capture`]; empty = only globals resolve
+    /// (exactly the pre-context behaviour, so this is fully back-compat).
+    ctx: Vec<&'static str>,
+    /// Declared `(context, Capture)`; unregistered contexts default to
+    /// [`Capture::Layer`].
+    ctx_kinds: Vec<(&'static str, Capture)>,
 }
 
 impl Default for Keymaps {
@@ -606,6 +704,8 @@ impl Keymaps {
             active: 0,
             overrides: Vec::new(),
             pending: None,
+            ctx: Vec::new(),
+            ctx_kinds: Vec::new(),
         }
     }
 
@@ -625,6 +725,8 @@ impl Keymaps {
             active: 0,
             overrides: Vec::new(),
             pending: None,
+            ctx: Vec::new(),
+            ctx_kinds: Vec::new(),
         }
     }
 
@@ -685,6 +787,21 @@ impl Keymaps {
             .collect();
         for km in &mut self.sets {
             km.bind(action, &specs);
+        }
+    }
+
+    /// Like [`Keymaps::bind`], but **context-scoped** ([`Keymap::bind_in`]):
+    /// the binding is eligible only while `context` is active. Use it for
+    /// the few commands that must still fire inside a [`Capture::Text`]
+    /// context (e.g. `Ctrl+S`/clipboard chords while a field is focused).
+    pub fn bind_in(&mut self, context: &'static str, action: Action, keys: &str) {
+        let specs: Vec<&str> = keys
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        for km in &mut self.sets {
+            km.bind_in(context, action, &specs);
         }
     }
 
@@ -777,6 +894,72 @@ impl Keymaps {
         self.sets[self.active].name
     }
 
+    /// Declare how an activated `context` treats keys it doesn't bind
+    /// (the Vim-mode / VS Code-`when` axis). Unregistered contexts default
+    /// to [`Capture::Layer`]; a focused text field / editor / Vim-insert
+    /// should be [`Capture::Text`]. Call once at setup.
+    pub fn register_context(&mut self, context: &'static str, capture: Capture) {
+        self.ctx_kinds.retain(|(n, _)| *n != context);
+        self.ctx_kinds.push((context, capture));
+    }
+
+    /// Replace the active context — the everyday "the current mode / the
+    /// focused field changed" call, safe to call **every key** (apps
+    /// derive it from focus state each event). `Some(name)` makes exactly
+    /// that context active; `None` clears back to globals-only.
+    ///
+    /// **Idempotent:** when the resulting context is unchanged this is a
+    /// no-op — in particular it does *not* touch a half-typed leader, so
+    /// driving it per-key never breaks a `⟨leader⟩ x` sequence. A *real*
+    /// context change does cancel a pending prefix (switching focus
+    /// mid-sequence should not silently complete it).
+    pub fn set_context(&mut self, context: impl Into<Option<&'static str>>) {
+        let next = context.into();
+        let unchanged = match (next, self.ctx.as_slice()) {
+            (None, []) => true,
+            (Some(c), [only]) => *only == c,
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        self.ctx.clear();
+        if let Some(c) = next {
+            self.ctx.push(c);
+        }
+        self.pending = None;
+    }
+
+    /// Push a context for **nesting** (a modal over an editor over the
+    /// shell); [`pop_context`](Self::pop_context) returns to the one
+    /// beneath. Use [`set_context`](Self::set_context) for the flat
+    /// single-mode case.
+    pub fn push_context(&mut self, context: &'static str) {
+        self.ctx.push(context);
+        self.pending = None;
+    }
+
+    /// Pop the top context, returning it (`None` when the stack is empty).
+    pub fn pop_context(&mut self) -> Option<&'static str> {
+        let popped = self.ctx.pop();
+        self.pending = None;
+        popped
+    }
+
+    /// The active (top-of-stack) context, or `None` when only globals
+    /// apply.
+    pub fn context(&self) -> Option<&'static str> {
+        self.ctx.last().copied()
+    }
+
+    /// The [`Capture`] of `context` (unregistered ⇒ [`Capture::Layer`]).
+    fn capture_of(&self, context: &str) -> Capture {
+        self.ctx_kinds
+            .iter()
+            .find(|(n, _)| *n == context)
+            .map_or(Capture::Layer, |(_, c)| *c)
+    }
+
     /// Resolve a key event to an [`Action`], threading the leader-sequence
     /// state machine.
     ///
@@ -788,7 +971,36 @@ impl Keymaps {
     /// an app whose keymap has no leader sequence can pass `0` forever.
     /// Most apps should call [`Keymaps::dispatch`] instead.
     pub fn resolve(&mut self, ev: &KeyEvent, now_ms: u64) -> Option<Action> {
-        let km = self.effective();
+        let mut km = self.effective();
+
+        // Context eligibility (Vim modes / VS Code `when`), pure data —
+        // always applied so a context-scoped bind is invisible unless its
+        // context is active:
+        //  • top context is `Text`  → only that context's *explicit* binds
+        //    survive; every other key Falls, so the focused field gets its
+        //    raw keystrokes and `q` types `q`.
+        //  • otherwise (`Layer`/none) → context binds (anywhere on the
+        //    active stack) come first so they **shadow** globals; globals
+        //    stay as the fallback; out-of-context binds are dropped.
+        // An empty stack ⇒ globals only ⇒ byte-identical to the
+        // pre-context engine (full back-compat: the shipped maps are all
+        // global, and their order is preserved).
+        let top = self.ctx.last().copied();
+        if top.is_some_and(|t| self.capture_of(t) == Capture::Text) {
+            km.binds.retain(|b| b.context == top);
+        } else {
+            let mut scoped: Vec<Bind> = Vec::new();
+            let mut global: Vec<Bind> = Vec::new();
+            for b in km.binds.drain(..) {
+                match b.context {
+                    None => global.push(b),
+                    Some(c) if self.ctx.contains(&c) => scoped.push(b),
+                    Some(_) => {} // a context that is not active — drop
+                }
+            }
+            scoped.append(&mut global); // context binds shadow globals
+            km.binds = scoped;
+        }
 
         // An armed, un-expired leader: this key completes (or breaks) it.
         if let Some((first, deadline)) = self.pending {
@@ -1093,6 +1305,123 @@ mod tests {
         assert_eq!(
             k.dispatch(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 100),
             Dispatch::Act(Action::Palette)
+        );
+    }
+
+    #[test]
+    fn text_capture_context_falls_bare_keys_but_keeps_explicit_binds() {
+        const SAVE: Action = Action::Custom("app.save");
+        let map = Keymap::new("app")
+            .bound(Action::Quit, &["q"]) // global
+            .bound_in("input", SAVE, &["ctrl+s"]) // only while typing
+            .bound_in("input", Action::Quit, &["esc"]); // leave the field
+        let mut k = Keymaps::from_maps(vec![map]);
+        k.register_context("input", Capture::Text);
+
+        // No context: `q` is the global Quit.
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('q'), KeyModifiers::NONE), 0),
+            Dispatch::Act(Action::Quit)
+        );
+
+        // Focus a text field → `q` now *types* (Fall), the global Quit is
+        // gone, but the explicit in-field commands still fire.
+        k.set_context("input");
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('q'), KeyModifiers::NONE), 0),
+            Dispatch::Fall,
+            "a bare key in a Text context is raw input, never a command"
+        );
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('s'), KeyModifiers::CONTROL), 0),
+            Dispatch::Act(SAVE),
+            "an explicit in-context chord still resolves"
+        );
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Esc, KeyModifiers::NONE), 0),
+            Dispatch::Act(Action::Quit)
+        );
+
+        // Blur the field → globals are back, no guard ordering needed.
+        k.set_context(None);
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('q'), KeyModifiers::NONE), 0),
+            Dispatch::Act(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn layer_context_shadows_globals_then_falls_back() {
+        const NEXT: Action = Action::Custom("diff.next");
+        let map = Keymap::new("app")
+            .bound(Action::Help, &["?"]) // global
+            .bound(Action::Quit, &["q"]) // global
+            .bound_in("diff", NEXT, &["j"]) // diff-pane only
+            .bound_in("diff", Action::Help, &["?"]); // shadows global `?`
+        let mut k = Keymaps::from_maps(vec![map]);
+        // "diff" is unregistered → defaults to Capture::Layer.
+        k.set_context("diff");
+        // The context binding for `?` shadows the global one (same action
+        // here, but proves precedence) and `j` is now a command…
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('j'), KeyModifiers::NONE), 0),
+            Dispatch::Act(NEXT)
+        );
+        // …while a key the context does not bind falls back to the global.
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('q'), KeyModifiers::NONE), 0),
+            Dispatch::Act(Action::Quit),
+            "Layer keeps globals as the fallback"
+        );
+        // A context binding not present anywhere is Fall.
+        k.set_context(None);
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('j'), KeyModifiers::NONE), 0),
+            Dispatch::Fall,
+            "the diff-only binding does not exist outside its context"
+        );
+    }
+
+    #[test]
+    fn push_pop_context_nests_and_restores() {
+        let mut k = Keymaps::new();
+        assert_eq!(k.context(), None);
+        k.push_context("editor");
+        k.push_context("modal");
+        assert_eq!(k.context(), Some("modal"));
+        assert_eq!(k.pop_context(), Some("modal"));
+        assert_eq!(k.context(), Some("editor"), "pop restores the one beneath");
+        assert_eq!(k.pop_context(), Some("editor"));
+        assert_eq!(k.context(), None);
+        assert_eq!(k.pop_context(), None, "popping an empty stack is a no-op");
+    }
+
+    #[test]
+    fn idempotent_set_context_every_key_does_not_break_a_leader() {
+        // Apps derive the context from focus and call set_context on every
+        // key. An unchanged set_context must NOT cancel a half-typed
+        // leader, or `⟨leader⟩ x` would never complete.
+        let mut k = Keymaps::new();
+        k.cycle();
+        k.cycle(); // Leader map (Ctrl+X prefix)
+        let lead = ev(KeyCode::Char('x'), KeyModifiers::CONTROL);
+
+        k.set_context(None); // per-key call, context unchanged…
+        assert_eq!(k.dispatch(&lead, 0), Dispatch::Pending, "leader arms");
+        k.set_context(None); // …idempotent: must not clear the pending prefix
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 10),
+            Dispatch::Act(Action::Palette),
+            "the sequence still completes — set_context was a no-op"
+        );
+
+        // But a *real* context change does cancel an in-flight leader.
+        assert_eq!(k.dispatch(&lead, 0), Dispatch::Pending);
+        k.set_context("modal");
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 10),
+            Dispatch::Fall,
+            "switching context mid-sequence cancels the prefix"
         );
     }
 

@@ -14,7 +14,7 @@ use rstui_core::{
     Constraint, Event, Frame, KeyCode, KeyEvent, KeyModifiers, Layout, Line, MouseButton,
     MouseEventKind, Position, Rect, Span, Style, TextArea,
 };
-use rstui_keymap::{Action, Chord, Dispatch, Keymap, Keymaps};
+use rstui_keymap::{Action, Capture, Chord, Dispatch, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd};
 use rstui_widgets::{
     Block, BorderType, Diff, Editor, HelpEntry, HelpOverlay, KeymapRow, KeymapView,
@@ -75,7 +75,13 @@ fn git_review_keymaps() -> Keymaps {
     km.bind(GROW, &["=", "+"]);
     km.bind(GRAPH, &["\\"]);
     km.bind(THEME, &["ctrl+t"]);
-    Keymaps::from_maps(vec![km])
+    let mut k = Keymaps::from_maps(vec![km]);
+    // The filter row and the file editor are text inputs: a Capture::Text
+    // context, so while one is focused every command key is raw input
+    // (`Fall`) — no hand-ordered guards, no command can fire mid-type.
+    // ADR 0020.
+    k.register_context("input", Capture::Text);
+    k
 }
 
 /// The display caps for a `keys_for` string: `"⌃K / :"` → `["⌃K", ":"]`,
@@ -413,18 +419,19 @@ impl GitReview {
         if self.keymap_panel {
             return self.on_key_keymap(code, mods);
         }
-        if self.filtering {
-            return self.on_key_filter(code);
-        }
-        if self.mode == Mode::Edit {
-            return self.on_key_edit(code, mods);
-        }
-        // Review: commands through the keymap, motions raw. One call —
-        // git-review's map has no leader sequence, so it needs no clock
-        // and no animation loop: `0` is correct forever.
+        // Text inputs are a Capture::Text *context*, not a hand-ordered
+        // guard cascade (ADR 0020): the filter row / editor activates
+        // "input", so `dispatch` returns `Fall` for typed keys — a command
+        // *cannot* fire mid-type, by construction — and the raw key is
+        // routed to that text handler. One value, set on focus/mode; no
+        // leader in this map so the clock is `0`.
+        self.keymaps
+            .set_context((self.filtering || self.mode == Mode::Edit).then_some("input"));
         match self.keymaps.dispatch(&KeyEvent::new(code, mods), 0) {
             Dispatch::Act(action) => self.do_action(action),
             Dispatch::Pending => Cmd::none(), // leader armed — swallow
+            Dispatch::Fall if self.filtering => self.on_key_filter(code),
+            Dispatch::Fall if self.mode == Mode::Edit => self.on_key_edit(code, mods),
             Dispatch::Fall => self.on_key_motion(code),
         }
     }

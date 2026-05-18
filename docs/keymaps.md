@@ -21,7 +21,8 @@ owns no terminal or runtime state, and never panics on any input.
 | `Chord` | A `KeyCode` + modifier set, **normalised** so `Ctrl+C`/`Ctrl+c`/`Shift`-implied uppercase compare equal. `parse("ctrl+shift+p")`, `from_event(&KeyEvent)`, a `parse`-able `spec()`, and an OS-aware `display()` (`⌘⌥⌃⇧` on macOS, `Ctrl/Alt/Super` elsewhere). |
 | `Trigger` | A single `Chord`, **or** a two-chord sequence (opencode's `<leader> x`): a prefix chord then a key, within a timeout. |
 | `Keymap` | A named set of `Action → Trigger`s + the leader chord/timeout. `keys_for(action)` is the **reverse lookup** the UI reads; `override_action(action, keys)` remaps (or `"none"` disables). |
-| `Keymaps` | The registry: several keymaps, the active one, the user-override layer **merged over** it, and the leader state machine. `dispatch(&KeyEvent, now_ms) -> Dispatch` (`Act`/`Pending`/`Fall`) is the one call the reducer makes; `now_ms` is a monotonic-ms clock, or just `0` when the map has no leader sequence. |
+| `Keymaps` | The registry: several keymaps, the active one, the user-override layer **merged over** it, the leader state machine, and the **active context stack**. `dispatch(&KeyEvent, now_ms) -> Dispatch` (`Act`/`Pending`/`Fall`) is the one call the reducer makes; `now_ms` is a monotonic-ms clock, or just `0` when the map has no leader sequence. |
+| `Context` + `Capture` | A binding may be scoped to a named context (`bind_in`); `Keymaps::set_context` activates one on focus/mode change. `Capture::Layer` (default) shadows globals but falls back to them; `Capture::Text` is a focused field — only its explicit binds resolve, every other key is raw (`Fall`). The Vim-mode / VS Code-`when` / Textual-focus model (ADR 0020). |
 
 The golden rule, same as Textual: **the shell reacts to actions, never to
 physical keys**, and the UI is a *reverse lookup* of the live keymap so it
@@ -91,6 +92,53 @@ animate — it merely *reuses* that existing tick for the cosmetic
 `expire`; git-review and acp-client run **no loop**, idle at zero cost,
 and pass `dispatch(&ev, 0)`. Add an animation loop when you have
 animation, not because of keymaps.
+
+## Contexts: text inputs & modes (the easy way)
+
+A key means different things in different places — `q` quits the shell
+but must *type* into a focused field. **Do not** hand-order `if focused {
+return … }` guards before `dispatch` (invisible, untyped, silently wrong
+when broken). Scope the binding and flip one value on focus/mode change —
+the model Vim (modes), VS Code (`when`) and Textual (per-widget focus)
+all use, here as pure data (ADR 0020):
+
+```rust
+use rstui_keymap::{Action, Capture, Keymap, Keymaps};
+const SAVE: Action = Action::Custom("app.save");
+
+let mut keymaps = Keymaps::from_maps(vec![
+    Keymap::new("app")
+        .bound(Action::Quit, &["q"])              // global
+        .bound_in("editor", SAVE, &["ctrl+s"])    // only while editing
+        .bound_in("editor", Action::Quit, &["esc"]),
+]);
+keymaps.register_context("editor", Capture::Text);
+
+// …in the reducer, exactly one call on focus/mode change:
+keymaps.set_context("editor");   // entered the field
+keymaps.set_context(None);       // left it
+```
+
+While `"editor"` is active, `dispatch(&ev, 0)` returns **`Fall` for `q`**
+(so the widget types it) yet still **`Act(SAVE)` for `Ctrl+S`** — no
+guard ordering, no `!ctrl && Char(_)` predicate. A context-scoped binding
+*does not exist* outside its context, so `q` **cannot** fire Quit while
+the editor is active even if the wiring forgot a guard — the footgun is
+gone by construction.
+
+- **`Capture::Text`** — a focused input / Vim-insert: only that
+  context's explicit binds resolve, everything else is raw `Fall`.
+- **`Capture::Layer`** (default) — a normal mode/pane (a "diff" view): its
+  binds *shadow* globals, but an unbound key falls back to the global
+  map. Register with `register_context(name, Capture::Layer)` or just
+  don't register (Layer is the default).
+- **Nesting** — `push_context`/`pop_context` for a modal over an editor
+  over the shell; `set_context` is the flat single-mode shortcut.
+
+The irreducible part: *something* must tell the keymap when focus/mode
+changes (only the app knows what's focused). The win is **one typed
+value vs fragile ordering**. An app that never sets a context is
+byte-identical to before — contexts are purely additive.
 
 ## Multiple keymaps
 
@@ -256,6 +304,9 @@ rebind, disable, per-OS) for the worked patterns.
 
 - [ADR 0015](adr/0015-keymap-architecture.md) — why a shared crate and
   this shape.
+- [ADR 0020](adr/0020-keymap-contexts.md) — contexts (modes & text
+  input): the Vim/`when`/Textual synthesis that amends 0015's
+  shell-level-only stance.
 - `rstui-keymap` crate rustdoc — the canonical API reference.
 - [Architecture](architecture.md) · [Runtime](runtime.md) — the
   pure-reducer model the keymap fits into.

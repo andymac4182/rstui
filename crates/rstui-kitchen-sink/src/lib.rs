@@ -260,6 +260,15 @@ impl KitchenSink {
                 // and a user keymap file can remap `ks.theme`.
                 let mut k = keymap::Keymaps::new();
                 k.bind(THEME_PICK, "ctrl+t");
+                // A focused text screen is a `Capture::Text` context
+                // (ADR 0020): while it is active every bare key is raw
+                // input (`q` types `q`) and only these explicit clipboard
+                // chords still fire — replacing the old
+                // `!ctrl && Char(_)` heuristic with the engine model.
+                k.register_context("text", keymap::Capture::Text);
+                k.bind_in("text", keymap::Action::Copy, "ctrl+c, cmd+c");
+                k.bind_in("text", keymap::Action::Cut, "ctrl+x, cmd+x");
+                k.bind_in("text", keymap::Action::Paste, "ctrl+v, cmd+v");
                 k
             },
             drawer_sel: 0,
@@ -774,14 +783,23 @@ impl App for KitchenSink {
                     }
                     return Cmd::none();
                 }
-                let ctrl = mods.contains(KeyModifiers::CONTROL);
-                // Resolve through the *active* keymap (this also advances
-                // the leader-sequence state machine). The kitchen sink is
-                // the *advanced* consumer: it keeps raw `resolve` (not the
-                // one-call `dispatch`) because it must peek the action —
-                // a clipboard chord fires even while an overlay is up. The
-                // clock is honest ms (~125 ms/frame); `dispatch` is the
-                // simple path the other apps use.
+                // A focused text screen is the `Capture::Text` "text"
+                // context (ADR 0020): activate it so the keymap itself
+                // decides "command vs raw text" — replacing the old
+                // `!ctrl && Char(_)` heuristic. Overlays keep their own
+                // raw path (the palette/drawer own their keys), so the
+                // context is only the *screen* text-entry case.
+                let text_screen = self.overlay == Overlay::None
+                    && self.pane == Pane::Content
+                    && self.screen.is_text_entry();
+                self.keymaps.set_context(text_screen.then_some("text"));
+
+                // Resolve through the *active* keymap + context (this also
+                // advances the leader-sequence state machine). The kitchen
+                // sink keeps raw `resolve` (not the one-call `dispatch`)
+                // because it must peek the action — a clipboard chord
+                // fires even while an overlay is up. Clock is honest ms
+                // (~125 ms/frame); `dispatch` is the simple path others use.
                 let now_ms = self.tick.saturating_mul(125);
                 let action = self.keymaps.resolve(&KeyEvent::new(code, mods), now_ms);
                 let clip = matches!(action, Some(Action::Copy | Action::Cut | Action::Paste));
@@ -795,19 +813,17 @@ impl App for KitchenSink {
                     }
                     return self.key_in_overlay(code);
                 }
-                // Clipboard chords act on every screen (they carry Ctrl/Cmd
-                // and are never a typed character).
+                // Clipboard chords act on every screen (in the text context
+                // they are the only binds that resolve; elsewhere they are
+                // global and never a typed character).
                 if clip {
                     return self.do_action(action.unwrap());
                 }
-                // A focused text screen owns every plain character (so a
-                // keymap key like `q`/`:`/a digit *types* instead of firing
-                // its action) — non-char keys still reach the keymap.
-                if self.pane == Pane::Content
-                    && self.screen.is_text_entry()
-                    && !ctrl
-                    && matches!(code, KeyCode::Char(_))
-                {
+                // In a text screen the keymap returned no command for this
+                // key (the `Capture::Text` context made it raw), so a
+                // printable char *types* — `q`/`:`/a digit included.
+                // Non-char keys (arrows/Enter) still fall to screen routing.
+                if text_screen && action.is_none() && matches!(code, KeyCode::Char(_)) {
                     let out = self.screens.on_key(self.screen, code, self.tick);
                     if let Some((level, body)) = out.toast {
                         self.notify(level, body);
