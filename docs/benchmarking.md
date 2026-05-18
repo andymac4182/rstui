@@ -104,8 +104,9 @@ ways so it round-trips); regenerate it with `--save` on a quiet
 machine after an intended perf change, and let the human narrative
 live in `docs/perf-review.md` / `docs/perf-review-2.md`. For *live*,
 in-app introspection (per-phase CPU, allocations, FPS, input→frame
-latency, a Chrome-DevTools-style overlay) see the `rstui-devtools`
-crate (ADR 0018).
+latency, a Chrome-DevTools-style overlay) see
+[`docs/devtools.md`](devtools.md) — the `rstui-devtools` crate
+(ADR 0018), the live counterpart to this offline loop.
 
 ## Baseline (indicative, not a gate)
 
