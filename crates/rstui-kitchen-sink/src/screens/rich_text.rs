@@ -29,28 +29,227 @@ const TABS: [&str; 6] = [
     "Spans",
 ];
 
-/// The wrapped-paragraph body.
-const PROSE: &str = "rstui renders styled text through a three-level model: a Span is one run with one Style, a Line is a row of Spans with an optional Alignment, and a Text is a stack of Lines. Widgets never retain this — they project it into the cell Buffer every frame. This Paragraph turns on trimming soft word wrap, so the prose reflows to whatever width the panel currently has; scroll it with the arrow keys or the mouse wheel and the offset is plain caller-owned state the widget only reads. Resize the terminal and the wrap recomputes deterministically with no float math. The same Buffer-stamping contract is everything a third-party widget needs.";
+/// The wrapped-paragraph body — a long-form field guide so the soft-wrap and
+/// the scroll offset can be exercised over hundreds of reflowed rows.
+const PROSE: &str = "\
+THE RSTUI RENDERING MODEL — A FIELD GUIDE
 
-/// The Markdown document (its link exercises the Link type).
+rstui renders styled text through a three-level model: a Span is one run of characters that share one Style, a Line is a row of Spans with an optional Alignment, and a Text is a vertical stack of Lines. Nothing above the cell Buffer is ever retained between frames. A widget is handed an area and a mutable Buffer, it stamps glyphs and styles into the cells it owns, and then it is forgotten. There is no node, no element, no component instance that survives to the next paint. This is the single idea the rest of the framework is built on, and once it is internalised every other design decision reads as an obvious consequence rather than a surprise.
+
+Immediate mode is often described as wasteful, on the theory that rebuilding the whole view every frame must cost more than mutating a small part of a retained tree. In a terminal that intuition is inverted. The output device is a grid of perhaps ten thousand cells, each holding one glyph and a handful of style bits. Composing that grid from scratch is a few hundred microseconds of perfectly cache-friendly work. Diffing a retained widget tree, reconciling it, and then walking it to produce the same grid is more work, not less, and it drags an entire class of stale-state bugs along with it. rstui simply does the cheap thing and keeps doing it.
+
+This Paragraph is the proof. It turns on trimming soft word wrap, so the prose you are reading reflows to whatever width the panel currently has. Drag the terminal wider and the lines lengthen; drag it narrower and they break sooner. The wrap is recomputed every frame from the raw text, and it is recomputed identically whether you are scrolling, resizing, or sitting still, because the wrap function is pure: the same text at the same width always produces the same rows, with no floating-point arithmetic anywhere in the path.
+
+Scroll it with the arrow keys, Page Up and Page Down, or the mouse wheel. The scroll offset is not owned by the widget. It is a single integer that lives in the screen's own state struct, and the Paragraph only ever reads it. When you press Down, a reducer adds one to that integer; on the next frame the widget skips that many composed rows before it starts painting. The widget has no idea you scrolled. It has no idea there was a previous frame at all. It is handed a number and it honours it, and that is the entire contract.
+
+Because the offset is plain caller-owned state, clamping it is the caller's job too, and the caller does it at exactly the moment it has the information to do it well: in the view, where both the rendered row count and the visible height are known. The reducer increments the offset with saturating arithmetic and never worries about the end of the document. The view asks the Paragraph how many rows it composes at the current width, subtracts the viewport height, and pins the offset to that maximum before handing it over. Over-scroll therefore stops cleanly at the last screenful instead of revealing a void of blank rows below the text.
+
+That split — unbounded intent in the reducer, bounded reality in the view — is worth dwelling on, because it recurs everywhere in rstui. Input handlers stay simple and total; they express what the user asked for. Clamping, layout, and truncation are presentation concerns and they live in the view, recomputed from scratch every frame against the geometry that actually exists. A handler never has to know how tall the panel is, and the view never has to remember what the user pressed. The two halves are decoupled by the frame boundary itself.
+
+STYLE RESOLUTION
+
+A Style in rstui is a small set of optional attributes: an optional foreground colour, an optional background colour, and a bitset of modifiers such as bold, italic, underline, reverse, and dim. The optionality matters. A Style does not say what the colour is; it says what the colour should become. Styles compose by patching: when a Line style sits under a Span style, the Span's set fields win and its unset fields fall through to the Line's, which in turn falls through to the widget's base style, which falls through to the theme. Resolution is a fold from the outside in, and because every layer is a patch rather than a full value, a widget can restyle a subtree by setting one field and leaving everything else untouched.
+
+Colour itself is layered. There is the sixteen-colour ANSI palette for terminals that can do no better; there is the two-hundred-and-fifty-six colour indexed palette; and there is twenty-four-bit RGB truecolor for terminals that support it. rstui carries the author's intent at full fidelity and degrades it only at the final write, choosing the closest available representation for the terminal it actually finds itself talking to. The same view code produces a tasteful sixteen-colour rendering over an old serial link and a photographic gradient in a modern emulator, with no branches in the application.
+
+MARKDOWN, MERMAID, AND THE SPAN SAMPLER
+
+The other tabs on this screen are the same contract under more pressure. The Markdown tab parses a CommonMark-ish document into blocks and lays those blocks out into exactly the same Lines and Spans this Paragraph uses, which is why its links are clickable: the reducer hit-tests the click against the same rectangle the renderer drew into, with no retained DOM to consult. The Mermaid tab takes a textual graph description and routes edges through a grid, and the Span sampler shows every styling capability at once. None of them is a special case. They are all just text projected into a Buffer.
+
+A clickable link is the sharpest illustration of why immediate mode is not a limitation here. In a retained framework a link is an object that remembers where it is and carries a click handler. In rstui there is no such object on the next frame. Instead, the same function that lays the document out can be asked where each link rendered, and the reducer compares the click position against those rectangles. The link is not a thing that persists; it is a question the reducer asks of the renderer using the geometry of the current frame. Nothing can go stale because nothing is kept.
+
+PERFORMANCE AS A PROPERTY OF THE SHAPE
+
+People reach for retained trees because they assume the alternative is to redo expensive work. rstui's answer is to make the work cheap and bounded instead of trying to avoid it. Composing this entire screen — parsing nothing, wrapping a few hundred lines of prose, resolving styles, and stamping cells — is a small, predictable amount of arithmetic with no allocation on the steady-state path and no pointer chasing. The cost is a function of the visible area, not of the history of the session, so it does not drift upward the longer the program runs.
+
+That bound is the reason scrolling this document is smooth no matter how long it gets. The widget composes the rows it needs, skips the offset, paints the height, and stops. It does not compose the rows above the viewport that you have scrolled past, and it does not compose the rows below it that you have not reached. Doubling the length of the text does not double the per-frame cost, because the per-frame cost was never a function of the length; it was always a function of the window. This paragraph could be the ten-thousandth in the document and the frame that shows it would cost exactly what the first frame cost.
+
+The deeper lesson is that performance in a terminal UI is a property of the shape of the program, not of a cache bolted onto it. Get the shape right — pure projection, caller-owned state, clamp in the view, never retain — and the fast path is the only path. There is no slow path to fall off, because there is no reconciliation step that can degrade, no tree that can grow unbounded, no subscription that can leak. The framework is fast because there is almost nothing in it, and the little that is in it runs the same way every single frame.
+
+WIDGETS ARE FUNCTIONS, NOT OBJECTS
+
+A rstui widget is closer to a function than to an object. It is constructed cheaply, configured with a few builder calls, consumed by a single render, and dropped. It holds no handle to the runtime, registers no callback, and owns none of the data it draws. Everything it needs arrives as borrowed references for the duration of one render call and is gone afterwards. This is why widgets compose without ceremony: there is no lifecycle to coordinate, no mounting and unmounting, no parent that must be told a child has changed, because there is no persistent child to change.
+
+The practical consequence is that writing a new widget is unusually boring, in the best sense. You implement one method that takes an area and a Buffer and writes glyphs into it. You do not implement initialisation, teardown, change detection, or event subscription, because the framework does not have those concepts. A third-party widget is indistinguishable from a built-in one because the only thing the framework knows how to do is hand something an area and a Buffer and ask it to paint. The Buffer-stamping contract is the whole API surface a widget author has to learn.
+
+State, correspondingly, lives entirely outside the widgets, in plain structs the application owns. A list's selected index, a text field's cursor, this document's scroll offset — all of it is application data, mutated only by the application's reducers, and merely read by the widgets that visualise it. There is exactly one place any piece of state can change, and it is never inside a widget. Debugging a rstui program is therefore mostly reading reducers, because that is the only place anything happens; the view is a deterministic function of the state and cannot surprise you.
+
+LAYOUT IS SOLVED, NOT STORED
+
+Layout in rstui is a constraint solve over a rectangle, run fresh every frame. You describe a split as a list of constraints — fixed lengths, proportional fills, percentages, minimums — and the solver hands back the sub-rectangles. Those rectangles are not stored anywhere. They are computed, used to render, and discarded, exactly like the wrapped rows of this paragraph. Resize the terminal and the solve simply runs again against the new outer rectangle and produces new sub-rectangles, and because the solver is pure the result is fully determined by the inputs.
+
+This is the same idea as the text wrap, one level up. Wrapping turns a width and some text into rows; layout turns a rectangle and some constraints into rectangles. Neither remembers its previous answer, and neither needs to, because recomputing is cheap and recomputing is correct by construction. The bugs that plague retained layout systems — stale measurements, invalidation storms, a child whose size nobody told the parent about — cannot occur in a system that has no stored measurement to invalidate in the first place.
+
+THE FRAME BOUNDARY IS THE ARCHITECTURE
+
+Every hard guarantee rstui makes traces back to one line drawn through the program: the frame boundary. On one side of it is the reducer, which takes an event and the current state and produces the next state. On the other side is the view, which takes the state and produces a Buffer. The reducer never paints and the view never mutates. Events become state, state becomes pixels, and the two transformations never interleave. That single rule is what makes the whole thing predictable enough to reason about by reading it.
+
+Once you trust that boundary, the rest of this guide is just consequences. Scrolling is a reducer adding to an integer and a view clamping it. A theme switch is a reducer swapping a Style table and every subsequent frame resolving against the new one with no repaint logic anywhere. A resize is the next frame's layout solve and text wrap running against new numbers. There is no incremental update machinery because there is nothing incremental: each frame is a complete, independent statement of what the screen should be, computed from scratch, cheaply, and then discarded to make room for the next one.
+
+So scroll on. Every row you reveal is composed on demand, clamped against the real geometry, and stamped into cells by a widget that will not remember having done it. The document can be arbitrarily long and the frame cost will not move, because the cost was never about the document — it was always about the window, and the window is the size it has always been. That invariance, not a cache and not a clever diff, is what makes a terminal interface feel instant, and it is the one thing every rstui widget gets for free simply by agreeing to be a function of its inputs.
+
+That is the whole framework. A Span, a Line, a Text. A reducer and a view. A frame boundary between them, and pure projection across it. Read it again from the top if you like — the words will wrap exactly the same way, because nothing here remembers that you already read them once.";
+
+/// The Markdown document — a long handbook so the renderer and the scroll
+/// offset get a real workout. Its links exercise the [`Link`] hit-test.
 const DOC: &str = "\
-# Markdown
+# The rstui Handbook
 
-A hand-written CommonMark-ish renderer — **bold**, *italic*, `code`.
+A hand-written CommonMark-ish renderer projecting straight into the cell
+buffer — **bold**, *italic*, `inline code`, headings, nested lists, ordered
+lists, fenced code blocks, blockquotes, tables, and rules — all with no
+retained tree behind them. Scroll it with the arrows, Page Up / Page Down,
+or the mouse wheel; the offset is plain caller-owned state the widget reads.
 
-- pure projection, no retained tree
-- headings, lists, rules, code blocks
-- links like [the rstui repo](https://github.com/andymac4182/rstui)
-
-> Blockquotes and rules render too.
+> Everything below is rendered by the same projection contract every other
+> widget in this kitchen sink uses. There is no special case for prose.
 
 ---
 
-```
-fn render(area: Rect, buf: &mut Buffer) { /* … */ }
+## 1. What this renderer is
+
+The Markdown widget parses its source once per frame into a list of blocks,
+lays those blocks out into the exact same `Line` and `Span` values the
+`Paragraph` uses, and stamps them into the buffer. That is the whole story:
+
+- **pure projection** — no DOM, no node identity, no reconciliation;
+- **deterministic wrap** — same source at the same width, same rows, always;
+- **clickable links** — the reducer hit-tests the click against the same
+  rectangle the renderer drew into, so a link is a *question asked of the
+  current frame*, not an object that persists across frames;
+- **bounded cost** — the per-frame price tracks the visible window, not the
+  length of the document, so this section is no cheaper than section 9.
+
+See the source at [the rstui repo](https://github.com/andymac4182/rstui)
+and the design notes in the [composition guide](https://rstui.test/compose).
+
+## 2. The three-level text model
+
+Everything reduces to three types:
+
+1. a **Span** is one run of characters sharing one `Style`;
+2. a **Line** is a row of `Span`s with an optional `Alignment`;
+3. a **Text** is a vertical stack of `Line`s.
+
+Widgets never retain any of it. They are handed an area and a mutable
+buffer, they project these values into the cells they own, and then they
+are dropped and forgotten until the next frame rebuilds them from scratch.
+
+```rust
+fn render(self, area: Rect, buf: &mut Buffer) {
+    let inner = self.block.inner(area);
+    for (y, row) in self.lines(inner.width)
+        .into_iter()
+        .skip(self.scroll as usize)
+        .take(inner.height as usize)
+        .enumerate()
+    {
+        buf.set_line(inner.x, inner.y + y as u16, &row, inner.width);
+    }
+}
 ```
 
-Scroll with the arrows / wheel.";
+That is the entire rendering path for a scrollable document: compose the
+rows, skip the offset, take the height, stamp the cells, stop. Nothing
+above the cell buffer outlives the call.
+
+## 3. Styling
+
+A `Style` is a patch, not a value — an optional foreground, an optional
+background, and a modifier bitset. Styles compose from the outside in:
+
+| Layer        | Sets                | Falls through to |
+|--------------|---------------------|------------------|
+| theme        | the base palette    | the terminal     |
+| widget style | the widget default  | the theme        |
+| line style   | a whole row         | the widget       |
+| span style   | one run of glyphs   | the line         |
+
+Because every layer is a patch, a widget can restyle a subtree by setting
+*one* field and letting everything else fall through untouched. There is
+no cascade to recompute and no stylesheet to invalidate.
+
+> **Note:** colour is carried at full 24-bit fidelity and degraded only at
+> the final write — sixteen-colour over an old link, photographic gradients
+> in a modern emulator, *with no branches in the application*.
+
+## 4. Lists nest, and so do quotes
+
+- top-level item
+  - a nested item, indented under its parent
+  - another, with `inline code` and **emphasis**
+    - and a third level, because the layout is recursive
+- back to the top level
+
+1. ordered lists keep their numbering
+2. across wrapped lines and
+3. across nested blocks alike
+
+> Blockquotes can hold their own structure:
+>
+> - a list inside a quote
+> - a second bullet
+>
+> > and a quote inside the quote, rendered one indent deeper.
+
+---
+
+## 5. Code blocks are verbatim
+
+```
+$ cargo run -p rstui-kitchen-sink
+   Compiling rstui-core
+   Compiling rstui-widgets
+   Compiling rstui-kitchen-sink
+    Finished dev profile
+     Running target/debug/rstui-kitchen-sink
+```
+
+Fenced blocks are not wrapped and not reflowed; they are projected one
+source line per row so that alignment-sensitive content survives intact.
+
+## 6. Why immediate mode wins here
+
+The output is a grid of perhaps ten thousand cells. Composing it from
+scratch is a few hundred microseconds of cache-friendly arithmetic.
+Diffing a retained tree to produce the *same* grid is strictly more work,
+and it drags an entire class of stale-state defects along with it. rstui
+does the cheap thing and keeps doing it, every frame, identically.
+
+## 7. The frame boundary
+
+One line is drawn through the whole program:
+
+- on one side, the **reducer** turns an event plus the state into the
+  next state — and never paints;
+- on the other, the **view** turns the state into a buffer — and never
+  mutates.
+
+Events become state; state becomes cells; the two never interleave. Every
+guarantee in this handbook is a consequence of that single rule.
+
+## 8. Scrolling, precisely
+
+The reducer adds to an integer with saturating arithmetic and never thinks
+about the end of the document. The view asks this widget how many rows it
+composes at the current width, subtracts the visible height, and pins the
+offset to that maximum. Over-scroll stops at the last screenful instead of
+revealing blank rows — the same clamp-in-the-view idiom the live log tail
+and the paragraph reader both use.
+
+## 9. The point
+
+A terminal UI is fast when the *shape* of the program is right: pure
+projection, caller-owned state, clamp in the view, never retain. Then the
+fast path is the only path, because there is no reconciliation step that
+can degrade and no tree that can grow without bound.
+
+> Scroll back to the top. The document wraps exactly the same way it did
+> the first time, because nothing here remembers that you already read it.
+
+---
+
+*End of handbook — keep scrolling to confirm the tail clamps cleanly.*";
 
 /// The Mermaid flowchart source.
 const GRAPH: &str = "\
@@ -126,7 +325,10 @@ impl State {
         }
     }
 
-    /// `←/→` switch tabs (resetting scroll), `↑/↓` scroll the document.
+    /// `←/→` switch tabs (resetting scroll), `↑/↓` scroll a row, `PgUp/PgDn`
+    /// scroll a screenful. The offset grows unbounded with saturating
+    /// arithmetic here; [`view`](Self::view) clamps it to the real geometry,
+    /// so a long document scrolls deep and over-scroll pins to the tail.
     pub(crate) fn on_key(&mut self, code: KeyCode) -> ScreenOutcome {
         match code {
             KeyCode::Left => {
@@ -141,7 +343,9 @@ impl State {
                 self.scroll = 0;
             }
             KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down => self.scroll = (self.scroll + 1).min(60),
+            KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(15),
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_add(15),
             _ => return ScreenOutcome::ignored(),
         }
         ScreenOutcome::consumed()
@@ -157,10 +361,12 @@ impl State {
             return ScreenOutcome::consumed();
         }
         if self.tab == 1 && body.contains(pos) {
-            // Same source / scroll / block geometry as `view` renders, so the
+            // Same source / scroll / block geometry as `view` renders —
+            // including the identical view-time scroll clamp — so the
             // widget's own link hit-test lands on exactly the drawn label.
+            let sc = self.scroll.min(self.max_scroll(body));
             let md = Markdown::new(DOC)
-                .scroll(self.scroll)
+                .scroll(sc)
                 .block(Block::bordered().border_type(BorderType::Rounded));
             if let Some(idx) = md.link_at(pos, body) {
                 if let Some(link) = md.links().get(idx) {
@@ -174,13 +380,31 @@ impl State {
         ScreenOutcome::ignored()
     }
 
-    /// Wheel scroll moves the document.
+    /// Wheel scroll moves the document (clamped in [`view`](Self::view)).
     pub(crate) fn on_scroll(&mut self, up: bool) {
         if up {
             self.scroll = self.scroll.saturating_sub(2);
         } else {
-            self.scroll = (self.scroll + 2).min(60);
+            self.scroll = self.scroll.saturating_add(2);
         }
+    }
+
+    /// The deepest scroll that still shows content for the active tab: the
+    /// composed (post-wrap) row count of the body widget at the panel's
+    /// inner width, minus the visible height. Clamping the offset to this in
+    /// the view pins over-scroll to the last screenful instead of revealing
+    /// blank rows below the text — the same view-time clamp the `logs`
+    /// screen applies to its tail. `2`/`3` tabs do not scroll.
+    fn max_scroll(&self, body: Rect) -> u16 {
+        let inner = crate::screens::block_inner(body);
+        let rows = match self.tab {
+            0 => Paragraph::new(PROSE)
+                .wrap(Wrap { trim: true })
+                .line_count(inner.width),
+            1 => Markdown::new(DOC).lines(inner.width).len(),
+            _ => return 0,
+        };
+        u16::try_from(rows.saturating_sub(inner.height as usize)).unwrap_or(u16::MAX)
     }
 
     /// A drag-select stays inside the document body (the framed Markdown /
@@ -214,20 +438,23 @@ impl State {
             tabs,
         );
 
+        // Clamp the unbounded reducer offset to the real geometry here,
+        // where both the composed row count and the viewport are known.
+        let sc = self.scroll.min(self.max_scroll(body));
         match self.tab {
             0 => frame.render_widget(
                 Paragraph::new(PROSE)
                     .wrap(Wrap { trim: true })
-                    .scroll(Position::new(0, self.scroll))
+                    .scroll(Position::new(0, sc))
                     .style(theme.body())
-                    .block(framed(theme, "Paragraph · ↑↓ scroll")),
+                    .block(framed(theme, "Paragraph · ↑↓ PgUp/Dn scroll")),
                 body,
             ),
             1 => frame.render_widget(
                 Markdown::new(DOC)
-                    .scroll(self.scroll)
+                    .scroll(sc)
                     .style(theme.body())
-                    .block(framed(theme, "Markdown · links + ↑↓ scroll")),
+                    .block(framed(theme, "Markdown · links + ↑↓ PgUp/Dn scroll")),
                 body,
             ),
             2 => {
@@ -264,7 +491,7 @@ impl State {
 
         // Persistent Kbd strip.
         frame.render_widget(
-            Kbd::new(["←", "→", "↑", "↓", "click a tab"])
+            Kbd::new(["←/→ tabs", "↑/↓", "PgUp/Dn", "click a tab"])
                 .style(theme.body())
                 .key_style(Style::new().fg(theme.base).bg(theme.accent))
                 .separator_style(Style::new().fg(theme.dim)),

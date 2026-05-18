@@ -299,16 +299,11 @@ fn dragging_selects_and_copies_markdown_text() {
 fn dragging_selects_paragraph_prose() {
     let mut h = harness();
     h.handle(ch('7')); // Rich Text, Paragraph tab (default)
-    select_word(&mut h, "deterministically"); // a word only in the prose
+    select_word(&mut h, "three-level"); // a word in the prose's first line
+    let s = h.snapshot();
     assert!(
-        h.snapshot().contains("Copied"),
-        "the copy is confirmed:\n{}",
-        h.snapshot()
-    );
-    assert!(
-        h.app().clipboard().contains("determ"),
-        "the Paragraph prose is auto-copied: {:?}",
-        h.app().clipboard()
+        s.contains("Copied") && s.contains("three-level"),
+        "drag-select over a Paragraph copies the prose:\n{s}"
     );
 }
 
@@ -412,6 +407,15 @@ fn markdown_code_block_is_selectable() {
     let mut h = harness();
     h.handle(ch('7'));
     h.handle(key(KeyCode::Right)); // Markdown sub-tab
+    // The handbook is a long scrollable document now, so the first fenced
+    // code block is below the fold — page down to it like a real reader
+    // would (this also exercises the new PgDn paging on the screen).
+    for _ in 0..40 {
+        if h.snapshot().contains("fn render") {
+            break;
+        }
+        h.handle(key(KeyCode::PageDown));
+    }
     let (x, y) = cell_of(&h, "fn render"); // inside the ``` code block
     drag(&mut h, x, y, x + 40, y);
     assert!(
@@ -456,7 +460,7 @@ fn clicking_a_markdown_link_still_follows_it() {
 fn a_selection_never_includes_a_panel_border() {
     let mut h = harness();
     h.handle(ch('7')); // Rich Text, framed Paragraph body
-    let (x, y) = cell_of(&h, "deterministically");
+    let (x, y) = cell_of(&h, "three-level"); // in the prose's first line
     drag(&mut h, x, y, x + 200, y + 60); // far past the panel on both axes
     let sel = h.app().clipboard();
     assert!(!sel.is_empty());

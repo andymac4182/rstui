@@ -617,6 +617,7 @@ impl ScreenState {
             Screen::Data => self.data.on_scroll(up),
             Screen::Chat => self.chat.on_scroll(up),
             Screen::Mail => self.mail.on_scroll(up),
+            Screen::Files => self.files.on_scroll(up),
             Screen::Logs => self.logs.on_scroll(up),
             Screen::Ide => self.ide.on_scroll(up),
             Screen::Traces => self.traces.on_scroll(up),

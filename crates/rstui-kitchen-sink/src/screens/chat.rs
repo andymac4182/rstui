@@ -72,32 +72,459 @@ impl State {
                     true,
                     0,
                     &[
-                        (false, "Grace", "Morning! ship the rich-rendering slice?"),
-                        (false, "Ada", "Gates are green on my end."),
-                        (true, "you", "Merging now — kitchen sink is live."),
+                        (
+                            false,
+                            "Grace",
+                            "Morning all — standup in 10. What landed overnight?",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "The rich-text reader got the long-scroll fix. Offset is unbounded in the reducer now, clamped in the view against the composed row count.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "Same idiom the live log tail already uses, so it reads as the house style rather than a one-off.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Nice. Did the markdown tab get the same treatment?",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "Yes — Markdown::lines(width).len() feeds the same clamp. Links still hit-test against the clamped offset so a click lands on exactly the drawn label.",
+                        ),
+                        (
+                            false,
+                            "Grace",
+                            "Gates green on my branch. fmt, naming, clippy -D warnings, doc -D warnings, full test suite.",
+                        ),
+                        (
+                            false,
+                            "Linus",
+                            "Did anyone measure the per-frame cost with the long document loaded?",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "It does not move. The cost tracks the visible window, not the document length — composing rows you scrolled past is work the widget never does.",
+                        ),
+                        (
+                            false,
+                            "Linus",
+                            "That is the whole point of the shape. Good.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Pushing the kitchen-sink content enlargement now. Five screens get realistic bodies so we can actually feel the scrolling.",
+                        ),
+                        (false, "Grace", "Which five?"),
+                        (
+                            true,
+                            "you",
+                            "Rich Text, Chat, Mail, Files, Code Editor. This thread is part of the test, by the way.",
+                        ),
+                        (false, "Grace", "Meta. I approve."),
+                        (
+                            false,
+                            "Katherine",
+                            "Design note: keep the unread badges legible at the 80x24 size. They wrap badly under 16 columns of rail.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "Rail is a fixed 20 columns, so we are fine. The thread is the part that reflows.",
+                        ),
+                        (
+                            false,
+                            "Katherine",
+                            "Then we are good. Shipping the truecolor theme swap demo alongside?",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Separate slice. This one is purely content + the scroll clamp.",
+                        ),
+                        (
+                            false,
+                            "Linus",
+                            "Keep the slices small. A content change should never need a reducer change to land.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "This one needed exactly one: removing the artificial .min(60) cap that capped scroll at 60 rows. Hard to test long scrolling against a 60-row ceiling.",
+                        ),
+                        (false, "Linus", "Fair. That was always a placeholder."),
+                        (
+                            false,
+                            "Grace",
+                            "CI bot says main is green at the last merge. Go.",
+                        ),
+                        (true, "you", "Merging."),
+                        (
+                            false,
+                            "Ada",
+                            "While you are in there — the Files preview had no scroll at all. Worth wiring the wheel + PageUp/PageDown so long previews are not just clipped.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Already in the slice. Wheel + paging, scroll resets when the selection changes so a new file opens at the top.",
+                        ),
+                        (false, "Ada", "Perfect."),
+                        (false, "Grace", "Standup proper: blockers?"),
+                        (false, "Linus", "None. Reviewing the editor buffers next."),
+                        (false, "Ada", "None. On the docs sync after this lands."),
+                        (
+                            true,
+                            "you",
+                            "None. Content slice is the only thing in flight from me.",
+                        ),
+                        (false, "Grace", "Short and green. Best kind. Back to it."),
+                        (
+                            false,
+                            "Katherine",
+                            "One more — can we get a longer sample email so the reading pane scroll is exercised too?",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Mail is in the slice. Twelve letters, multi-paragraph bodies, the reader was already unbounded so it just works.",
+                        ),
+                        (false, "Katherine", "Then I have nothing. Thank you."),
+                        (
+                            false,
+                            "Grace",
+                            "Closing standup. Ping here if anything goes red.",
+                        ),
+                        (true, "you", "Will do."),
+                        (
+                            false,
+                            "Ada",
+                            "It will not. The shape does not have a slow path to fall off.",
+                        ),
+                        (false, "Linus", "Famous last words. But correct ones."),
+                        (
+                            false,
+                            "Grace",
+                            "Coffee for whoever lands it green first try.",
+                        ),
+                        (true, "you", "Deal."),
                     ],
                 ),
                 seed(
                     "#rust",
                     true,
-                    3,
+                    4,
                     &[
-                        (false, "Linus", "pure projection is the right call"),
-                        (false, "Ada", "no retained tree, no surprises"),
+                        (
+                            false,
+                            "Linus",
+                            "Restating the model for the new folks: a Span is one styled run, a Line is a row of Spans, a Text is a stack of Lines. Widgets never retain any of it.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "They are handed an area and a mutable buffer, they stamp cells, they are dropped. There is no element that survives to the next frame.",
+                        ),
+                        (
+                            false,
+                            "newgrad",
+                            "Coming from a retained UI background — does rebuilding the whole view every frame not get expensive?",
+                        ),
+                        (
+                            false,
+                            "Linus",
+                            "In a terminal it inverts. The grid is ~10k cells. Composing it from scratch is a few hundred microseconds of cache-friendly arithmetic. Diffing a tree to produce the same grid is more work, not less.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "And it drags a whole class of stale-state bugs with it. Immediate mode just deletes that category.",
+                        ),
+                        (false, "newgrad", "Where does state live then?"),
+                        (
+                            false,
+                            "Ada",
+                            "Outside the widgets, in plain structs the app owns. A list's selected index, a cursor, a scroll offset — app data, mutated only by reducers, read by widgets.",
+                        ),
+                        (
+                            false,
+                            "Linus",
+                            "Exactly one place anything can change, and it is never inside a widget. Debugging is mostly reading reducers.",
+                        ),
+                        (
+                            false,
+                            "newgrad",
+                            "How does a clickable link work with no retained node?",
+                        ),
+                        (
+                            false,
+                            "Linus",
+                            "The same function that lays the doc out can be asked where each link rendered. The reducer compares the click against those rects. The link is a question asked of the current frame, not an object that persists.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "Nothing can go stale because nothing is kept. That is the recurring theme.",
+                        ),
+                        (false, "newgrad", "And layout?"),
+                        (
+                            false,
+                            "Linus",
+                            "A constraint solve over a rectangle, run fresh every frame. The sub-rects are computed, used, discarded. Resize just reruns the solve. Same idea as text wrap, one level up.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "Wrapping turns a width and text into rows. Layout turns a rect and constraints into rects. Neither remembers its last answer because recomputing is cheap and correct by construction.",
+                        ),
+                        (false, "newgrad", "That actually clears it up. Thanks both."),
+                        (
+                            false,
+                            "Linus",
+                            "Read docs/composition.md. It is the long form of this thread.",
+                        ),
+                        (false, "Grace", "Pinning that."),
+                        (
+                            true,
+                            "you",
+                            "The rich-text screen prose is basically this conversation written out, for what it is worth.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "Then it will wrap deterministically no matter how many times you scroll it. Poetic.",
+                        ),
+                        (false, "Linus", "Ship it."),
                     ],
                 ),
-                seed("#random", true, 0, &[(false, "Grace", "coffee?")]),
+                seed(
+                    "#design",
+                    true,
+                    0,
+                    &[
+                        (
+                            false,
+                            "Katherine",
+                            "Reviewing the experiences screens at 80x24, 120x40, 160x50, 200x60.",
+                        ),
+                        (
+                            false,
+                            "Katherine",
+                            "Chat thread reads well. The right-aligned own-messages on accent are clear against the peer rows.",
+                        ),
+                        (
+                            false,
+                            "Grace",
+                            "The dim sender tag pulls its weight — you can scan who said what without reading.",
+                        ),
+                        (
+                            false,
+                            "Katherine",
+                            "Mail three-pane holds at the narrow size if the message list truncates with an ellipsis. It does, good.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Files breadcrumb is built from the selected node's ancestry, so it stays correct as you move.",
+                        ),
+                        (
+                            false,
+                            "Katherine",
+                            "Confirmed. The folder vs file preview swap is a nice touch — description list for dirs, body for files.",
+                        ),
+                        (
+                            false,
+                            "Grace",
+                            "Code editor gutter width adapts to the line count. With the long buffers it goes to 3 digits cleanly.",
+                        ),
+                        (
+                            false,
+                            "Katherine",
+                            "That is the detail people notice subconsciously. Keep it.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "All of it is pure projection, so the narrow sizes are just smaller solves, not special cases.",
+                        ),
+                        (
+                            false,
+                            "Katherine",
+                            "Which is why it holds up. Approved across all four sizes.",
+                        ),
+                        (
+                            false,
+                            "Grace",
+                            "Recording the GIFs after the content lands?",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "rstui-docs skill handles that — it is not a CI gate, so it is a follow-up, not a blocker.",
+                        ),
+                        (
+                            false,
+                            "Katherine",
+                            "Good. Content first, media second. Sign-off from design.",
+                        ),
+                    ],
+                ),
+                seed(
+                    "#incidents",
+                    true,
+                    0,
+                    &[
+                        (
+                            false,
+                            "CI Bot",
+                            "[resolved] main went fmt-red for 6 minutes after a doc-only merge. Fixed forward.",
+                        ),
+                        (
+                            false,
+                            "Grace",
+                            "Postmortem: a content edit shifted a rustfmt-sensitive string. Lesson: run the gate before the merge-back, not after.",
+                        ),
+                        (
+                            false,
+                            "Linus",
+                            "The gate is fmt, naming, clippy -D, doc -D, test. None of it gates content text, but fmt will reformat a literal if it can.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "So keep long string literals in the explicit continuation style the file already uses and fmt leaves them alone.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Noted for this slice — the prose and markdown consts use the leading-backslash continuation, same as the originals.",
+                        ),
+                        (false, "Grace", "Good. No repeat."),
+                        (
+                            false,
+                            "CI Bot",
+                            "[info] all gates green on the last 12 merges.",
+                        ),
+                        (false, "Linus", "Boring is the goal."),
+                    ],
+                ),
+                seed(
+                    "#random",
+                    true,
+                    0,
+                    &[
+                        (false, "Grace", "Coffee?"),
+                        (true, "you", "Always. Once this slice is green."),
+                        (false, "Ada", "It will be green before the kettle boils."),
+                        (false, "Linus", "Optimist."),
+                        (false, "Grace", "Realist. The shape has no slow path."),
+                        (false, "Katherine", "Adding that to a sticker."),
+                        (true, "you", "I would buy that sticker."),
+                        (false, "Ada", "Kettle is on. Clock is running."),
+                    ],
+                ),
                 seed(
                     "Ada Lovelace",
                     false,
                     1,
-                    &[(false, "Ada", "ping me when the demo's ready")],
+                    &[
+                        (
+                            false,
+                            "Ada",
+                            "Ping me when the long-scroll demo is ready — want to feel it before sign-off.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "It is in. Rich Text tab 1 and 2 now hold a full handbook each. Hold Down or PageDown and it never bottoms out into blank.",
+                        ),
+                        (false, "Ada", "Trying it now."),
+                        (
+                            false,
+                            "Ada",
+                            "Smooth the whole way, and the tail clamps exactly at the last screenful. That is the behaviour I wanted.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "The clamp is computed in the view from the composed row count, so it is correct at every width.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "Resized mid-scroll — it just reflowed and stayed clamped. No drift.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Pure function of width. Nothing remembers the old wrap.",
+                        ),
+                        (false, "Ada", "Sign-off from me. Good slice."),
+                        (
+                            true,
+                            "you",
+                            "Thanks. Doing the other four screens now for realistic bodies.",
+                        ),
+                        (
+                            false,
+                            "Ada",
+                            "The chat one is going to be recursive, is it not.",
+                        ),
+                        (true, "you", "You are reading the test data right now."),
+                        (false, "Ada", "Delightful. Carry on."),
+                    ],
                 ),
                 seed(
                     "Grace Hopper",
                     false,
                     0,
-                    &[(false, "Grace", "nice work on the rail")],
+                    &[
+                        (
+                            false,
+                            "Grace",
+                            "Nice work on the rail — the grouped Widgets / Experiences split reads instantly.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "All from one ALL array, so the sidebar, hotkeys, and palette cannot disagree.",
+                        ),
+                        (
+                            false,
+                            "Grace",
+                            "That is the kind of single-source-of-truth I like. Click hit-test builds from the same rows?",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "Same function. What is drawn and what a click selects cannot drift.",
+                        ),
+                        (
+                            false,
+                            "Grace",
+                            "Good. Now make the bodies long enough that the scroll actually means something.",
+                        ),
+                        (
+                            true,
+                            "you",
+                            "That is exactly the slice in flight. This DM included.",
+                        ),
+                        (false, "Grace", "Then I will stop adding to your test data."),
+                        (true, "you", "Every message helps, honestly."),
+                        (
+                            false,
+                            "Grace",
+                            "In that case: keep shipping small green slices. That is the whole job.",
+                        ),
+                        (true, "you", "On it."),
+                    ],
                 ),
             ],
             active: 0,
@@ -285,17 +712,21 @@ impl State {
             );
         }
 
-        // The bubble thread (bottom-anchored, scrollable).
-        let lines = self.thread_lines(theme, thread.width);
-        let vh = thread.height as usize;
-        let total = lines.len();
-        let end = total.saturating_sub(self.scroll as usize);
-        let start = end.saturating_sub(vh);
-        let window: Vec<Line> = lines[start..end.max(start)].to_vec();
+        // The bubble thread, bottom-anchored by *rendered* rows: compose
+        // the whole thread, then scroll so the newest message sits at the
+        // bottom, minus `self.scroll` rows of scrollback. Anchoring by
+        // wrapped rows — not logical lines — is what keeps a long message
+        // from clipping the newest content off the bottom; it is the same
+        // view-time row-count clamp the rich-text reader and log tail use.
+        let para = Paragraph::new(self.thread_lines(theme, thread.width))
+            .style(theme.body())
+            .wrap(Wrap { trim: false });
+        let max_off = para
+            .line_count(thread.width)
+            .saturating_sub(thread.height as usize);
+        let off = max_off.saturating_sub(self.scroll as usize);
         frame.render_widget(
-            Paragraph::new(window)
-                .style(theme.body())
-                .wrap(Wrap { trim: false }),
+            para.scroll(Position::new(0, u16::try_from(off).unwrap_or(u16::MAX))),
             thread,
         );
 

@@ -30,42 +30,78 @@ struct Letter {
     body: &'static str,
 }
 
-const INBOX: [Letter; 6] = [
+const INBOX: [Letter; 12] = [
     Letter {
         from: "Grace Hopper",
-        subject: "Re: kitchen-sink merge",
+        subject: "Re: kitchen-sink content slice",
         when: "09:14",
-        body: "Looks great. The grouped rail reads well and the chat composer is a nice touch. Ship it.",
+        body: "Looks great. The grouped rail reads well and the chat composer is a genuinely nice touch — it is the kind of detail that makes the whole thing feel real instead of mocked.\n\nOne thing I want to flag before this lands: the reading pane needs a body long enough that the scroll actually means something. A two-line email never exercises the offset, and an unexercised path is an untested path. This message is deliberately several paragraphs so that you can hold the Down arrow in the reader and watch it move.\n\nThe scroll itself is unbounded in the reducer and clamped nowhere here, which matches the house pattern: presentation concerns live in the view. Over-scroll just shows the tail; that is acceptable for a reading pane and consistent with how the rest of the kitchen sink behaves.\n\nShip it once the gate is green. I do not need to see it again — the design is right and the behaviour is right. Just keep the slice small and do not let a content change drag a reducer change along with it unless it genuinely has to.\n\n— Grace",
     },
     Letter {
         from: "CI Bot",
-        subject: "✓ main is green (caabe3b)",
+        subject: "main is green (caabe3b)",
         when: "09:02",
-        body: "All 5 gates passed plus msrv / unused-deps / supply-chain. No action needed.",
+        body: "Pipeline summary for commit caabe3b on main.\n\nGate: cargo xtask ci\n  fmt --all --check ............ pass\n  lint-names ................... pass\n  clippy --all-targets -D ...... pass\n  doc --no-deps -D warnings .... pass\n  test --all-features .......... pass (1 487 tests)\n\nExtra legs:\n  msrv ......................... pass\n  unused-deps (cargo-machete) .. pass\n  supply-chain (cargo-deny) .... pass\n  package (publish dry-run) .... pass\n\nNo action needed. This message is sent on every green main so the inbox has a realistic cadence of automated mail mixed in with the human threads. You can safely mark it read; the next push will send another.",
     },
     Letter {
         from: "Ada Lovelace",
-        subject: "Experiences screens",
+        subject: "Experiences screens — keep them interactive",
         when: "Tue",
-        body: "Ten composed scenes is ambitious — make sure each is interactive, not a static mock.",
+        body: "Ten composed scenes is ambitious, and the only way it works is if every one of them is genuinely interactive rather than a static screenshot dressed up as an app.\n\nThe chat composer takes real input and canned-replies so the thread stays live. The file explorer expands and collapses real subtrees. The mail client moves focus across three panes and marks messages read. The editor is a real multi-line buffer with a caret you can drive. None of that is faked, and that is the whole point — a kitchen sink that only looks like software teaches nobody anything.\n\nWhat I want to confirm in this slice: the bodies are now long enough that the scrolling is a real demonstration and not a token gesture. A reader that never scrolls is not testing the reader. Make the content earn its place.\n\nReply here once it is in and I will walk all four terminal sizes.\n\n— Ada",
     },
     Letter {
         from: "Linus",
-        subject: "pure projection",
+        subject: "pure projection, restated",
         when: "Tue",
-        body: "No retained tree is the right call. Keep reducers owning all mutation.",
+        body: "No retained tree is the right call and I will keep saying it until it is reflexive for everyone on the team.\n\nThe reducer owns all mutation. The view is a pure function of state. The frame boundary sits between them and nothing crosses it in the wrong direction — events become state, state becomes cells, and the two transformations never interleave. Every guarantee we make traces back to that one line drawn through the program.\n\nThe scroll work in this slice is a clean example. The reducer adds to an integer with saturating arithmetic and does not think about the end of the document. The view asks the widget how many rows it composes at the current width, subtracts the height, and clamps. Unbounded intent, bounded reality, decoupled by the frame.\n\nThat is the pattern. Reuse it; do not reinvent it. The log tail already did it, the rich-text reader now does it, and the next scrollable surface should look identical.\n\n— L",
+    },
+    Letter {
+        from: "Katherine",
+        subject: "design review — four sizes",
+        when: "Tue",
+        body: "Walked the experiences at 80x24, 120x40, 160x50, and 200x60.\n\nThe three-pane mail layout holds at the narrow size because the message list truncates with an ellipsis instead of wrapping — that is the correct behaviour and it is doing it. The folder rail is a fixed sixteen columns and stays legible. The reading pane gets whatever is left and reflows cleanly, which is exactly why a long body like the ones in this inbox is worth having: it proves the wrap is deterministic at every width.\n\nThe only note is cosmetic: the unread dot and star markers should stay in the accent colour so they read as status, not decoration. They do. Approved across all four sizes with no changes requested.\n\n— Katherine",
     },
     Letter {
         from: "Releases",
         subject: "v0.0.1 tagged",
         when: "Mon",
-        body: "Tarballs published. Changelog attached.",
+        body: "Tarballs published and the changelog is attached below.\n\nHighlights this cut: the full widget catalogue, the composition guide, the kitchen-sink experiences, the theme system, and the long-scroll reader work that this very inbox is helping to test.\n\nNothing in this release changes a public API in a breaking way. Upgrade is a version bump. The next milestone is the docs and media sync, which is deliberately not a CI gate so that a content slice like this one can land without waiting on the VHS toolchain.",
+    },
+    Letter {
+        from: "Grace Hopper",
+        subject: "scrollback realism",
+        when: "Mon",
+        body: "Following up from the channel: the chat scrollback is now long enough that the bottom-anchored window actually has something to scroll through, and the mail bodies are multi-paragraph so the reader offset is exercised.\n\nThis is the difference between a demo that looks complete and one that is complete. A reviewer who opens the mail client and finds one-line messages learns nothing about whether the reader works. A reviewer who finds this — paragraphs, a scrollbar's worth of text, a clean clamp at the tail — learns everything in about four seconds.\n\nKeep the content honest and the behaviour will speak for itself.",
+    },
+    Letter {
+        from: "newgrad",
+        subject: "question about the reader clamp",
+        when: "Mon",
+        body: "Reading the rich-text screen source to understand the scroll model and I think I follow it, but I want to check my understanding against a real reviewer.\n\nThe reducer increments the offset with saturating_add and never clamps. The view computes the maximum scroll as the composed row count minus the visible height and pins the offset to that before handing it to the widget. So the state can hold an offset larger than the document, but it can never be rendered larger than the last screenful, and as soon as the user scrolls back up the clamp stops applying and the offset is honoured exactly again.\n\nIs that right? And is the reason the clamp lives in the view rather than the reducer simply that the view is the only place that knows both the width and the height? That is the only place the row count is computable.\n\nThanks for indulging the question — the inbox needed another human thread anyway.",
+    },
+    Letter {
+        from: "Ada Lovelace",
+        subject: "Re: question about the reader clamp",
+        when: "Mon",
+        body: "Your understanding is exactly right, including the part most people miss: the clamp is not a permanent ceiling on the state, it is a per-frame projection decision. Scroll back up and the same offset that was clamped a moment ago is rendered verbatim again. Nothing was lost; the view simply chose not to show blank rows.\n\nAnd yes — the clamp lives in the view because the view is the only place that knows the geometry. The reducer has no idea how tall the panel is or how wide the text wrapped, and it should not have to. That separation is the whole reason the reducer stays simple and total. Good read of the code.\n\n— Ada",
+    },
+    Letter {
+        from: "Linus",
+        subject: "do not gate content on media",
+        when: "Sun",
+        body: "Reminder for the slice in flight: the VHS recordings are not a CI gate and must not become one. Regenerating GIFs needs the VHS toolchain, which not every contributor has, and a content change should never be blocked on a media refresh.\n\nLand the content green, then refresh the media as a separate follow-up via the docs skill. The gate is fmt, naming, clippy, doc, test. That is the contract. Keep it that way.",
     },
     Letter {
         from: "Katherine",
-        subject: "design review",
-        when: "Mon",
-        body: "The truecolor theme swap is a strong demo. Approved.",
+        subject: "truecolor theme swap — approved",
+        when: "Sun",
+        body: "The truecolor theme swap is a strong standalone demo and I am approving it, but please keep it in its own slice and out of the content enlargement. Two unrelated changes in one merge make a bad bisect later.\n\nThe content slice is about bodies and scroll. The theme slice is about palette. They touch different concerns and they should land separately even though both are green.",
+    },
+    Letter {
+        from: "Grace Hopper",
+        subject: "last one, I promise",
+        when: "Sun",
+        body: "This is the oldest message in the inbox and it exists mostly so the message list itself is long enough to be worth navigating with the arrow keys and the wheel.\n\nA mail client with six messages is a screenshot. A mail client with a dozen, where some are read and some are not, where two are starred and the rest are not, where the bodies vary from a single automated block to several human paragraphs — that is something you can actually evaluate.\n\nThank you for reading all the way to the bottom of the inbox. The fact that you could scroll here at all is the feature working.",
     },
 ];
 
@@ -90,17 +126,24 @@ pub(crate) struct State {
 }
 
 impl State {
-    /// Inbox open, nothing read, the first message highlighted.
+    /// Inbox open, the first message highlighted: the recent head of the
+    /// inbox is unread, the older tail already read, and a couple starred —
+    /// derived from [`INBOX`]'s length so the list can grow without
+    /// re-hand-indexing these fixed-size flag arrays.
     pub(crate) fn new() -> Self {
         let mut read = [false; INBOX.len()];
-        read[4] = true;
-        read[5] = true;
+        for r in read.iter_mut().skip(4) {
+            *r = true;
+        }
+        let mut star = [false; INBOX.len()];
+        star[1] = true;
+        star[6] = true;
         Self {
             pane: Pane::List,
             folder: 0,
             msg: 0,
             read,
-            star: [false, true, false, false, false, false],
+            star,
             scroll: 0,
         }
     }

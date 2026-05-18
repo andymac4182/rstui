@@ -12,13 +12,350 @@ use rstui_widgets::{Block, BorderType, Editor, LineNumberGutter, List, StatusBar
 use crate::screens::ScreenOutcome;
 use crate::theme::Theme;
 
-/// A problems-pane entry: line, severity (`true` = error), message.
-const PROBLEMS: [(u32, bool, &str); 4] = [
-    (3, false, "unused import: `Rect`"),
-    (12, true, "mismatched types: expected u16"),
-    (28, false, "function is never used: `helper`"),
-    (41, true, "cannot borrow `*frame` as mutable twice"),
+/// A problems-pane entry: line, severity (`true` = error), message. The
+/// line numbers point into the (now realistically long) `main.rs` buffer
+/// so the pane reads like a real diagnostics list against real code.
+const PROBLEMS: [(u32, bool, &str); 6] = [
+    (4, false, "unused import: `Constraint`"),
+    (29, true, "mismatched types: expected `u16`, found `usize`"),
+    (47, false, "variable does not need to be mutable: `offset`"),
+    (63, true, "cannot borrow `*frame` as mutable more than once"),
+    (88, false, "function `unused_probe` is never used"),
+    (119, true, "expected `;`, found `}`"),
 ];
+
+/// `main.rs` — a realistically long buffer so the editor, the line-number
+/// gutter, and caret-driven scrolling all get a real workout.
+const MAIN_RS: &str = r#"//! A tiny terminal counter app, written against the same pure-projection
+//! contract the rest of rstui uses: a reducer owns all mutation, the view
+//! is a pure function of state, and the frame boundary sits between them.
+
+use std::process::ExitCode;
+
+use rstui_core::{Constraint, KeyCode, Layout, Line, Rect, Style};
+use rstui_runtime::{App, Cmd, Frame, Terminal};
+use rstui_widgets::{Block, BorderType, Gauge, Paragraph, StatusBar};
+
+/// Everything the app can be told to do. Events are mapped to one of
+/// these in `on_event`; nothing else mutates state.
+#[derive(Debug, Clone, Copy)]
+enum Msg {
+    Increment,
+    Decrement,
+    Reset,
+    Quit,
+}
+
+/// The whole application state — a single counter and a running flag.
+/// There is exactly one place this changes: the `update` reducer.
+struct Counter {
+    value: i64,
+    history: Vec<i64>,
+    running: bool,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Self {
+            value: 0,
+            history: Vec::new(),
+            running: true,
+        }
+    }
+
+    /// The fraction of the way to the goal, clamped to `0.0..=1.0`. This
+    /// is presentation math, so it lives next to the view, not the
+    /// reducer — the reducer never thinks about the gauge.
+    fn ratio(&self) -> f64 {
+        const GOAL: f64 = 100.0;
+        (self.value as f64 / GOAL).clamp(0.0, 1.0)
+    }
+
+    /// A short, human label for the status bar.
+    fn label(&self) -> String {
+        let offset = self.history.len();
+        format!("value {} · {} steps", self.value, offset)
+    }
+}
+
+impl App for Counter {
+    type Message = Msg;
+
+    /// Pure input mapping: a key becomes an intent, or nothing. No state
+    /// is touched here — that is the reducer's sole responsibility.
+    fn on_event(&self, event: rstui_core::Event) -> Option<Msg> {
+        let key = event.as_key()?;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('+') => Some(Msg::Increment),
+            KeyCode::Down | KeyCode::Char('-') => Some(Msg::Decrement),
+            KeyCode::Char('r') => Some(Msg::Reset),
+            KeyCode::Char('q') | KeyCode::Esc => Some(Msg::Quit),
+            _ => None,
+        }
+    }
+
+    /// The reducer. Every mutation in the program funnels through here,
+    /// which is why the app can be reasoned about by reading one method.
+    fn update(&mut self, msg: Msg) -> Cmd<Msg> {
+        match msg {
+            Msg::Increment => {
+                self.history.push(self.value);
+                self.value += 1;
+            }
+            Msg::Decrement => {
+                self.history.push(self.value);
+                self.value -= 1;
+            }
+            Msg::Reset => {
+                self.history.clear();
+                self.value = 0;
+            }
+            Msg::Quit => self.running = false,
+        }
+        Cmd::none()
+    }
+
+    /// The view. A pure function of state: same state, same buffer, with
+    /// no float math in the layout and nothing retained between frames.
+    fn view(&self, frame: &mut Frame<'_>) {
+        let [header, body, gauge, status] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
+
+        frame.render_widget(
+            Line::from(" rstui counter — ↑/↓ adjust · r reset · q quit ")
+                .style(Style::new().fg(rstui_core::Color::Cyan)),
+            header,
+        );
+
+        let big = format!("\n   {}\n", self.value);
+        frame.render_widget(
+            Paragraph::new(big).block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title(Line::from(" count ")),
+            ),
+            body,
+        );
+
+        frame.render_widget(Gauge::new().ratio(self.ratio()), gauge);
+
+        frame.render_widget(
+            StatusBar::new()
+                .left(Line::from(self.label()))
+                .right(Line::from(" UTF-8 · rust ")),
+            status,
+        );
+    }
+
+    fn running(&self) -> bool {
+        self.running
+    }
+}
+
+fn main() -> ExitCode {
+    let mut terminal = match Terminal::new() {
+        Ok(t) => t,
+        Err(err) => {
+            eprintln!("could not open the terminal: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let app = Counter::new();
+    if let Err(err) = terminal.run(app) {
+        eprintln!("run loop exited with: {err}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+"#;
+
+/// `lib.rs` — a realistically long widget module so switching to it shows
+/// a different, equally scrollable buffer.
+const LIB_RS: &str = r#"//! A small reusable widget: a labelled progress bar that is a pure
+//! projection of a caller-owned ratio. It owns no state, registers no
+//! callback, and is consumed by a single render — the house contract.
+
+use rstui_core::{Buffer, Rect, Style};
+
+/// How the percentage label is rendered relative to the filled track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LabelMode {
+    /// No label at all — just the track.
+    Hidden,
+    /// Centered over the whole bar.
+    #[default]
+    Centered,
+    /// Tucked against the right edge.
+    Trailing,
+}
+
+/// A horizontal progress bar. Construct it, set the ratio and style,
+/// hand it to `render`, drop it. Nothing survives the call.
+#[derive(Debug, Clone)]
+pub struct ProgressBar {
+    ratio: f64,
+    filled_style: Style,
+    track_style: Style,
+    label: LabelMode,
+}
+
+impl Default for ProgressBar {
+    fn default() -> Self {
+        Self {
+            ratio: 0.0,
+            filled_style: Style::default(),
+            track_style: Style::default(),
+            label: LabelMode::default(),
+        }
+    }
+}
+
+impl ProgressBar {
+    /// A new bar at zero. Use the builders to configure it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the fill fraction, clamped to a sane `0.0..=1.0` so a caller
+    /// cannot drive the bar off the end of its own track.
+    #[must_use]
+    pub fn ratio(mut self, ratio: f64) -> Self {
+        self.ratio = ratio.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Sets the style of the filled portion.
+    #[must_use]
+    pub fn filled_style(mut self, style: Style) -> Self {
+        self.filled_style = style;
+        self
+    }
+
+    /// Chooses where (or whether) the percentage label is drawn.
+    #[must_use]
+    pub fn label(mut self, mode: LabelMode) -> Self {
+        self.label = mode;
+        self
+    }
+
+    /// The number of fully filled cells for a track `width` wide. Integer
+    /// math only: the same width and ratio always fill the same cells.
+    fn filled_cells(&self, width: u16) -> u16 {
+        let scaled = self.ratio * width as f64;
+        scaled.round() as u16
+    }
+}
+
+/// The one method the framework calls. It stamps cells into the area it
+/// is given and returns; it never reads the previous frame.
+pub fn render(bar: &ProgressBar, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let filled = bar.filled_cells(area.width);
+    for x in 0..area.width {
+        let style = if x < filled {
+            bar.filled_style
+        } else {
+            bar.track_style
+        };
+        for y in 0..area.height {
+            buf.set(
+                rstui_core::Position::new(area.x + x, area.y + y),
+                ' ',
+                style,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ratio_is_clamped_both_ends() {
+        assert_eq!(ProgressBar::new().ratio(2.0).ratio, 1.0);
+        assert_eq!(ProgressBar::new().ratio(-1.0).ratio, 0.0);
+    }
+
+    #[test]
+    fn fill_is_deterministic_for_a_width() {
+        let bar = ProgressBar::new().ratio(0.5);
+        assert_eq!(bar.filled_cells(10), bar.filled_cells(10));
+    }
+}
+"#;
+
+/// `notes.md` — a long design-notes buffer so the third tab is a markdown
+/// document of real length rather than a three-line stub.
+const NOTES_MD: &str = r#"# Design notes — the counter app
+
+These notes track why the app is shaped the way it is. They are
+deliberately long so the editor has a third buffer worth scrolling.
+
+## Goals
+
+- Demonstrate the reducer / view split in the smallest possible app.
+- Show that integer-only layout math means no visual drift on resize.
+- Keep every mutation in exactly one method (`update`).
+
+## Non-goals
+
+- Persistence. The counter resets on every launch, on purpose.
+- Configuration. There are no flags; the keymap is fixed and tiny.
+- Async. Everything is synchronous so the model stays obvious.
+
+## The keymap
+
+| Key        | Intent      |
+|------------|-------------|
+| Up / +     | Increment   |
+| Down / -   | Decrement   |
+| r          | Reset       |
+| q / Esc    | Quit        |
+
+The keymap lives in `on_event` and produces a `Msg`. It never touches
+state — that separation is the whole point of the exercise.
+
+## Why a history vector
+
+The `history` vector is not used by the view yet. It exists so that a
+later slice can add an undo command without changing the shape of the
+reducer: undo will simply pop the vector and assign. Designing the
+state for the change you know is coming is cheaper than refactoring
+for it later.
+
+## Open questions
+
+1. Should reset clear the history or push a sentinel? Currently it
+   clears. An undo across a reset is therefore not possible, which is
+   probably the behaviour a user expects anyway.
+2. Should the gauge goal be configurable? Not until there is a real
+   reason; a hard-coded 100 keeps the demo legible.
+3. Is a status bar overkill for a counter? Maybe, but it exercises
+   another widget for free, and free coverage is worth a row.
+
+## Checklist before this lands
+
+- [x] Reducer is the only mutator.
+- [x] View is a pure function of state.
+- [x] Layout uses integer constraints only.
+- [x] Ratio is clamped so the gauge cannot overflow its track.
+- [ ] Undo command (next slice).
+- [ ] A test that drives the loop headlessly through `Harness`.
+
+## Footnote
+
+If you scrolled all the way here with the arrow keys, the caret-driven
+scroll and the line-number gutter both did their jobs. That is the
+only assertion this file is making.
+"#;
 
 /// The editor's caller-owned state: one [`TextArea`] per open file.
 #[derive(Debug)]
@@ -38,18 +375,9 @@ impl State {
         };
         Self {
             files: vec![
-                (
-                    "main.rs",
-                    open("fn main() {\n    let app = KitchenSink::new();\n    run_app(app);\n}"),
-                ),
-                (
-                    "lib.rs",
-                    open("//! kitchen sink\npub struct KitchenSink;\n"),
-                ),
-                (
-                    "notes.md",
-                    open("# TODO\n- type in here\n- arrows move the caret\n"),
-                ),
+                ("main.rs", open(MAIN_RS)),
+                ("lib.rs", open(LIB_RS)),
+                ("notes.md", open(NOTES_MD)),
             ],
             active: 0,
         }
