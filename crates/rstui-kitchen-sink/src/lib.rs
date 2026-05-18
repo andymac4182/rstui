@@ -738,8 +738,13 @@ impl App for KitchenSink {
                 let now = self.tick;
                 // Toasts live ~40 frames (~5s at 8fps).
                 self.notices.retain(|n| now.saturating_sub(n.born) < 40);
-                // Drop a leader sequence that was never completed in time.
-                self.keymaps.expire(now);
+                // Drop a stale leader prefix so its armed hint doesn't
+                // linger. `now` is a frame counter; the keymap clock is
+                // honest milliseconds (~125 ms/frame at this 8 fps loop),
+                // so the 2 s Leader timeout is real time, not a frame
+                // count. This app already animates (spinners/clock) — the
+                // keymap does *not* require the loop; it just reuses it.
+                self.keymaps.expire(now.saturating_mul(125));
             }
             // No-op: `view` recaptures the true geometry from the resized
             // frame, so hit-testing follows the reflow automatically.
@@ -770,9 +775,15 @@ impl App for KitchenSink {
                     return Cmd::none();
                 }
                 let ctrl = mods.contains(KeyModifiers::CONTROL);
-                // Resolve the event through the *active* keymap (this also
-                // advances the leader-sequence state machine).
-                let action = self.keymaps.resolve(&KeyEvent::new(code, mods), self.tick);
+                // Resolve through the *active* keymap (this also advances
+                // the leader-sequence state machine). The kitchen sink is
+                // the *advanced* consumer: it keeps raw `resolve` (not the
+                // one-call `dispatch`) because it must peek the action —
+                // a clipboard chord fires even while an overlay is up. The
+                // clock is honest ms (~125 ms/frame); `dispatch` is the
+                // simple path the other apps use.
+                let now_ms = self.tick.saturating_mul(125);
+                let action = self.keymaps.resolve(&KeyEvent::new(code, mods), now_ms);
                 let clip = matches!(action, Some(Action::Copy | Action::Cut | Action::Paste));
 
                 // While an overlay is captured, only the clipboard actions

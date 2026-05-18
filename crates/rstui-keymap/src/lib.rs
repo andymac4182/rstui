@@ -563,6 +563,21 @@ enum Resolved {
     Fall,
 }
 
+/// What [`Keymaps::dispatch`] tells the app to do with one key — the whole
+/// listen→map→act decision in three cases, so the reducer is one `match`
+/// instead of the hand-written resolve / `armed` / fall-through trio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dispatch {
+    /// A binding fired — perform this [`Action`].
+    Act(Action),
+    /// A leader/prefix was just armed — swallow this key and wait for the
+    /// rest of the sequence (do *not* hand it to the screen).
+    Pending,
+    /// Unbound by the keymap — hand the raw key to the focused screen
+    /// (arrows, typing, pane-relative motions, …).
+    Fall,
+}
+
 /// The registry: every keymap, the active one, the live user overrides, and
 /// the pending-sequence state. Owned by the app model; the reducer drives it.
 #[derive(Debug, Clone)]
@@ -763,16 +778,22 @@ impl Keymaps {
     }
 
     /// Resolve a key event to an [`Action`], threading the leader-sequence
-    /// state machine and its timeout (deterministic on the `tick` clock so
-    /// the headless harness can drive it).
-    pub fn resolve(&mut self, ev: &KeyEvent, tick: u64) -> Option<Action> {
+    /// state machine.
+    ///
+    /// `now_ms` is a **monotonic millisecond clock** the caller supplies
+    /// (e.g. `Instant::elapsed().as_millis()` live, a controlled value
+    /// under the `Harness`). It is *only* the leader-sequence deadline:
+    /// resolution itself is event-driven, and a stale prefix self-clears
+    /// here on the very next key, so **no animation loop is required** —
+    /// an app whose keymap has no leader sequence can pass `0` forever.
+    /// Most apps should call [`Keymaps::dispatch`] instead.
+    pub fn resolve(&mut self, ev: &KeyEvent, now_ms: u64) -> Option<Action> {
         let km = self.effective();
-        let timeout_ticks = (km.leader_timeout_ms / 120).max(1);
 
         // An armed, un-expired leader: this key completes (or breaks) it.
         if let Some((first, deadline)) = self.pending {
             self.pending = None;
-            if tick <= deadline {
+            if now_ms <= deadline {
                 for b in &km.binds {
                     for t in &b.triggers {
                         if let Trigger::Chain(a, c) = t {
@@ -790,20 +811,53 @@ impl Keymaps {
             Resolved::Act(a) => Some(a),
             Resolved::Pending => {
                 let c = Chord::norm(ev.code, ev.modifiers);
-                self.pending = Some((c, tick.saturating_add(timeout_ticks)));
+                let deadline = now_ms.saturating_add(km.leader_timeout_ms);
+                self.pending = Some((c, deadline));
                 None
             }
             Resolved::Fall => None,
         }
     }
 
-    /// Drop a leader that has sat un-completed past its timeout (called from
-    /// the animation tick so a stale prefix never eats the next key).
-    pub fn expire(&mut self, tick: u64) {
+    /// Drop a leader that has sat un-completed past its timeout, so a
+    /// stale *armed indicator* does not linger forever on a truly idle
+    /// screen. Purely cosmetic — `resolve` already self-clears a stale
+    /// prefix on the next key, so calling this is **optional**: only an
+    /// app that both ships a leader keymap *and* shows the armed hint
+    /// needs it, and only from whatever clock it already has (never add
+    /// an animation loop for it). `now_ms` is the same monotonic ms clock.
+    pub fn expire(&mut self, now_ms: u64) {
         if let Some((_, deadline)) = self.pending {
-            if tick > deadline {
+            if now_ms > deadline {
                 self.pending = None;
             }
+        }
+    }
+
+    /// The whole **listen → map → act** seam in one call: resolve `ev`,
+    /// and say what the app should do. Collapses the
+    /// resolve / `armed` / fall-through dance every app used to hand-write.
+    ///
+    /// `now_ms`: see [`resolve`](Self::resolve) — a monotonic ms clock, or
+    /// just `0` if your keymap has no leader sequence (no clock, no
+    /// animation loop, still correct).
+    ///
+    /// ```
+    /// # use rstui_keymap::{Dispatch, Keymaps};
+    /// # use rstui_core::{KeyCode, KeyEvent, KeyModifiers};
+    /// # let mut keymaps = Keymaps::new();
+    /// # let ev = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE);
+    /// match keymaps.dispatch(&ev, 0) {
+    ///     Dispatch::Act(action) => { /* perform `action` */ }
+    ///     Dispatch::Pending     => { /* a leader was armed — swallow */ }
+    ///     Dispatch::Fall        => { /* unbound — hand the raw key on */ }
+    /// }
+    /// ```
+    pub fn dispatch(&mut self, ev: &KeyEvent, now_ms: u64) -> Dispatch {
+        match self.resolve(ev, now_ms) {
+            Some(action) => Dispatch::Act(action),
+            None if self.armed() => Dispatch::Pending,
+            None => Dispatch::Fall,
         }
     }
 
@@ -986,24 +1040,59 @@ mod tests {
     }
 
     #[test]
-    fn leader_sequence_resolves_and_times_out() {
+    fn leader_sequence_resolves_and_times_out_in_real_milliseconds() {
         let mut k = Keymaps::new();
         k.cycle(); // Vim
-        k.cycle(); // Leader (ctrl+x prefix, 2000ms ≈ 16 ticks)
+        k.cycle(); // Leader (ctrl+x prefix, 2000 ms timeout — real ms now)
         let lead = ev(KeyCode::Char('x'), KeyModifiers::CONTROL);
-        // leader then `p` → palette
+        // leader@0 ms, then `p` 1500 ms later (< 2000) → palette.
         assert_eq!(k.resolve(&lead, 0), None, "leader arms, no action yet");
         assert_eq!(
-            k.resolve(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 1),
-            Some(Action::Palette)
+            k.resolve(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 1500),
+            Some(Action::Palette),
+            "within the 2000 ms window the sequence completes"
         );
-        // leader then wait past the timeout → the next key is fresh
-        assert_eq!(k.resolve(&lead, 100), None);
-        k.expire(200);
+        // leader@0, idle past 2000 ms: `expire` drops the stale prefix…
+        assert_eq!(k.resolve(&lead, 0), None);
+        k.expire(2500);
+        // …so `p` 2500 ms later is a fresh (unbound-in-Leader) key, not a
+        // swallowed continuation — and *resolution self-clears anyway*.
         assert_eq!(
-            k.resolve(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 200),
+            k.resolve(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 2500),
             None,
-            "expired leader does not swallow the key"
+            "an expired leader never eats a much-later key"
+        );
+        // No clock loop needed: even without calling `expire`, the next
+        // key past the deadline self-clears the pending prefix.
+        assert_eq!(k.resolve(&lead, 0), None);
+        assert_eq!(
+            k.resolve(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 9999),
+            None,
+            "stale prefix self-clears on the next key — event-driven"
+        );
+    }
+
+    #[test]
+    fn dispatch_is_the_one_call_seam_act_pending_fall() {
+        let mut k = Keymaps::new(); // Default map (no leader)
+        // A bound chord → Act; an unbound key → Fall; `0` clock is fine
+        // because the Default map has no leader sequence.
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char(':'), KeyModifiers::NONE), 0),
+            Dispatch::Act(Action::Palette)
+        );
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Up, KeyModifiers::NONE), 0),
+            Dispatch::Fall
+        );
+        // Leader map: the prefix arms → Pending, the next key → Act.
+        k.cycle();
+        k.cycle(); // Leader
+        let lead = ev(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(k.dispatch(&lead, 0), Dispatch::Pending);
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 100),
+            Dispatch::Act(Action::Palette)
         );
     }
 
