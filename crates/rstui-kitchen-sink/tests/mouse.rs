@@ -490,8 +490,11 @@ fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
     // live with a hint, and Ctrl+C performs the copy.
     let mut h = harness();
     goto(&mut h, "chat"); // Chat (palette is index-stable; digit 9 is now Data Grid)
-    let (x, y) = cell_of(&h, "Morning"); // a seeded thread message word
-    drag(&mut h, x, y, x + 6, y);
+    // 4ccc7c7 reseeded chat with a longer thread that opens scrolled to
+    // the newest messages, so the old top-of-thread word ("Morning") is
+    // above the fold. Target a stable word visible in the default view.
+    let (x, y) = cell_of(&h, "blockers"); // "Standup proper: blockers?"
+    drag(&mut h, x, y, x + "blockers".len() as u16 - 1, y);
     assert!(
         h.snapshot().contains("Selected") && !h.snapshot().contains("Copied"),
         "an editable container leaves it selected, not auto-copied:\n{}",
@@ -500,7 +503,7 @@ fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
     assert!(h.app().clipboard().is_empty(), "nothing copied yet");
     h.handle(ctrl('c'));
     assert!(
-        h.app().clipboard().contains("Morning"),
+        h.app().clipboard().contains("blockers"),
         "Ctrl+C copies the still-live selection: {:?}",
         h.app().clipboard()
     );
@@ -515,21 +518,24 @@ fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
 fn ctrl_x_cuts_selected_text_out_of_the_code_editor() {
     let mut h = harness();
     goto(&mut h, "Code Editor");
+    // 4ccc7c7 reseeded the Code Editor with a counter-app sample; target
+    // a stable, single-occurrence token in the new seed's first visible
+    // line (the same needle-retarget that commit applied to siblings).
     assert!(
-        h.snapshot().contains("KitchenSink"),
+        h.snapshot().contains("tiny"),
         "seed code is visible:\n{}",
         h.snapshot()
     );
-    let (x, y) = cell_of(&h, "KitchenSink");
-    drag(&mut h, x, y, x + "KitchenSink".len() as u16 - 1, y);
+    let (x, y) = cell_of(&h, "tiny");
+    drag(&mut h, x, y, x + "tiny".len() as u16 - 1, y);
     h.handle(ctrl('x')); // cut
     assert!(
-        h.app().clipboard().contains("KitchenSink"),
+        h.app().clipboard().contains("tiny"),
         "cut puts the text on the clipboard: {:?}",
         h.app().clipboard()
     );
     assert!(
-        !h.snapshot().contains("KitchenSink"),
+        !h.snapshot().contains("tiny"),
         "cut removed it from the buffer:\n{}",
         h.snapshot()
     );
