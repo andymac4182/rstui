@@ -56,14 +56,14 @@ Sleep 600ms
 Enter
 Sleep 1200ms
 
-# Tab is a non-char key: it flows past the Logs filter to the global keymap
-# and moves focus to the sidebar, so the palette ":" works again.
-Tab
-Sleep 500ms
+# Ctrl+K opens the command palette even from the Logs text-entry screen
+# (it is bound in the `Capture::Text` context — the `⌘K palette` the
+# footer advertises). One deterministic chord; no fragile `Tab` dance
+# whose focus-then-`:` timing flaked in headless VHS.
+Ctrl+K
+Sleep 600ms
 
 # Metrics — the deterministic final frame ("Latency heatmap" is static).
-Type ":"
-Sleep 500ms
 Type "metrics"
 Sleep 600ms
 Enter

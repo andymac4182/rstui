@@ -2,7 +2,7 @@
 //! screens — the same [`KitchenSink`] App the binary runs, driven with no
 //! TTY so an interaction regression fails `cargo test`.
 
-use rstui_core::{Event, KeyCode, KeyEvent, Size};
+use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Size};
 use rstui_kitchen_sink::KitchenSink;
 use rstui_runtime::Harness;
 
@@ -14,6 +14,9 @@ fn key(code: KeyCode) -> Event {
 }
 fn ch(c: char) -> Event {
     Event::from(KeyEvent::char(c))
+}
+fn ctrl(c: char) -> Event {
+    Event::from(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
 fn typed(h: &mut Harness<KitchenSink>, s: &str) {
     for c in s.chars() {
@@ -326,6 +329,48 @@ fn editing_the_agent_document_re_renders_the_output_live() {
         s.contains("invalid json-render"),
         "editing the buffer re-projected to the invalid-document \
          placeholder (the output tracks the edited source live):\n{s}"
+    );
+    assert!(h.is_running());
+}
+
+#[test]
+fn command_palette_opens_from_a_text_entry_screen_via_ctrl_k() {
+    // The regression: on an editor/text-entry screen `:` is raw text
+    // (it types into the buffer), so the command palette could not be
+    // reopened deterministically — a tape/user was trapped and had to
+    // rely on a fragile `Tab` dance. `Ctrl/Cmd+K` (the chord the footer
+    // already advertises) must open the palette from *any* screen.
+    let mut h = harness();
+    goto(&mut h, "a2ui"); // an editable code-editor screen (is_text_entry)
+
+    // ':' is raw here — it lands in the editor buffer, NOT the palette.
+    typed(&mut h, ":zzz");
+    let trapped = h.snapshot();
+    assert!(
+        !trapped.contains("Go to screen"),
+        "':' must NOT open the palette on a text-entry screen"
+    );
+    assert!(
+        trapped.contains(":zzz"),
+        "':' typed into the editor buffer (the trap this fix removes):\n{trapped}"
+    );
+
+    // Ctrl+K opens the palette from the editor — one chord, no Tab dance.
+    h.handle(ctrl('k'));
+    assert!(
+        h.snapshot().contains("Go to screen"),
+        "Ctrl+K opens the command palette from the editor screen:\n{}",
+        h.snapshot()
+    );
+
+    // …and it actually navigates (proving the palette is live, not just
+    // drawn): jump to the json-render screen.
+    typed(&mut h, "json-render");
+    h.handle(key(KeyCode::Enter));
+    let s = h.snapshot();
+    assert!(
+        s.contains("Rendered output") && s.contains("json-render"),
+        "Ctrl+K palette navigated out of the editor screen:\n{s}"
     );
     assert!(h.is_running());
 }

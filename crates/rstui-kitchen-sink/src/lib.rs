@@ -282,13 +282,21 @@ impl KitchenSink {
                 k.bind(DEVTOOLS, "f12");
                 // A focused text screen is a `Capture::Text` context
                 // (ADR 0020): while it is active every bare key is raw
-                // input (`q` types `q`) and only these explicit clipboard
-                // chords still fire — replacing the old
-                // `!ctrl && Char(_)` heuristic with the engine model.
+                // input (`q` types `q`) and only these explicit chords
+                // still fire — replacing the old `!ctrl && Char(_)`
+                // heuristic with the engine model.
                 k.register_context("text", keymap::Capture::Text);
                 k.bind_in("text", keymap::Action::Copy, "ctrl+c, cmd+c");
                 k.bind_in("text", keymap::Action::Cut, "ctrl+x, cmd+x");
                 k.bind_in("text", keymap::Action::Paste, "ctrl+v, cmd+v");
+                // The command palette must be reachable even from a
+                // text-entry/editor screen — otherwise `:` types into the
+                // buffer and the screen traps you (no deterministic way
+                // back to global navigation). `Ctrl/Cmd+K` is the
+                // non-char chord the footer already advertises (`⌘K
+                // palette`); binding it in the text context makes that
+                // promise true everywhere, with one key, no `Tab` dance.
+                k.bind_in("text", keymap::Action::Palette, "ctrl+k, cmd+k");
                 k
             },
             drawer_sel: 0,

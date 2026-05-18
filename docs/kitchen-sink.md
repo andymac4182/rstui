@@ -108,7 +108,10 @@ the same pure projection the [ACP client](acp-client.md) uses for
 agent-driven UI (ADR 0017). `PgUp`/`PgDn` switch the three worked
 examples per format (edits persist per example); typing edits the
 buffer. Being editor screens they are `is_text_entry` (they own every
-char key) and palette-only, so they carry app-scale coverage in
+char key, so `:` types into the buffer) — `Ctrl/⌘+K` opens the command
+palette from *any* screen including these (it is bound in the keymap's
+`Capture::Text` context, ADR 0020, so you are never trapped in an
+editor). They are palette-only, so they carry app-scale coverage in
 `crates/rstui-kitchen-sink/tests/experiences.rs` plus the real-binary
 `vhs/e2e/agent-ui.{tape,expect}` gate (`cargo xtask record e2e --check`).
 
