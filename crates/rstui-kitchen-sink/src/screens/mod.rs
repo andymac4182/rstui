@@ -11,6 +11,8 @@
 //! mutates it, exactly as the top-level [`App`](rstui_runtime::App) reducer
 //! does for the shell.
 
+pub(crate) mod a2ui_demo;
+pub(crate) mod agent_ui;
 pub(crate) mod analytics;
 pub(crate) mod board;
 pub(crate) mod chat;
@@ -23,6 +25,7 @@ pub(crate) mod feedback;
 pub(crate) mod files_app;
 pub(crate) mod forms;
 pub(crate) mod ide;
+pub(crate) mod json_render_demo;
 pub(crate) mod login;
 pub(crate) mod logs;
 pub(crate) mod mail;
@@ -212,6 +215,12 @@ pub(crate) enum Screen {
     /// The analytical chart catalog: scatter, radar, box plot, candlestick,
     /// treemap and Sankey — the exploratory (non-dashboard) chart types.
     Analytics,
+    /// Agent-driven UI: a Google **A2UI** v0.10 document an agent sent,
+    /// shown verbatim beside its live `rstui-jsonui` projection.
+    A2ui,
+    /// Agent-driven UI: a Vercel **json-render** flat spec an agent sent,
+    /// shown verbatim beside its live `rstui-jsonui` projection.
+    JsonRender,
 }
 
 /// One visual row of the navigation rail: a section header or a screen entry.
@@ -226,7 +235,7 @@ pub(crate) enum SidebarRow {
 impl Screen {
     /// Every screen in fixed display order. The sidebar, the hotkeys, and the
     /// command palette all index this, so they cannot disagree.
-    pub(crate) const ALL: [Screen; 23] = [
+    pub(crate) const ALL: [Screen; 25] = [
         Screen::Welcome,
         Screen::Forms,
         Screen::Navigation,
@@ -250,6 +259,8 @@ impl Screen {
         Screen::Metrics,
         Screen::Traces,
         Screen::Analytics,
+        Screen::A2ui,
+        Screen::JsonRender,
     ];
 
     /// This screen's index into [`ALL`](Self::ALL).
@@ -275,8 +286,10 @@ impl Screen {
             "EXPERIENCES"
         } else if self.index() < 22 {
             "OBSERVABILITY"
-        } else {
+        } else if self.index() < 23 {
             "CHART CATALOG"
+        } else {
+            "AGENT UI"
         }
     }
 
@@ -306,6 +319,8 @@ impl Screen {
             Screen::Metrics => "Metrics",
             Screen::Traces => "Traces",
             Screen::Analytics => "Analytics",
+            Screen::A2ui => "A2UI",
+            Screen::JsonRender => "json-render",
         }
     }
 
@@ -335,6 +350,8 @@ impl Screen {
             Screen::Metrics => '∿',
             Screen::Traces => '⋔',
             Screen::Analytics => '◔',
+            Screen::A2ui => 'Ⓐ',
+            Screen::JsonRender => 'Ⓙ',
         }
     }
 
@@ -366,6 +383,8 @@ impl Screen {
             Screen::Analytics => {
                 "Analytics — scatter · radar · box · candlestick · treemap · Sankey"
             }
+            Screen::A2ui => "A2UI — an agent's UI document, rendered (source ⇆ output)",
+            Screen::JsonRender => "json-render — an agent's flat spec, rendered (source ⇆ output)",
         }
     }
 
@@ -436,6 +455,8 @@ pub(crate) struct ScreenState {
     pub(crate) metrics: metrics::State,
     pub(crate) traces: traces::State,
     pub(crate) analytics: analytics::State,
+    pub(crate) a2ui: a2ui_demo::State,
+    pub(crate) json_render: json_render_demo::State,
 }
 
 impl ScreenState {
@@ -464,6 +485,8 @@ impl ScreenState {
             metrics: metrics::State::new(),
             traces: traces::State::new(),
             analytics: analytics::State::new(),
+            a2ui: a2ui_demo::State::new(),
+            json_render: json_render_demo::State::new(),
         }
     }
 
@@ -493,6 +516,8 @@ impl ScreenState {
             Screen::Metrics => self.metrics.on_key(code),
             Screen::Traces => self.traces.on_key(code),
             Screen::Analytics => self.analytics.on_key(code),
+            Screen::A2ui => self.a2ui.on_key(code),
+            Screen::JsonRender => self.json_render.on_key(code),
         }
     }
 
@@ -525,7 +550,11 @@ impl ScreenState {
             Screen::Observability => self.observability.on_click(pos, content),
             Screen::Traces => self.traces.on_click(pos, content),
             Screen::Analytics => self.analytics.on_click(pos, content),
-            Screen::Containers | Screen::Logs | Screen::Metrics => ScreenOutcome::ignored(),
+            Screen::Containers
+            | Screen::Logs
+            | Screen::Metrics
+            | Screen::A2ui
+            | Screen::JsonRender => ScreenOutcome::ignored(),
         }
     }
 
@@ -591,6 +620,8 @@ impl ScreenState {
             Screen::Logs => self.logs.on_scroll(up),
             Screen::Ide => self.ide.on_scroll(up),
             Screen::Traces => self.traces.on_scroll(up),
+            Screen::A2ui => self.a2ui.on_scroll(up),
+            Screen::JsonRender => self.json_render.on_scroll(up),
             _ => {}
         }
     }
@@ -691,6 +722,8 @@ impl ScreenState {
             Screen::Metrics => self.metrics.view(theme, tick, frame, area),
             Screen::Traces => self.traces.view(theme, tick, frame, area),
             Screen::Analytics => self.analytics.view(theme, tick, frame, area),
+            Screen::A2ui => self.a2ui.view(theme, frame, area),
+            Screen::JsonRender => self.json_render.view(theme, frame, area),
         }
     }
 }

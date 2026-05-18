@@ -34,3 +34,8 @@ rstui-theme = { path = "../rstui-theme" }
 # crossterm `run_app_with_observer` seam; `F12` toggles it. The kitchen
 # sink is the worked reference for hooking DevTools into a real app.
 rstui-devtools = { path = "../rstui-devtools" }
+# The declarative agent-UI engine (A2UI + json-render); the two Agent UI
+# scenes render an agent's document through it (ADR 0017). `serde_json`
+# parses the json-render spec the demo feeds the engine.
+rstui-jsonui = { path = "../rstui-jsonui" }
+serde_json = { version = "1", default-features = false, features = ["std"] }

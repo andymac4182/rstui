@@ -956,10 +956,12 @@ dependencies = [
  "rstui-core",
  "rstui-crossterm",
  "rstui-devtools",
+ "rstui-jsonui",
  "rstui-keymap",
  "rstui-runtime",
  "rstui-theme",
  "rstui-widgets",
+ "serde_json",
 ]
 
 [[package]]

@@ -236,3 +236,68 @@ fn trace_explorer_toggles_waterfall_and_flame() {
         "`f` toggles to the flame graph:\n{after}"
     );
 }
+
+#[test]
+fn agent_ui_rail_has_its_own_section() {
+    let s = harness().snapshot();
+    assert!(s.contains("AGENT UI"), "rail has an Agent UI section:\n{s}");
+    assert!(s.contains("A2UI"), "A2UI appears in the rail");
+}
+
+#[test]
+fn a2ui_screen_renders_the_agent_document_beside_its_output() {
+    let mut h = harness();
+    goto(&mut h, "a2ui");
+    let s = h.snapshot();
+    // The split exists: the verbatim agent response and its projection.
+    assert!(
+        s.contains("Agent response") && s.contains("Rendered output"),
+        "A2UI screen shows the source⇆output split:\n{s}"
+    );
+    assert!(
+        s.contains("example 1/3"),
+        "starts on the first example:\n{s}"
+    );
+    // The left pane shows the raw A2UI envelope; the right pane shows it
+    // rendered (the bound value resolved from `updateDataModel`).
+    assert!(s.contains("createSurface"), "the raw A2UI stream is shown");
+    assert!(
+        s.contains("Create your account") && s.contains("ada@example.com"),
+        "the projected, data-bound form rendered:\n{s}"
+    );
+    // ←/→ switches examples (and resets scroll).
+    h.handle(key(KeyCode::Right));
+    let s2 = h.snapshot();
+    assert!(
+        s2.contains("example 2/3") && s2.contains("Ada Lovelace"),
+        "→ advances to the profile-card example:\n{s2}"
+    );
+    assert!(h.is_running());
+}
+
+#[test]
+fn json_render_screen_renders_the_agent_spec_beside_its_output() {
+    let mut h = harness();
+    goto(&mut h, "json-render");
+    let s = h.snapshot();
+    assert!(
+        s.contains("Agent response") && s.contains("Rendered output"),
+        "json-render screen shows the source⇆output split:\n{s}"
+    );
+    assert!(s.contains("example 1/3"));
+    assert!(s.contains("\"flexDirection\""), "the raw spec is shown");
+    // `✔` is produced only by the rendered StatusLine widget (the source
+    // JSON has the text but not the glyph) — proof the right pane is a
+    // live projection, not an echo of the source.
+    assert!(
+        s.contains("api-gateway") && s.contains('✔'),
+        "the projected StatusLine rendered with its glyph:\n{s}"
+    );
+    h.handle(key(KeyCode::Right));
+    let s2 = h.snapshot();
+    assert!(
+        s2.contains("example 2/3") && s2.contains("Cache hit rate"),
+        "→ advances to the metrics example:\n{s2}"
+    );
+    assert!(h.is_running());
+}
