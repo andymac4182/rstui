@@ -26,6 +26,7 @@ fits what you are doing.
 - **Agent-driven UI** — [`docs/agent-ui.md`](agent-ui.md) (render an agent's A2UI / json-render document; the AI-app widget set; ADR 0017)
 - **Keymaps** — [`docs/keymaps.md`](keymaps.md) (customisable, per-OS, multi-keymap keybindings; ADR 0015/0020) · [`keymap-review.md`](keymap-review.md) (the comparative audit vs opencode/Textual/VS Code/Vim/Helix)
 - **Code review & editing roadmap** — [`docs/code-review-and-editing.md`](code-review-and-editing.md) (vim-grade editing + hunk-grade review: capability audit and wave plan)
+- **Code editor & diff deep dive** — [`docs/code-editor-and-diff-deep-dive.md`](code-editor-and-diff-deep-dive.md) (syntax colour, the scrolling defect, select-then-replace, a symbol/outline panel, and a whole-widget gap audit; engine choice in [ADR 0022](adr/0022-syntax-colour-and-symbol-engine.md))
 - **Theming** — [`docs/theming.md`](theming.md) (every gpui-component theme, as a terminal palette)
 - **Conventions** — [`docs/conventions/`](conventions/README.md) (naming gate)
 - **Inner loop** — [`docs/development.md`](development.md) (`cargo xtask ci`)

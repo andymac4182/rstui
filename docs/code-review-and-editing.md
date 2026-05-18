@@ -389,6 +389,12 @@ Those two chains are independent and can run as parallel streams.
 
 ## See also
 
+- [code-editor-and-diff-deep-dive.md](code-editor-and-diff-deep-dive.md) —
+  the companion deep dive: deepens this roadmap's scrolling (`E3a`) and
+  select-then-replace (`E1b/E1e/E3a`) threads, **revises** the
+  syntax-highlighting non-goal below into a specified two-tier design
+  ([ADR 0022](adr/0022-syntax-colour-and-symbol-engine.md)), adds a
+  symbol/outline panel, and audits every other `Editor`/`Diff` gap.
 - [Architecture](architecture.md) · [ADR 0004](adr/0004-focus-routing-architecture.md)
   · [ADR 0012](adr/0012-widget-composition-and-layout-model.md) ·
   [composition.md](composition.md) — the pure-projection rule the whole

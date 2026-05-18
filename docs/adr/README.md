@@ -51,3 +51,4 @@ MADR-style shape:
 | [0019](0019-node-shared-memory-via-napi.md) | Node/Bun shared memory via a napi-rs addon — built, measured, productionised for parity (event-loop-bound ≈ stdio, not faster) | Accepted |
 | [0020](0020-keymap-contexts.md) | Keymap contexts (modes & text input): pure-data `bind_in` + context stack + `Capture` — Vim-mode/VS Code-`when`/Textual-focus synthesis; amends ADR 0015's shell-level-only stance, fully additive | Accepted |
 | [0021](0021-reusable-plugin-framework-core.md) | Reusable plugin-framework core (`rstui-plugin-core`) vs. ACP vocabulary layer — generic `Protocol` trait, ACP API byte-stable | Accepted |
+| [0022](0022-syntax-colour-and-symbol-engine.md) | Syntax-colour & symbol engine: dependency-free language-aware lexer floor + optional per-language feature-gated tree-sitter tier (one parse → highlight *and* symbols); TextMate/Oniguruma rejected (highlight-only) | Accepted |
