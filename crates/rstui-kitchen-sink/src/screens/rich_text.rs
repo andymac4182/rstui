@@ -10,13 +10,24 @@ use rstui_core::{
 };
 use rstui_runtime::Frame;
 use rstui_widgets::mermaid::MermaidGraph;
-use rstui_widgets::{Block, BorderType, Kbd, Markdown, Mermaid, Paragraph, Tabs, Wrap};
+use rstui_widgets::{
+    Block, BorderType, JsonCanvas, Kbd, Markdown, Mermaid, Paragraph, Structurizr, Tabs, Wrap,
+};
 
 use crate::screens::ScreenOutcome;
 use crate::theme::Theme;
 
-/// The four sub-views.
-const TABS: [&str; 4] = ["Paragraph", "Markdown", "Mermaid", "Spans"];
+/// The six sub-views: the three text renderers, the two diagram DSLs
+/// (auto-layout C4 via [`Structurizr`] and explicit-placement
+/// [`JsonCanvas`]), and the styled-span sampler.
+const TABS: [&str; 6] = [
+    "Paragraph",
+    "Markdown",
+    "Mermaid",
+    "Structurizr",
+    "JSON Canvas",
+    "Spans",
+];
 
 /// The wrapped-paragraph body.
 const PROSE: &str = "rstui renders styled text through a three-level model: a Span is one run with one Style, a Line is a row of Spans with an optional Alignment, and a Text is a stack of Lines. Widgets never retain this — they project it into the cell Buffer every frame. This Paragraph turns on trimming soft word wrap, so the prose reflows to whatever width the panel currently has; scroll it with the arrow keys or the mouse wheel and the offset is plain caller-owned state the widget only reads. Resize the terminal and the wrap recomputes deterministically with no float math. The same Buffer-stamping contract is everything a third-party widget needs.";
@@ -49,6 +60,46 @@ B -->|Some msg| C[update]
 B -->|None| A
 C --> D[view]
 D --> A";
+
+/// The Structurizr DSL source — a C4 model the widget *auto-lays-out* into
+/// a System Context view (the agent describes structure, not positions).
+const WORKSPACE: &str = "\
+workspace \"rstui\" \"The TUI framework\" {
+  model {
+    dev = person \"Developer\" \"Builds a TUI app\"
+    rstui = softwareSystem \"rstui\" \"Immediate-mode TUI framework\" {
+      core = container \"rstui-core\" \"Buffer/layout/event\" \"Rust\"
+      widgets = container \"rstui-widgets\" \"The widget catalog\" \"Rust\"
+    }
+    term = softwareSystem \"Terminal\" \"xterm / crossterm\" \"External\"
+    dev -> widgets \"Composes\"
+    widgets -> core \"Built on\"
+    core -> term \"Draws to\"
+  }
+  views {
+    systemContext rstui \"Context\" {
+      include *
+      autolayout lr
+    }
+  }
+}";
+
+/// The JSON Canvas source — the *explicit-placement* complement: every node
+/// carries its own `x/y/width/height`, so the author controls the layout.
+const CANVAS: &str = r#"{
+  "nodes":[
+    {"id":"g","type":"group","x":-20,"y":-20,"width":400,"height":220,"label":"Elm loop","color":"5"},
+    {"id":"ev","type":"text","text":"Event","x":0,"y":0,"width":150,"height":70},
+    {"id":"up","type":"text","text":"update()","x":210,"y":0,"width":150,"height":70,"color":"4"},
+    {"id":"vw","type":"text","text":"view()","x":210,"y":110,"width":150,"height":70},
+    {"id":"docs","type":"link","url":"https://jsoncanvas.org","x":470,"y":40,"width":210,"height":70}
+  ],
+  "edges":[
+    {"id":"e1","fromNode":"ev","fromSide":"right","toNode":"up","toSide":"left","label":"msg"},
+    {"id":"e2","fromNode":"up","fromSide":"bottom","toNode":"vw","toSide":"top"},
+    {"id":"e3","fromNode":"vw","fromSide":"left","toNode":"ev","toSide":"bottom","label":"redraw"}
+  ]
+}"#;
 
 /// The active tab and the document scroll offset.
 #[derive(Debug)]
@@ -196,6 +247,18 @@ impl State {
                     body,
                 );
             }
+            3 => frame.render_widget(
+                Structurizr::new(WORKSPACE)
+                    .style(theme.body())
+                    .block(framed(theme, "Structurizr · C4 (auto-layout)")),
+                body,
+            ),
+            4 => frame.render_widget(
+                JsonCanvas::new(CANVAS)
+                    .style(theme.body())
+                    .block(framed(theme, "JSON Canvas · explicit placement")),
+                body,
+            ),
             _ => self.view_spans(theme, frame, body),
         }
 

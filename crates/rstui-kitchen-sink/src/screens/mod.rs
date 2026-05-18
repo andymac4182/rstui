@@ -172,7 +172,8 @@ pub(crate) enum Screen {
     Feedback,
     /// Blocks, cards, grids, split panes, dividers, alignment, scrolling.
     Containers,
-    /// Paragraph, Markdown, Mermaid, links, the styled-text model.
+    /// Paragraph, Markdown, Mermaid, Structurizr (C4), JSON Canvas, links,
+    /// the styled-text model.
     RichText,
     /// Full-colour lab: ANSI, 256-indexed, RGB truecolor, modifiers.
     Colour,
@@ -346,7 +347,7 @@ impl Screen {
             Screen::Data => "Data Display — charts, calendars, diffs",
             Screen::Feedback => "Feedback — alerts, toasts, spinners",
             Screen::Containers => "Containers — blocks, grids, scrolling",
-            Screen::RichText => "Rich Text — Markdown, Mermaid, styled spans",
+            Screen::RichText => "Rich Text — Markdown · Mermaid · Structurizr · Canvas · spans",
             Screen::Colour => "Colour Lab — ANSI · 256 · truecolor",
             Screen::DataGrid => "Data Grid — sort · filter · group · scroll · edit",
             Screen::Chat => "Chat — channels, threads, a live composer",

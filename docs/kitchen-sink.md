@@ -41,7 +41,7 @@ The kitchen sink follows the exact model the rest of the docs describe:
 | 4 | Data | `BarChart`, `Gauge`, `Calendar`, `Diff`, `DescriptionList`, `Accordion` |
 | 5 | Feedback | `Alert`, `Badge`, `Spinner`, `Skeleton`, `Tooltip`, `Popover` |
 | 6 | Containers | `Block`, `Card`, `Grid`, `SplitPane`, `Divider`, `Align`, `ScrollView`, `Scrollbar` |
-| 7 | Rich Text | `Paragraph`, `Markdown`, `Mermaid` |
+| 7 | Rich Text | `Paragraph`, `Markdown`, `Mermaid`, `Structurizr` (C4), `JsonCanvas` (explicit placement) |
 | 8 | Colour Lab | ANSI / 256-indexed / RGB truecolor / modifiers |
 | 9 | Data Grid | `DataTable` — sort, filter, group, virtualized scroll, mouse hit-testing, in-cell editing |
 
