@@ -790,6 +790,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstui-devtools"
+version = "0.0.1"
+dependencies = [
+ "rstui-core",
+ "rstui-runtime",
+ "rstui-widgets",
+]
+
+[[package]]
 name = "rstui-git-review"
 version = "0.0.1"
 dependencies = [

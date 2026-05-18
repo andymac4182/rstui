@@ -1,0 +1,43 @@
+[package]
+name = "rstui-devtools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "Opt-in, dev/debug perf-tracking + Chrome-DevTools-style introspection for apps built on rstui (ADR 0018). Never a dependency of rstui-core/-widgets/-runtime."
+
+# ADR 0018 §2: this crate deliberately does NOT carry `[lints] workspace =
+# true`. The workspace policy is `unsafe_code = "forbid"` (ADR 0003 §1),
+# which no `#[allow]` can lift — and a counting `GlobalAlloc` is
+# irreducibly `unsafe`. So this leaf crate mirrors the *entire* workspace
+# lint policy verbatim and changes exactly one line: `unsafe_code = "deny"`
+# (not "forbid"), so the single audited allocator shim in `alloc.rs` may
+# carry one scoped `#[allow(unsafe_code)]`. Every other file is held to the
+# same bar as the rest of the workspace. Keep this block in sync with
+# `[workspace.lints]` in the root `Cargo.toml`; ADR 0003 §3 defers
+# `clippy::pedantic` to a future phase, so the list is intentionally short.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+invalid_codeblock_attributes = "deny"
+unescaped_backticks = "warn"
+
+[lints.clippy]
+uninlined_format_args = "warn"
+needless_pass_by_value = "warn"
+
+# First-party rstui crates + std only, mirroring `rstui-bench`/`xtask`
+# (ADR 0003 §7, ADR 0005): the dev tooling must not pull a profiling
+# framework. The dependency direction is one-way — devtools depends on
+# core/widgets/runtime, never the reverse (ADR 0018 §1).
+[dependencies]
+rstui-core = { path = "../rstui-core" }
+rstui-widgets = { path = "../rstui-widgets" }
+rstui-runtime = { path = "../rstui-runtime" }

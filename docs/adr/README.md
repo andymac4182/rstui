@@ -46,3 +46,5 @@ MADR-style shape:
 | [0014](0014-comprehensive-interactive-datatable.md) | Comprehensive interactive DataTable (reducer-run pipeline, pure projection, borrowed-`TextEdit` editing) | Accepted |
 | [0015](0015-keymap-architecture.md) | Customisable keymap engine as a shared crate (semantic actions, per-OS, multi-keymap, leader sequences, runtime remap; Textual + OpenCode synthesis) | Accepted |
 | [0016](0016-shared-memory-plugin-transport.md) | Shared-memory plugin transport (opt-in, Rust-only, scoped spin — flat sub-µs RTT) | Accepted |
+| [0017](0017-ai-app-widgets-and-declarative-agent-ui.md) | AI-app widgets and declarative agent-driven UI rendering | Accepted |
+| [0018](0018-devtools-and-perf-tooling.md) | DevTools + repeatable perf-tracking tooling (opt-in leaf crate, scoped-unsafe counting allocator, additive `FrameObserver` seam, `cargo xtask perf`) | Accepted |
