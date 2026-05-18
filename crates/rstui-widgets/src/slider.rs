@@ -305,6 +305,90 @@ impl<'a> Slider<'a> {
         let f = (self.value - self.min) / span;
         if f.is_nan() { 0.0 } else { f.clamp(0.0, 1.0) }
     }
+
+    /// The track's rect for `area` — the draggable region, with the optional
+    /// [`label`](Self::label) / [`value_label`](Self::value_label) reserved
+    /// out exactly as [`render`](Widget::render) lays them out.
+    ///
+    /// Hit-test this on mouse-down to begin a drag; map the pointer to a
+    /// value with [`value_at`](Self::value_at). Empty when the labels leave
+    /// no room (then `value_at` is a no-op) — pure and total.
+    #[must_use]
+    pub fn track_rect(&self, area: Rect) -> Rect {
+        if area.is_empty() {
+            return Rect::ZERO;
+        }
+        match self.orientation {
+            SliderOrientation::Horizontal => {
+                let y = area.top();
+                let right = area.right();
+                let mut track_left = area.left();
+                if let Some(l) = &self.label {
+                    track_left = track_left
+                        .saturating_add(l.width() as u16)
+                        .saturating_add(1)
+                        .min(right);
+                }
+                let mut track_right = right;
+                if let Some(v) = &self.value_label {
+                    let w = (v.width() as u16).saturating_add(1);
+                    track_right = track_right.saturating_sub(w).max(track_left);
+                }
+                Rect::new(track_left, y, track_right.saturating_sub(track_left), 1)
+            }
+            SliderOrientation::Vertical => {
+                let x = area.left();
+                let mut track_top = area.top();
+                let mut track_bottom = area.bottom();
+                if self.label.is_some() {
+                    track_top = track_top.saturating_add(1).min(track_bottom);
+                }
+                if self.value_label.is_some() {
+                    let row = track_bottom.saturating_sub(1);
+                    if row >= track_top {
+                        track_bottom = row;
+                    }
+                }
+                Rect::new(
+                    x,
+                    track_top,
+                    area.width,
+                    track_bottom.saturating_sub(track_top),
+                )
+            }
+        }
+    }
+
+    /// The [`value`](Self::value) the pointer `pos` selects on the track —
+    /// feed it straight back as the new value on every press/drag.
+    ///
+    /// The inverse of [`fraction`](Self::fraction): pure and **total**, the
+    /// pointer is clamped onto the track and the result into
+    /// `min..=max` (a vertical track fills bottom-up, matching the render);
+    /// a degenerate range or a track with no room returns the current
+    /// [`value`](Self::value) unchanged.
+    #[must_use]
+    pub fn value_at(&self, area: Rect, pos: Position) -> f64 {
+        let span = self.max - self.min;
+        let tr = self.track_rect(area);
+        if !span.is_finite() || span <= 0.0 || tr.is_empty() {
+            return self.value;
+        }
+        let fraction = match self.orientation {
+            SliderOrientation::Horizontal => {
+                let denom = f64::from(tr.width.saturating_sub(1).max(1));
+                f64::from(pos.x.saturating_sub(tr.x)) / denom
+            }
+            SliderOrientation::Vertical => {
+                // Bottom-up: the bottom row is `min`, the top row `max`.
+                let denom = f64::from(tr.height.saturating_sub(1).max(1));
+                let up = tr.bottom().saturating_sub(1).saturating_sub(pos.y);
+                f64::from(up) / denom
+            }
+        }
+        .clamp(0.0, 1.0);
+        (self.min + fraction * span).clamp(self.min, self.max)
+    }
 }
 
 impl Default for Slider<'_> {
@@ -748,5 +832,64 @@ mod tests {
                 assert_eq!(buf.get(Position::new(x, y)).unwrap().bg, Color::Blue);
             }
         }
+    }
+
+    #[track_caller]
+    fn near(got: f64, want: f64) {
+        assert!((got - want).abs() < 1e-9, "got {got}, want {want}");
+    }
+
+    #[test]
+    fn track_rect_reserves_the_labels() {
+        let s = Slider::new().label("Vol").value_label("50%");
+        // left label "Vol"(3)+gap(1) ⇒ x=4; right "50%"(3)+gap(1) ⇒ ends 16.
+        assert_eq!(s.track_rect(Rect::new(0, 0, 20, 1)), Rect::new(4, 0, 12, 1));
+        // No labels ⇒ the whole row is the track.
+        assert_eq!(
+            Slider::new().track_rect(Rect::new(0, 0, 10, 1)),
+            Rect::new(0, 0, 10, 1)
+        );
+    }
+
+    #[test]
+    fn value_at_inverts_the_track_and_clamps() {
+        let s = Slider::new().range(0.0, 100.0);
+        let area = Rect::new(0, 0, 11, 1); // track 0..11, denom 10
+        near(s.value_at(area, Position::new(0, 0)), 0.0);
+        near(s.value_at(area, Position::new(5, 0)), 50.0);
+        near(s.value_at(area, Position::new(10, 0)), 100.0);
+        // Off either end is clamped, never a panic.
+        near(s.value_at(area, Position::new(999, 0)), 100.0);
+        near(s.value_at(area, Position::new(0, 0)), 0.0);
+    }
+
+    #[test]
+    fn value_at_vertical_fills_bottom_up() {
+        let s = Slider::new()
+            .range(0.0, 100.0)
+            .orientation(SliderOrientation::Vertical);
+        let area = Rect::new(0, 0, 1, 11); // track height 11, denom 10
+        near(s.value_at(area, Position::new(0, 10)), 0.0); // bottom ⇒ min
+        near(s.value_at(area, Position::new(0, 5)), 50.0);
+        near(s.value_at(area, Position::new(0, 0)), 100.0); // top ⇒ max
+    }
+
+    #[test]
+    fn value_at_is_total_on_a_degenerate_range_or_empty_area() {
+        // min == max ⇒ the current value, never NaN/panic.
+        near(
+            Slider::new()
+                .value(7.0)
+                .range(5.0, 5.0)
+                .value_at(Rect::new(0, 0, 10, 1), Position::new(4, 0)),
+            7.0,
+        );
+        // No room ⇒ unchanged.
+        near(
+            Slider::new()
+                .value(0.3)
+                .value_at(Rect::new(0, 0, 0, 0), Position::new(0, 0)),
+            0.3,
+        );
     }
 }

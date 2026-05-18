@@ -218,8 +218,9 @@ reducer owns the drag/selection.
 
 | Class | Widgets | Seam |
 |---|---|---|
-| **Resizable (drag seam)** | `SplitPane` | `contains_divider` + `resize_to` (above) |
+| **Resizable / drag-to-set (drag seam)** | `SplitPane` | `contains_divider` + `resize_to` (above) |
 | | `Scrollbar` / `ScrollView` | draggable thumb: `thumb_rect` + `position_at` (`*_scrollbar_rect` on `ScrollView`) |
+| | `Slider` | drag-to-set: `track_rect` + `value_at` (pure, clamped to `min..=max`, both axes) |
 | **Pure layout** (resize = change its input `Constraint`s, plain model state) | `Layout` (core), `Grid`, `Align`, `Flow`, `Card`, `Block` | `split` / `cell` / `inner` `Rect` accessors |
 | **Pointer-navigable** (app hit-tests a `Rect` accessor; click/drag, not resize) | `Tabs`, `Accordion`, `Sidebar`, `List`, `Tree`, `Table`, `Menu`, `Select`, `Pagination`, `Stepper`, `DataTable`, `Calendar`/`DatePicker`, `Link`/`Markdown` (link regions), `Modal`/`Popover`/`Drawer` (`area`/`panel` focus accessors) | the screen maps a click to an index/region against the widget's geometry; full drag-and-drop uses the pointer-gesture recipe above |
 | **Decorative** (no pointer surface by design) | `Paragraph`, `Gauge`, `Badge`, `Spinner`, `Skeleton`, `Divider`, charts, `StatusBar`, `Toast`, `Kbd`, `Avatar` | — |

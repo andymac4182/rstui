@@ -18,7 +18,15 @@ A horizontal/vertical value selector with sub-cell eighth-block precision.
 Slider::default()
 .value(f64) .min(f64) .max(f64) .focused(bool)
 .label(impl Into<Line>) .value_label(impl Into<Line>) .orientation(SliderOrientation)
+.fraction() -> f64
+// drag-to-set mouse seam (pure; the reducer owns `value`):
+.track_rect(area: Rect) -> Rect                       // the draggable region
+.value_at(area: Rect, pos: Position) -> f64           // clamped to min..=max, total
 ```
+
+Click/drag-to-set is a 2-line reducer (`on Down/Drag in track_rect ⇒
+value = value_at(pos)`) — see the widget mouse-friendliness review in
+[composition.md](../composition.md#widget-review-what-is-mouse-friendly-and-how).
 
 **Demo:** `cargo run -p rstui-widgets --example slider_demo`
 
