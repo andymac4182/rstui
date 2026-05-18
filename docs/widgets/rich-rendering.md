@@ -26,13 +26,27 @@ same total projection `rstui_ai::stream_markdown` uses for an inline diagram
 non-diagram fence is untouched and an unparseable diagram degrades to the
 renderer's own placeholder, never a panic.
 
-- **Companion types:** `MarkdownTheme`, `LinkRegion`, [`Link`](#link)
-- **State model:** pure projection of caller-owned markdown source + optional focused-link index.
+A diagram parse+layout is a `widget/markdown/render`-class cost *per
+diagram* — far more than the cheap prose re-wrap immediate mode assumes —
+so a screen that embeds diagrams *and* animates pays it every idle frame
+(~4.4 ms for one Mermaid + one Structurizr, and a clamp-in-view screen
+measures twice a frame). Attach a caller-owned `DiagramCache` with
+`.diagram_cache(&cache)`: the fence body is immutable, so its rasterised
+rows are memoised by `(source, width)` — the first frame at a width
+misses and computes them (byte-identical), every later frame is an `O(1)`
+lookup (a Mermaid+Structurizr doc went 4.70 ms → 31 µs, restoring 60 fps).
+The `ConversationCache`/UI-1/MD-1 caller-owned-cache model
+([ADR 0012](../adr/0012-widget-composition-and-layout-model.md) §P1);
+with no cache attached the widget is exactly as before.
+
+- **Companion types:** `MarkdownTheme`, `LinkRegion`, `DiagramCache`, [`Link`](#link)
+- **State model:** pure projection of caller-owned markdown source + optional focused-link index; `DiagramCache` (if attached) is caller-owned model state, read through like a `ScrollState`.
 
 ```rust
 Markdown::new(src: &str)
 .theme(MarkdownTheme) .focused_link(Option<usize>)
 .diagrams(bool)                     // opt-in: ```mermaid/```structurizr/```canvas → inline diagram
+.diagram_cache(&DiagramCache)       // memoise embedded diagrams by (source,width) — 60fps
 .links() -> Vec<Link>               // for keyboard focus/activation
 .link_regions() -> Vec<LinkRegion>  // hit-test rectangles
 .link_at(pos: Position) -> Option<usize>

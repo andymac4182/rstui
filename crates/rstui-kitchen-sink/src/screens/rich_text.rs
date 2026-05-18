@@ -13,7 +13,8 @@ use rstui_core::{
 use rstui_runtime::Frame;
 use rstui_widgets::mermaid::MermaidGraph;
 use rstui_widgets::{
-    Block, BorderType, JsonCanvas, Kbd, Markdown, Mermaid, Paragraph, Structurizr, Tabs, Wrap,
+    Block, BorderType, DiagramCache, JsonCanvas, Kbd, Markdown, Mermaid, Paragraph, Structurizr,
+    Tabs, Wrap,
 };
 
 use crate::screens::ScreenOutcome;
@@ -364,6 +365,14 @@ pub(crate) struct State {
     /// view falls back to `Mermaid::new(GRAPH)` (the identical error
     /// placeholder).
     mermaid: Option<MermaidGraph>,
+    /// Same MM-1/2 idea for §10's *embedded* diagrams: the
+    /// [`Markdown::diagrams`] fences are rasterised once per `(source,
+    /// width)` and reused, so an idle frame on the Markdown tab no longer
+    /// re-parses + re-lays-out a Mermaid **and** a Structurizr diagram (the
+    /// `view` reads it twice — the `max_scroll` clamp and the render — which
+    /// dropped this screen to ~9 fps). Model state the pure `view` only
+    /// reads; lives across frames.
+    diagrams: DiagramCache,
 }
 
 impl State {
@@ -373,6 +382,7 @@ impl State {
             tab: 0,
             scroll: 0,
             mermaid: Mermaid::parse(GRAPH).ok(),
+            diagrams: DiagramCache::new(),
         }
     }
 
@@ -416,7 +426,7 @@ impl State {
             // including the identical view-time scroll clamp — so the
             // widget's own link hit-test lands on exactly the drawn label.
             let sc = self.scroll.min(self.max_scroll(body));
-            let md = doc_md()
+            let md = doc_md(&self.diagrams)
                 .scroll(sc)
                 .block(Block::bordered().border_type(BorderType::Rounded));
             if let Some(idx) = md.link_at(pos, body) {
@@ -452,7 +462,7 @@ impl State {
             0 => Paragraph::new(PROSE)
                 .wrap(Wrap { trim: true })
                 .line_count(inner.width),
-            1 => doc_md().lines(inner.width).len(),
+            1 => doc_md(&self.diagrams).lines(inner.width).len(),
             _ => return 0,
         };
         u16::try_from(rows.saturating_sub(inner.height as usize)).unwrap_or(u16::MAX)
@@ -502,7 +512,7 @@ impl State {
                 body,
             ),
             1 => frame.render_widget(
-                doc_md()
+                doc_md(&self.diagrams)
                     .scroll(sc)
                     .style(theme.body())
                     .block(framed(theme, "Markdown · links + embedded diagrams")),
@@ -608,8 +618,15 @@ impl State {
 /// and ```` ```structurizr ```` blocks render as real diagrams *inline in
 /// the document*, scrolled and clamped like the prose around them, instead
 /// of as verbatim code.
-fn doc_md() -> Markdown<'static> {
-    Markdown::new(DOC).diagrams(true)
+///
+/// `cache` is the screen-owned [`DiagramCache`]: the same one is threaded
+/// through all three call sites, so the embedded Mermaid + Structurizr are
+/// rasterised once per `(source, width)` and every later frame (incl. the
+/// second `lines()` the same frame does for the scroll clamp) is an `O(1)`
+/// lookup — without it this screen re-laid-out both diagrams ~4× a frame
+/// and ran at ~9 fps.
+fn doc_md(cache: &DiagramCache) -> Markdown<'_> {
+    Markdown::new(DOC).diagrams(true).diagram_cache(cache)
 }
 
 /// A plain rounded framing block.

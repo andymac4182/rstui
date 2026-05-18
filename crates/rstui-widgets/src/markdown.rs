@@ -81,6 +81,7 @@
 use std::borrow::Cow;
 
 use crate::block::Block;
+use crate::diagram_cache::DiagramCache;
 use crate::json_canvas::JsonCanvas;
 use crate::link::Link;
 use crate::mermaid::Mermaid;
@@ -219,6 +220,7 @@ pub struct Markdown<'a> {
     theme: MarkdownTheme,
     focused_link: Option<usize>,
     diagrams: bool,
+    diagram_cache: Option<&'a DiagramCache>,
 }
 
 /// Where a link's label landed on screen, returned by
@@ -246,6 +248,7 @@ impl<'a> Markdown<'a> {
             theme: MarkdownTheme::default(),
             focused_link: None,
             diagrams: false,
+            diagram_cache: None,
         }
     }
 
@@ -315,6 +318,28 @@ impl<'a> Markdown<'a> {
         self
     }
 
+    /// Attaches a caller-owned [`DiagramCache`] so each embedded diagram is
+    /// rasterised **once per `(source, width)`** instead of every frame.
+    ///
+    /// Re-parsing a diagram DSL and re-running its layout engine is a
+    /// `widget/markdown/render`-class cost *per diagram* — far more than the
+    /// cheap prose re-wrap immediate mode assumes — so a screen that embeds
+    /// diagrams *and* animates pays it every idle frame and stutters. The
+    /// cache memoises the rasterised rows (the fence body is immutable, so
+    /// they are a pure function of `(source, width)`): the first frame at a
+    /// width misses and computes them on the unchanged path; every later
+    /// frame is an `O(1)` lookup. A hit and a miss produce **byte-identical**
+    /// lines (gate-enforced), and with no cache attached the widget is
+    /// exactly as before — the UI-1/MD-1 caller-owned-cache model
+    /// ([ADR 0012](https://github.com/andymac4182/rstui/blob/main/docs/composition.md)),
+    /// the [`diagram_cache`](crate::diagram_cache) module. No effect unless
+    /// [`diagrams(true)`](Self::diagrams) is also set.
+    #[must_use]
+    pub fn diagram_cache(mut self, cache: &'a DiagramCache) -> Self {
+        self.diagram_cache = Some(cache);
+        self
+    }
+
     /// Parses the source and lays it out to display rows for a content area
     /// `width` columns wide. Public so a host can measure a document (its row
     /// count) for scroll math or a surrounding scrollbar without re-rendering.
@@ -335,6 +360,7 @@ impl<'a> Markdown<'a> {
             &self.theme,
             true,
             self.diagrams,
+            self.diagram_cache,
             &mut rows,
         );
         rows
@@ -1920,6 +1946,7 @@ fn layout_blocks(
     theme: &MarkdownTheme,
     spacing: bool,
     diagrams: bool,
+    cache: Option<&DiagramCache>,
     out: &mut Vec<Line<'static>>,
 ) {
     for (idx, block) in blocks.iter().enumerate() {
@@ -1944,7 +1971,7 @@ fn layout_blocks(
                 // in place of the verbatim code rendering.
                 if diagrams {
                     if let Some(kind) = diagram_lang(lang) {
-                        diagram_rows(&lines.join("\n"), kind, width, out);
+                        diagram_rows(&lines.join("\n"), kind, width, cache, out);
                         continue;
                     }
                 }
@@ -1979,6 +2006,7 @@ fn layout_blocks(
                     theme,
                     spacing,
                     diagrams,
+                    cache,
                     &mut sub,
                 );
                 for line in sub {
@@ -2013,6 +2041,7 @@ fn layout_blocks(
                         theme,
                         *loose,
                         diagrams,
+                        cache,
                         &mut sub,
                     );
                     for (k, line) in sub.into_iter().enumerate() {
@@ -2068,19 +2097,45 @@ fn diagram_lang(info: &str) -> Option<DiagramKind> {
 /// Mermaid.
 const DIAGRAM_MAX_ROWS: u16 = 512;
 
-/// Rasterises one embedded diagram into display rows: dispatch the fence
-/// language to the matching draw-only widget, render it into a scratch
-/// `width`×[`DIAGRAM_MAX_ROWS`] buffer, then read the cells back as styled
-/// (coalesced) [`Line`]s with trailing all-blank rows trimmed. Deterministic
-/// and side-effect-free — the same scratch-buffer bridge
-/// [`Markdown::link_regions`] and `rstui_ai::stream_markdown` use — and
-/// total: an unparseable diagram is the underlying widget's own visible
-/// placeholder, never a panic.
-fn diagram_rows(source: &str, kind: DiagramKind, width: usize, out: &mut Vec<Line<'static>>) {
+/// Appends one embedded diagram's display rows to `out`. With a
+/// [`DiagramCache`] the rows are memoised by `(source, width)` so the
+/// expensive [`rasterise_diagram`] runs once per width, not every frame;
+/// without one it is computed fresh every call (the original, unchanged
+/// behaviour). A hit and a miss append byte-identical lines — both go
+/// through [`rasterise_diagram`] — so the cache is a transparent,
+/// purely-additive optimisation.
+fn diagram_rows(
+    source: &str,
+    kind: DiagramKind,
+    width: usize,
+    cache: Option<&DiagramCache>,
+    out: &mut Vec<Line<'static>>,
+) {
     let Ok(w) = u16::try_from(width) else { return };
     if w == 0 {
         return;
     }
+    match cache {
+        Some(c) => out.extend(
+            c.resolve(source, w, || rasterise_diagram(source, kind, w))
+                .iter()
+                .cloned(),
+        ),
+        None => out.append(&mut rasterise_diagram(source, kind, w)),
+    }
+}
+
+/// Rasterises one embedded diagram into display rows: dispatch the fence
+/// language to the matching draw-only widget, render it into a scratch
+/// `w`×[`DIAGRAM_MAX_ROWS`] buffer, then read the cells back as styled
+/// (coalesced) [`Line`]s with the centred canvas's leading/trailing blank
+/// band trimmed. Deterministic and side-effect-free (a pure function of
+/// `(source, kind, w)` — which is exactly why a [`DiagramCache`] can
+/// memoise it) — the same scratch-buffer bridge [`Markdown::link_regions`]
+/// and `rstui_ai::stream_markdown` use — and total: an unparseable diagram
+/// is the underlying widget's own visible placeholder, never a panic, and
+/// an empty band yields one row so `lines()` stays stable.
+fn rasterise_diagram(source: &str, kind: DiagramKind, w: u16) -> Vec<Line<'static>> {
     let mut scratch = Buffer::empty(Rect::new(0, 0, w, DIAGRAM_MAX_ROWS));
     let area = scratch.area();
     match kind {
@@ -2090,7 +2145,7 @@ fn diagram_rows(source: &str, kind: DiagramKind, width: usize, out: &mut Vec<Lin
     }
     let mut rows: Vec<Line<'static>> = Vec::with_capacity(DIAGRAM_MAX_ROWS as usize);
     for y in 0..DIAGRAM_MAX_ROWS {
-        let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(w as usize);
         for x in 0..w {
             if let Some(cell) = scratch.get(Position::new(x, y)) {
                 spans.push(Span::styled(cell.symbol.to_string(), cell.style()));
@@ -2106,13 +2161,12 @@ fn diagram_rows(source: &str, kind: DiagramKind, width: usize, out: &mut Vec<Lin
     // unparseable body has no band: keep a single row so the block still
     // occupies the flow and `lines()` stays stable.
     let blank = |l: &Line<'static>| l.spans.iter().all(|s| s.content.trim().is_empty());
-    let first = rows.iter().position(|l| !blank(l));
-    match first {
+    match rows.iter().position(|l| !blank(l)) {
         Some(top) => {
             let bot = rows.iter().rposition(|l| !blank(l)).unwrap_or(top);
-            out.extend(rows.drain(top..=bot));
+            rows.drain(top..=bot).collect()
         }
-        None => out.push(Line::default()),
+        None => vec![Line::default()],
     }
 }
 
@@ -3375,5 +3429,55 @@ mod tests {
         Markdown::new("```canvas\n{}\n```")
             .diagrams(true)
             .render(tiny.area(), &mut tiny);
+    }
+
+    #[test]
+    fn a_diagram_cache_is_byte_identical_and_memoises_per_source_width() {
+        // A doc with two embedded diagrams (Mermaid + Structurizr) — the
+        // kitchen-sink Rich Text §10 shape.
+        let doc = "intro\n\n```mermaid\ngraph TD\n A-->B\n B-->C\n```\n\n\
+                   mid\n\n```structurizr\nworkspace \"S\" {\n model {\n \
+                   u = person \"U\"\n s = softwareSystem \"X\"\n u -> s \"Uses\"\n }\n \
+                   views {\n systemContext s {\n include *\n }\n }\n}\n```\n\nend";
+
+        let uncached = Markdown::new(doc).diagrams(true).lines(50);
+
+        // The contract: a hit and a miss produce byte-identical lines. The
+        // cached widget's first `lines()` is all misses (computes), the
+        // second is all hits — both must equal the no-cache path exactly.
+        let cache = DiagramCache::new();
+        let first = Markdown::new(doc)
+            .diagrams(true)
+            .diagram_cache(&cache)
+            .lines(50);
+        let second = Markdown::new(doc)
+            .diagrams(true)
+            .diagram_cache(&cache)
+            .lines(50);
+        assert_eq!(first, uncached, "cache miss is byte-identical to no cache");
+        assert_eq!(second, uncached, "cache hit is byte-identical too");
+
+        // Two diagrams memoised at this one width (not re-rasterised).
+        assert_eq!(cache.len(), 2);
+
+        // A different width is a distinct key (miss → recompute), still
+        // byte-identical to a fresh uncached measure at that width.
+        let narrow_uncached = Markdown::new(doc).diagrams(true).lines(28);
+        let narrow_cached = Markdown::new(doc)
+            .diagrams(true)
+            .diagram_cache(&cache)
+            .lines(28);
+        assert_eq!(narrow_cached, narrow_uncached);
+        assert_eq!(cache.len(), 4, "two diagrams × two widths");
+
+        // A non-diagram fence is unaffected by the cache (still code).
+        let code = "```rust\nfn main() {}\n```";
+        assert_eq!(
+            Markdown::new(code)
+                .diagrams(true)
+                .diagram_cache(&DiagramCache::new())
+                .lines(20),
+            Markdown::new(code).diagrams(true).lines(20),
+        );
     }
 }

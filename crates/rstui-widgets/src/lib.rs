@@ -328,6 +328,7 @@ pub mod description_list;
 /// The shared diagram drawing surface reused by the Mermaid and Structurizr
 /// renderers. Crate-internal, not part of the public API.
 mod diagram;
+pub mod diagram_cache;
 pub mod divider;
 pub mod drawer;
 pub mod extmark;
@@ -406,6 +407,7 @@ pub use data_table::{
     SortDirection, VisualRow, cell_truthy,
 };
 pub use description_list::{DescriptionList, DescriptionRow};
+pub use diagram_cache::DiagramCache;
 pub use divider::{Divider, DividerOrientation};
 pub use extmark::Extmark;
 pub use form::{Form, FormField};

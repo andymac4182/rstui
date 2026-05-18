@@ -263,6 +263,63 @@ fn widget_markdown_render(bench: &Bench) -> Stats {
     })
 }
 
+/// A markdown doc with one embedded Mermaid fence and one embedded
+/// Structurizr fence — the kitchen-sink Rich Text §10 shape.
+fn diagram_doc() -> String {
+    "\
+# Embedding diagrams\n\nProse before the diagram, a couple of lines so the \
+markdown parser and line layout do real work around the fences.\n\n\
+```mermaid\ngraph TD\n  A[fence] --> B[Markdown]\n  B --> C{diagram?}\n  \
+C -->|yes| D[render widget]\n  C -->|no| E[code block]\n```\n\n\
+Prose between the two diagrams.\n\n\
+```structurizr\nworkspace \"demo\" {\n  model {\n    u = person \"Reader\"\n\
+    s = softwareSystem \"Markdown\" \"Embeds diagrams inline\"\n    \
+u -> s \"Scrolls\"\n  }\n  views {\n    systemContext s \"Ctx\" { include * }\n\
+  }\n}\n```\n\nTrailing prose after both diagrams.\n"
+        .to_owned()
+}
+
+/// `widget/markdown/diagrams_render` — `Markdown::diagrams(true)`
+/// **uncached**: every render re-parses + re-lays-out *both* embedded
+/// diagrams (Mermaid + Structurizr) and rasterises each through a scratch
+/// buffer. This is the per-frame cost an animated screen pays without a
+/// caller-owned cache (the 9fps regression); `diagrams_cached` is the fix.
+fn widget_markdown_diagrams_render(bench: &Bench) -> Stats {
+    let src = diagram_doc();
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        Markdown::new(src.as_str())
+            .diagrams(true)
+            .render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/markdown/diagrams_cached` — the same doc rendered with a
+/// caller-owned [`DiagramCache`](rstui_widgets::DiagramCache) attached: the
+/// expensive parse+layout+rasterise happens on the first frame (a cache
+/// miss) and every later frame is an `O(1)` keyed lookup + a row clone.
+/// This is the steady-state cost after the fix — it must be back in the
+/// `widget/markdown/render` class, not the `diagrams_render` class.
+fn widget_markdown_diagrams_cached(bench: &Bench) -> Stats {
+    let src = diagram_doc();
+    let cache = rstui_widgets::DiagramCache::new();
+    let mut buf = Buffer::empty(frame());
+    // Warm the cache once (the first real frame's miss) so the measured
+    // loop is the steady state every later idle frame actually pays.
+    Markdown::new(src.as_str())
+        .diagrams(true)
+        .diagram_cache(&cache)
+        .render(frame(), &mut buf);
+    bench.run(|| {
+        Markdown::new(src.as_str())
+            .diagrams(true)
+            .diagram_cache(&cache)
+            .render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
 /// A representative multi-widget app: a selectable `List` beside a wrapped
 /// `Paragraph`, split by `Layout` — the shape a real screen's `view`
 /// projects every frame. State is caller-owned (immediate-mode); the
@@ -376,6 +433,14 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     ("widget/tree/render", widget_tree_render),
     ("widget/paragraph/render", widget_paragraph_render),
     ("widget/markdown/render", widget_markdown_render),
+    (
+        "widget/markdown/diagrams_render",
+        widget_markdown_diagrams_render,
+    ),
+    (
+        "widget/markdown/diagrams_cached",
+        widget_markdown_diagrams_cached,
+    ),
     ("runtime/frame/idle", runtime_frame_idle),
     ("runtime/frame/changed", runtime_frame_changed),
     ("runtime/input/mouse_move", runtime_input_mouse_move),
