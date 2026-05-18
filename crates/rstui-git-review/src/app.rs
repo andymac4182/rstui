@@ -11,14 +11,15 @@ use std::cell::Cell;
 use std::path::PathBuf;
 
 use rstui_core::{
-    Constraint, Event, Frame, KeyCode, KeyEvent, KeyModifiers, Layout, Line, MouseButton,
-    MouseEventKind, Position, Rect, Span, Style, TextArea,
+    Constraint, DocSelection, Event, Frame, History, KeyCode, KeyEvent, KeyModifiers, Layout, Line,
+    MouseButton, MouseEventKind, Position, Query, Rect, SelKind, Span, Style, TextArea,
 };
 use rstui_keymap::{Action, Capture, Chord, Dispatch, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd};
 use rstui_widgets::{
-    Block, BorderType, Diff, Editor, HelpEntry, HelpOverlay, KeymapRow, KeymapView,
-    LineNumberGutter, List, Paragraph, RowState, StatusBar,
+    Block, BorderType, Changeset, Diff, Editor, HelpEntry, HelpOverlay, KeymapRow, KeymapView,
+    Language, LineNumberGutter, List, Outline, Paragraph, RowState, StatusBar, SymbolKind, outline,
+    syntax,
 };
 
 use crate::{Commit, Config, Loaded};
@@ -41,6 +42,12 @@ const SHRINK: Action = Action::Custom("git.shrink");
 const GROW: Action = Action::Custom("git.grow");
 const GRAPH: Action = Action::Custom("git.graph");
 const THEME: Action = Action::Custom("git.theme");
+/// Toggle the symbol/outline side panel (gap H) — editor symbols in Edit
+/// mode, the commit's changed files in Review.
+const OUTLINE: Action = Action::Custom("git.outline");
+/// Open the find-in-content prompt (gap J) — searches the editor buffer in
+/// Edit mode, the patch text in Review.
+const SEARCH: Action = Action::Custom("git.search");
 
 /// `(action, label)` in keymap-panel display order — the single source the
 /// app keymap is built from *and* the panel renders.
@@ -53,6 +60,8 @@ const COMMANDS: &[(Action, &str)] = &[
     (SHRINK, "Shrink the history/diff split"),
     (GROW, "Grow the history/diff split"),
     (GRAPH, "Toggle the commit graph tree"),
+    (OUTLINE, "Toggle the symbol / outline panel"),
+    (SEARCH, "Find in the file / patch"),
     (THEME, "Theme picker (browse + preview live)"),
     (Action::Drawer, "Keymap settings"),
     (Action::Help, "Help"),
@@ -74,6 +83,15 @@ fn git_review_keymaps() -> Keymaps {
     km.bind(SHRINK, &["-"]);
     km.bind(GROW, &["=", "+"]);
     km.bind(GRAPH, &["\\"]);
+    // `ctrl+o` toggles the outline panel; `ctrl+f` opens find-in-content.
+    // Control chords (not bare letters) so they are *not* editor text: the
+    // same chord drives the action in Review (through the keymap,
+    // remappable) and in Edit mode (handled raw in `on_key_edit`, the way
+    // Ctrl-S/Ctrl-R already are — the keymap is bypassed there by the
+    // Capture::Text context). The editor also accepts the vim `/` to open
+    // the same find prompt.
+    km.bind(OUTLINE, &["ctrl+o"]);
+    km.bind(SEARCH, &["ctrl+f"]);
     km.bind(THEME, &["ctrl+t"]);
     let mut k = Keymaps::from_maps(vec![km]);
     // The filter row and the file editor are text inputs: a Capture::Text
@@ -216,6 +234,44 @@ pub struct GitReview {
     theme_restore: Option<crate::theme::GrTheme>,
     /// `true` while the theme picker overlay is open.
     picking: bool,
+
+    // ── CE-3B/CE-3C: editor capabilities, all caller-owned model state the
+    // pure `view` only reads (ADR 0004/0012). ──────────────────────────────
+    /// Undo/redo of the *edit buffer* (gap **E**). Seeded with the loaded
+    /// file when Edit mode is entered, snapshotted **before** every mutating
+    /// edit (single-char inserts coalesced into one step). This is what makes
+    /// the `Ctrl-S`-writes-the-working-tree path recoverable: a mis-edit is
+    /// `u` away even though the save still goes straight to disk — the live
+    /// data-loss path the deep-dive flags as S1 is now closed.
+    undo: History<TextArea>,
+    /// The logical *text* selection (gap **F**) — named `tsel` so it does
+    /// not collide with the commit-ordinal `sel`. Shift+motion / mouse drag
+    /// extend it; a `Char`/`Enter`/paste with a non-empty selection replaces
+    /// the span (snapshotting first so the replace is undoable). Projected by
+    /// `Editor::selection` — the widget reads it, never mutates it.
+    tsel: DocSelection,
+    /// The yank register `y` fills from the selection and `p` pastes.
+    yank: String,
+    /// The flattened per-char syntax overlay for the *edit buffer* (gap
+    /// **G**), rebuilt by [`rebuild_edit_overlays`](Self::rebuild_edit_overlays)
+    /// only on a text change. Colours come from [`theme`](Self::theme).
+    edit_syntax: Vec<Style>,
+    /// `edit_syntax` with the active search matches patched on top — the
+    /// single overlay handed to `Editor::syntax`. Rebuilt on a text change
+    /// *or* a search move (the match set depends on the live query).
+    edit_overlay: Vec<Style>,
+    /// The outline / symbol panel is open (gap **H**).
+    outline_open: bool,
+    /// Selected row in the outline panel (a symbol in Edit, a changed file
+    /// in Review). The reducer owns the cursor; `Outline`/`Changeset` are the
+    /// ordered substrate it indexes.
+    outline_sel: usize,
+    /// The find-in-content query (gap **J**). Empty ⇒ no matches / no
+    /// highlight (the `Query` inert convention).
+    query: Query,
+    /// The find prompt owns the keyboard (type the pattern; Enter commits,
+    /// Esc clears). Reuses the filter-input idiom.
+    searching: bool,
 }
 
 /// Everything that can happen: user intents from
@@ -296,6 +352,15 @@ impl GitReview {
             theme_picker: rstui_theme::ThemePickerState::new(),
             theme_restore: None,
             picking: false,
+            undo: History::new(TextArea::new()),
+            tsel: DocSelection::new(),
+            yank: String::new(),
+            edit_syntax: Vec::new(),
+            edit_overlay: Vec::new(),
+            outline_open: false,
+            outline_sel: 0,
+            query: Query::new(""),
+            searching: false,
         }
     }
 
@@ -435,17 +500,36 @@ impl GitReview {
         if self.keymap_panel {
             return self.on_key_keymap(code, mods);
         }
+        // Outline panel navigation (gap H). `Tab`/`BackTab` step the panel
+        // when it is open — chosen because they are *not* editor text (so
+        // typing `.`/`,` in Edit mode is unaffected) and only intercepted
+        // while the panel is open (so the Review `Tab` = focus-swap and the
+        // editor are untouched otherwise). Edit: live-jumps the caret to the
+        // symbol. Review: steps file-by-file (each file is its hunk group —
+        // the `Changeset::hunk_index` substrate) and scrolls there.
+        if self.outline_open
+            && !self.searching
+            && !self.filtering
+            && matches!(code, KeyCode::Tab | KeyCode::BackTab)
+        {
+            self.outline_nav(if code == KeyCode::Tab { 1 } else { -1 });
+            return Cmd::none();
+        }
         // Text inputs are a Capture::Text *context*, not a hand-ordered
         // guard cascade (ADR 0020): the filter row / editor activates
         // "input", so `dispatch` returns `Fall` for typed keys — a command
         // *cannot* fire mid-type, by construction — and the raw key is
         // routed to that text handler. One value, set on focus/mode; no
         // leader in this map so the clock is `0`.
-        self.keymaps
-            .set_context((self.filtering || self.mode == Mode::Edit).then_some("input"));
+        self.keymaps.set_context(
+            (self.filtering || self.searching || self.mode == Mode::Edit).then_some("input"),
+        );
         match self.keymaps.dispatch(&KeyEvent::new(code, mods), 0) {
             Dispatch::Act(action) => self.do_action(action),
             Dispatch::Pending => Cmd::none(), // leader armed — swallow
+            // The find prompt is a text input that overlays *either* mode, so
+            // it wins ahead of the filter row and the editor.
+            Dispatch::Fall if self.searching => self.on_key_search(code),
             Dispatch::Fall if self.filtering => self.on_key_filter(code),
             Dispatch::Fall if self.mode == Mode::Edit => self.on_key_edit(code, mods),
             Dispatch::Fall => self.on_key_motion(code),
@@ -508,6 +592,19 @@ impl GitReview {
                     });
                 }
                 self.status = "this commit changed no editable file".to_owned();
+            }
+            OUTLINE => {
+                self.outline_open = !self.outline_open;
+                self.outline_sel = 0;
+                self.status = if self.outline_open {
+                    "outline: Tab step symbol/file · ⌃O close".to_owned()
+                } else {
+                    "outline closed".to_owned()
+                };
+            }
+            SEARCH => {
+                self.searching = true;
+                self.status = "find: type · Enter go · n/N next/prev · Esc clear".to_owned();
             }
             _ => {}
         }
@@ -631,8 +728,22 @@ impl GitReview {
     }
 
     /// Keys while editing a working-tree file.
+    ///
+    /// The buffer is **undoable** (gap E): every mutating key snapshots into
+    /// [`undo`](Self::undo) *before* it runs (single-char inserts coalesced),
+    /// so `u`/`Ctrl-R` recover it. The `Ctrl-S` save path is **unchanged** —
+    /// it still writes the working tree immediately — but a mis-edit is no
+    /// longer lost: `u` walks it back. That closes the S1 live-data-loss path
+    /// the deep-dive flags (the *recoverability* requirement, not gating the
+    /// write). Shift+motion extends a [`DocSelection`] (gap F); a typed
+    /// char / Enter / paste over a non-empty selection replaces it.
     fn on_key_edit(&mut self, code: KeyCode, mods: KeyModifiers) -> Cmd<Msg> {
-        if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let shift = mods.contains(KeyModifiers::SHIFT);
+        if ctrl && code == KeyCode::Char('s') {
+            // Save is deliberately unchanged: it goes straight to disk. Undo
+            // makes a wrong save recoverable in-buffer (then re-save) — the
+            // recoverability the S1 gap is really about.
             let Some(path) = self.edit_path.clone() else {
                 return Cmd::none();
             };
@@ -642,54 +753,120 @@ impl GitReview {
                 Msg::Saved(crate::write_file(&repo, &path, &body).map(|()| path.clone()))
             });
         }
+        // Undo / redo (gap E). Apply the returned buffer wholesale, then
+        // rebuild the overlays + reclamp scroll for the restored text.
+        if !ctrl && code == KeyCode::Char('u') {
+            if let Some(prev) = self.undo.undo(&self.editor) {
+                self.editor = prev;
+                self.tsel.clear();
+                self.edit_dirty = true;
+                self.rebuild_edit_overlays();
+                self.caret_into_view();
+                self.status = "undo".to_owned();
+            } else {
+                self.status = "nothing to undo".to_owned();
+            }
+            return Cmd::none();
+        }
+        if ctrl && code == KeyCode::Char('r') {
+            if let Some(next) = self.undo.redo(&self.editor) {
+                self.editor = next;
+                self.tsel.clear();
+                self.edit_dirty = true;
+                self.rebuild_edit_overlays();
+                self.caret_into_view();
+                self.status = "redo".to_owned();
+            } else {
+                self.status = "nothing to redo".to_owned();
+            }
+            return Cmd::none();
+        }
+        // `Ctrl-O` toggles the symbol/outline panel from Edit mode too (the
+        // keymap is bypassed here by the Text context, so this mirrors the
+        // Review `OUTLINE` action — same chord, every mode; gap H).
+        if ctrl && code == KeyCode::Char('o') {
+            self.outline_open = !self.outline_open;
+            self.outline_sel = 0;
+            self.status = if self.outline_open {
+                "outline: Tab step symbol/file · ⌃O close".to_owned()
+            } else {
+                "outline closed".to_owned()
+            };
+            return Cmd::none();
+        }
+        // `/` (vim) or `Ctrl-F` opens the find prompt over the buffer (gap
+        // J). `/` is otherwise a literal slash; find is far more useful and
+        // is the universal editor convention.
+        if (!ctrl && code == KeyCode::Char('/')) || (ctrl && code == KeyCode::Char('f')) {
+            self.searching = true;
+            self.status = "find: type · Enter go · n/N next/prev · Esc clear".to_owned();
+            return Cmd::none();
+        }
+        // `n`/`N` step matches while a query is live (otherwise they are
+        // literal text).
+        if !self.query.is_empty() && !ctrl && code == KeyCode::Char('n') {
+            self.search_jump(true);
+            return Cmd::none();
+        }
+        if !self.query.is_empty() && !ctrl && code == KeyCode::Char('N') {
+            self.search_jump(false);
+            return Cmd::none();
+        }
+        // Yank / paste of the selection (gap F).
+        if !ctrl && code == KeyCode::Char('y') {
+            if let Some((a, b)) = self.tsel.range() {
+                if !self.tsel.is_empty() {
+                    self.yank = self.editor.span_text(a, b);
+                    self.status = format!("yanked {} chars", self.yank.chars().count());
+                    return Cmd::none();
+                }
+            }
+            self.status = "nothing selected to yank".to_owned();
+            return Cmd::none();
+        }
+        if !ctrl && code == KeyCode::Char('p') && !self.yank.is_empty() {
+            let paste = self.yank.clone();
+            self.insert_text(&paste, false);
+            return Cmd::none();
+        }
         match code {
             KeyCode::Esc => {
+                self.tsel.clear();
                 self.mode = Mode::Review;
                 self.status = "stopped editing".to_owned();
             }
-            KeyCode::Char(c) => {
-                self.editor.insert_char(c);
-                self.edit_dirty = true;
-            }
-            KeyCode::Enter => {
-                self.editor.insert_newline();
-                self.edit_dirty = true;
-            }
-            KeyCode::Backspace => {
-                self.editor.delete_backward();
-                self.edit_dirty = true;
-            }
-            KeyCode::Left => {
-                self.editor.move_left();
-            }
-            KeyCode::Right => {
-                self.editor.move_right();
-            }
-            KeyCode::Up => {
-                self.editor.move_up();
-            }
-            KeyCode::Down => {
-                self.editor.move_down();
-            }
-            KeyCode::Home => self.editor.move_home(),
-            KeyCode::End => self.editor.move_end(),
-            KeyCode::PageUp => {
-                self.editor.move_page_up(10);
-            }
-            KeyCode::PageDown => {
-                self.editor.move_page_down(10);
-            }
+            // Typing over a non-empty selection replaces it (gap F);
+            // otherwise a coalesced single-char insert (gap E). Newline
+            // seals the coalescing run.
+            KeyCode::Char(c) => self.insert_text(&c.to_string(), true),
+            KeyCode::Enter => self.insert_text("\n", false),
+            KeyCode::Backspace => self.delete_selection_or(|e| {
+                e.delete_backward();
+            }),
+            KeyCode::Delete => self.delete_selection_or(|e| {
+                e.delete_forward();
+            }),
+            KeyCode::Left => self.move_caret(shift, |e| {
+                e.move_left();
+            }),
+            KeyCode::Right => self.move_caret(shift, |e| {
+                e.move_right();
+            }),
+            KeyCode::Up => self.move_caret(shift, |e| {
+                e.move_up();
+            }),
+            KeyCode::Down => self.move_caret(shift, |e| {
+                e.move_down();
+            }),
+            KeyCode::Home => self.move_caret(shift, TextArea::move_home),
+            KeyCode::End => self.move_caret(shift, TextArea::move_end),
+            KeyCode::PageUp => self.move_caret(shift, |e| {
+                e.move_page_up(10);
+            }),
+            KeyCode::PageDown => self.move_caret(shift, |e| {
+                e.move_page_down(10);
+            }),
             _ => {}
-        }
-        // Keep the caret on screen: recompute the caller-owned editor
-        // scroll against the real text viewport the last frame laid out
-        // (the deferred scroll_into_view seam — no more caret-off-screen,
-        // no scrolling past the end). `None` only before the first frame,
-        // where the caret is at the origin anyway.
-        if let Some(tr) = self.geom.get().and_then(|g| g.edit_text) {
-            self.editor_scroll =
-                self.editor
-                    .scroll_into_view(self.editor_scroll, (tr.width, tr.height), 3);
         }
         Cmd::none()
     }
@@ -780,6 +957,475 @@ impl GitReview {
             })
             .collect()
     }
+}
+
+// ── CE-3B/CE-3C: editor / diff capability wiring (gaps E·F·G·H·J). Every
+// method here only mutates the model in `update`; the pure `view` reads the
+// resulting fields (ADR 0004/0012). ────────────────────────────────────────
+impl GitReview {
+    /// The four syntax token [`Style`]s, from the **active theme** (gap G is
+    /// "colours come from rstui-theme, not hard-coded"). Keywords use the
+    /// brand accent, strings the good colour, numbers the graph colour,
+    /// comments the dim colour — the reviewer's own role palette, so picking
+    /// a theme reskins the code too.
+    fn syntax_styles(&self) -> syntax::SyntaxStyles {
+        syntax::SyntaxStyles {
+            comment: self.theme.dim(),
+            string: self.theme.good(),
+            number: self.theme.graph(),
+            keyword: self.theme.accent(),
+        }
+    }
+
+    /// The lexer language for the file being edited (`Unknown` ⇒ the
+    /// byte-identical common core).
+    fn edit_lang(&self) -> Language {
+        Language::from_path(self.edit_path.as_deref().unwrap_or(""))
+    }
+
+    /// The outline language for the file being edited (the `outline` module
+    /// has its own `Language`; `Unknown` ⇒ an empty outline).
+    fn outline_lang(&self) -> outline::Language {
+        outline::Language::from_path(self.edit_path.as_deref().unwrap_or(""))
+    }
+
+    /// The first `+++ b/<path>` in the patch (best-effort) → the language the
+    /// `Diff` should lex with; no such header ⇒ `Unknown`, which keeps the
+    /// render byte-identical to the historical built-in tinter.
+    fn diff_lang(&self) -> Language {
+        for line in self.diff.lines() {
+            if let Some(p) = line.strip_prefix("+++ b/") {
+                return Language::from_path(p.trim());
+            }
+            if let Some(p) = line.strip_prefix("+++ ") {
+                // `+++ /dev/null` (a delete) or an `a/`-stripped path.
+                let p = p.trim();
+                if p != "/dev/null" {
+                    return Language::from_path(p.strip_prefix("b/").unwrap_or(p));
+                }
+            }
+        }
+        Language::Unknown
+    }
+
+    /// The editor buffer's lines as owned `String`s — the unit
+    /// [`Query`]/[`DocSelection`] math works in.
+    fn editor_lines(&self) -> Vec<String> {
+        self.editor.lines().to_vec()
+    }
+
+    /// Rebuild the per-char syntax overlay for the edit buffer, threading
+    /// [`syntax::LexState`] line→line so a multi-line string/comment colours
+    /// the lines under it, and concatenating with one empty slot per `'\n'`
+    /// (the exact flattened layout `Editor::syntax` reads). Then re-apply the
+    /// search highlight on top via [`recolor_search`](Self::recolor_search).
+    /// Called only on a *text change* — it is the caller-owned memo the
+    /// widget reads, not derived per frame.
+    fn rebuild_edit_overlays(&mut self) {
+        let lang = self.edit_lang();
+        let styles = self.syntax_styles();
+        let mut flat: Vec<Style> = Vec::new();
+        let mut st = syntax::LexState::default();
+        let lines = self.editor.lines();
+        for (i, line) in lines.iter().enumerate() {
+            let (ov, next) = syntax::line_overlay(line, lang, &styles, st);
+            st = next;
+            flat.extend(ov);
+            if i + 1 < lines.len() {
+                flat.push(Style::new()); // the '\n' between rows
+            }
+        }
+        self.edit_syntax = flat;
+        self.recolor_search();
+    }
+
+    /// Patch the live search matches over a *copy* of `edit_syntax` into
+    /// `edit_overlay` (the single overlay handed to `Editor::syntax`). The
+    /// match style is a distinct, themed reverse so a hit stands out from
+    /// both plain and syntax-coloured text. Rebuilt on a text change or a
+    /// search move (the match set depends on the query). No query ⇒ the
+    /// overlay is exactly the syntax one (byte-identical).
+    fn recolor_search(&mut self) {
+        self.edit_overlay = self.edit_syntax.clone();
+        if self.query.is_empty() {
+            return;
+        }
+        let hit = self.theme.selection();
+        let lines = self.editor.lines();
+        // Flat index of the first char of each row (rows joined by one '\n'
+        // slot — the same layout `rebuild_edit_overlays` built).
+        let mut base = 0usize;
+        let matches = self.query.find_all(&self.editor_lines());
+        let mut mi = matches.iter().peekable();
+        for (row, line) in lines.iter().enumerate() {
+            let len = line.chars().count();
+            while let Some(m) = mi.peek() {
+                if m.row != row {
+                    break;
+                }
+                for c in m.start..m.end.min(len) {
+                    if let Some(slot) = self.edit_overlay.get_mut(base + c) {
+                        *slot = hit;
+                    }
+                }
+                mi.next();
+            }
+            base += len + 1; // + the '\n' slot
+        }
+    }
+
+    /// Re-clamp the caller-owned editor scroll so the caret is visible
+    /// against the real text viewport the last frame laid out (the deferred
+    /// `scroll_into_view` seam — model←geometry feedback). `None` only before
+    /// the first frame, where the caret is at the origin anyway.
+    fn caret_into_view(&mut self) {
+        if let Some(tr) = self.geom.get().and_then(|g| g.edit_text) {
+            self.editor_scroll =
+                self.editor
+                    .scroll_into_view(self.editor_scroll, (tr.width, tr.height), 3);
+        }
+    }
+
+    /// Run after a *mutating* edit: mark dirty, rebuild the syntax/search
+    /// overlay, keep the caret on screen.
+    fn after_edit(&mut self) {
+        self.edit_dirty = true;
+        self.rebuild_edit_overlays();
+        self.caret_into_view();
+    }
+
+    /// Snapshot the buffer for undo *before* a mutating edit. `coalesce`
+    /// folds a run of single-char inserts into one step (so a typed word is
+    /// one `u`); any other edit seals the run.
+    fn snapshot(&mut self, coalesce: bool) {
+        let cur = self.editor.clone();
+        self.undo.snapshot_coalesced(&cur, coalesce);
+    }
+
+    /// If a selection is non-empty, snapshot + `replace_span` it with `s`
+    /// and clear the selection; returns whether it did (so the caller knows
+    /// the keystroke was consumed by the replace). The select-then-replace
+    /// primitive (gap F).
+    fn replace_selection(&mut self, s: &str) -> bool {
+        let Some((a, b)) = self.tsel.range() else {
+            return false;
+        };
+        if self.tsel.is_empty() {
+            return false;
+        }
+        self.snapshot(false);
+        self.editor.replace_span(a, b, s);
+        self.tsel.clear();
+        self.after_edit();
+        true
+    }
+
+    /// Insert `s`: replace a non-empty selection with it (gap F), else a
+    /// plain insert. `coalesce` only matters for the no-selection path (a
+    /// run of single-char inserts → one undo step, gap E). Snapshots first.
+    fn insert_text(&mut self, s: &str, coalesce: bool) {
+        if self.replace_selection(s) {
+            return;
+        }
+        self.tsel.clear();
+        self.snapshot(coalesce);
+        self.editor.insert_str(s);
+        self.after_edit();
+    }
+
+    /// Delete the selection if there is one, otherwise run `fallback` (the
+    /// single-char Backspace/Delete). Always snapshots first and seals the
+    /// coalescing run (a delete is never coalesced).
+    fn delete_selection_or(&mut self, fallback: impl FnOnce(&mut TextArea)) {
+        self.snapshot(false);
+        if let Some((a, b)) = self.tsel.range().filter(|_| !self.tsel.is_empty()) {
+            self.editor.delete_span(a, b);
+            self.tsel.clear();
+        } else {
+            fallback(&mut self.editor);
+        }
+        self.after_edit();
+    }
+
+    /// A caret motion in Edit mode. With `shift` it extends a charwise
+    /// [`DocSelection`] (starting one at the *pre-move* caret on the first
+    /// Shift-move); without it any selection is cleared first — the exact
+    /// "Shift extends, a plain move drops it" rule. `mv` performs the actual
+    /// `TextArea` move.
+    fn move_caret(&mut self, shift: bool, mv: impl FnOnce(&mut TextArea)) {
+        if shift {
+            if self.tsel.is_empty() {
+                self.tsel.start(self.editor.cursor(), SelKind::Char);
+            }
+            mv(&mut self.editor);
+            self.tsel.extend(self.editor.cursor());
+        } else {
+            self.tsel.clear();
+            mv(&mut self.editor);
+        }
+        self.caret_into_view();
+    }
+
+    /// The find prompt's keys (a Capture::Text sub-mode, like the filter
+    /// row). Reuses the filter-input idiom: type the pattern, Enter jumps to
+    /// the first match, Esc clears.
+    fn on_key_search(&mut self, code: KeyCode) -> Cmd<Msg> {
+        match code {
+            KeyCode::Esc => {
+                self.query = Query::new("");
+                self.searching = false;
+                if self.mode == Mode::Edit {
+                    self.recolor_search();
+                }
+                self.status = "find cleared".to_owned();
+            }
+            KeyCode::Enter => {
+                self.searching = false;
+                self.search_jump(true);
+            }
+            KeyCode::Backspace => {
+                let mut p = self.query.pattern().to_owned();
+                p.pop();
+                self.query = Query::new(p);
+                if self.mode == Mode::Edit {
+                    self.recolor_search();
+                }
+            }
+            KeyCode::Char(c) => {
+                let mut p = self.query.pattern().to_owned();
+                p.push(c);
+                self.query = Query::new(p);
+                if self.mode == Mode::Edit {
+                    self.recolor_search();
+                }
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
+    /// Jump to the next (`forward`) / previous match of the live query and
+    /// bring it on screen. In Edit mode it moves the `TextArea` caret and
+    /// `scroll_into_view`s it; in Review it scrolls the patch so the matched
+    /// patch line is visible (the `Diff` widget owns its own per-cell
+    /// rendering, so there is no caller highlight seam there — this is the
+    /// honest best-effort scroll-to-match the deep-dive's Part 8 anticipates).
+    fn search_jump(&mut self, forward: bool) {
+        if self.query.is_empty() {
+            return;
+        }
+        if self.mode == Mode::Edit {
+            let lines = self.editor_lines();
+            let from = self.editor.cursor();
+            let hit = if forward {
+                self.query.next_from(&lines, from, true)
+            } else {
+                self.query.prev_from(&lines, from, true)
+            };
+            if let Some(m) = hit {
+                self.editor.set_cursor(m.row, m.start);
+                self.recolor_search();
+                self.caret_into_view();
+                self.status = format!("/{}", self.query.pattern());
+            } else {
+                self.status = format!("no match for /{}", self.query.pattern());
+            }
+        } else {
+            // Review: search the raw patch lines; Diff renders ~one row per
+            // patch line, so scrolling to the matched line index is a sound
+            // best-effort that keeps the model totally clamped. `next` starts
+            // one line *past* the current scroll so repeated `n` advances.
+            let lines: Vec<String> = self.diff.lines().map(str::to_owned).collect();
+            let hit = if forward {
+                self.query
+                    .next_from(&lines, (self.diff_scroll.saturating_add(1), 0), true)
+            } else {
+                self.query.prev_from(&lines, (self.diff_scroll, 0), true)
+            };
+            if let Some(m) = hit {
+                self.diff_scroll = m.row;
+                self.diff_col = 0;
+                self.clamp_detail_scroll();
+                self.status = format!("/{} — patch line {}", self.query.pattern(), m.row + 1);
+            } else {
+                self.status = format!("no match for /{}", self.query.pattern());
+            }
+        }
+    }
+
+    /// The outline rows for the panel + the index of the symbol/file the
+    /// caret (Edit) or selection (Review) is currently in, so the panel can
+    /// highlight "where you are". In Edit it is the scanned [`Outline`]; in
+    /// Review the [`Changeset`] file list, each annotated with the symbol its
+    /// first hunk falls in (`Outline::at_line(hunk.new_start)`).
+    fn outline_rows(&self) -> (Vec<Line<'static>>, Option<usize>) {
+        if self.mode == Mode::Edit {
+            let o = Outline::scan(&self.editor.to_string(), self.outline_lang());
+            // "Where you are": the deepest symbol whose [line,end_line] holds
+            // the caret row (same rule as `Outline::at_line`), by index.
+            let caret = self.editor.cursor().0;
+            let here =
+                o.0.iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.line <= caret && caret <= s.end_line)
+                    .max_by_key(|(_, s)| (s.depth, s.line))
+                    .map(|(i, _)| i);
+            let rows =
+                o.0.iter()
+                    .map(|s| {
+                        let pad = "  ".repeat(s.depth as usize);
+                        Line::from(vec![
+                            Span::styled(format!("{pad}{} ", kind_glyph(s.kind)), self.theme.dim()),
+                            Span::styled(
+                                if s.name.is_empty() {
+                                    "·".to_owned()
+                                } else {
+                                    s.name.clone()
+                                },
+                                self.theme.accent(),
+                            ),
+                        ])
+                    })
+                    .collect();
+            (rows, here)
+        } else {
+            let cs = Changeset::parse(&self.diff);
+            let rows = cs
+                .files
+                .iter()
+                .map(|f| {
+                    let lang = outline::Language::from_path(&f.path);
+                    // Annotate with the symbol the file's first hunk lands in
+                    // (best-effort over the reconstructed new-side text).
+                    let sym = f.hunks.first().and_then(|h| {
+                        let new_side = reconstruct_new_side(f.patch());
+                        Outline::scan(&new_side, lang)
+                            .at_line((h.new_start as usize).saturating_sub(1))
+                            .map(|s| s.name.clone())
+                    });
+                    let mut spans = vec![
+                        Span::styled(format!("{} ", status_glyph(f)), self.theme.graph()),
+                        Span::styled(f.path.clone(), self.theme.accent()),
+                        Span::styled(
+                            format!("  +{} -{}", f.additions, f.deletions),
+                            self.theme.dim(),
+                        ),
+                    ];
+                    if let Some(name) = sym.filter(|n| !n.is_empty()) {
+                        spans.push(Span::styled(format!("  · {name}"), self.theme.dim()));
+                    }
+                    Line::from(spans)
+                })
+                .collect();
+            // "Where you are" = the file the current diff-scroll line is in,
+            // via the global hunk index (reducer arithmetic over the ordered
+            // substrate — `Changeset` holds no cursor).
+            let here = cs.files.iter().position(|f| !f.hunks.is_empty());
+            (rows, here)
+        }
+    }
+
+    /// Step the outline selection by `delta` (clamped) and *follow* it:
+    /// Edit-mode jumps the editor caret to the symbol's line (`set_cursor` +
+    /// `scroll_into_view` — exactly the deep-dive's "selecting a symbol moves
+    /// the caret"); Review-mode scrolls the patch to the selected file's
+    /// first hunk (the patch-line of its first `@@`, found over the
+    /// `Changeset` ordered substrate). Total: an empty outline is a no-op.
+    fn outline_nav(&mut self, delta: isize) {
+        let total = self.outline_rows().0.len();
+        if total == 0 {
+            self.status = "outline is empty".to_owned();
+            return;
+        }
+        let next = (self.outline_sel as isize + delta).clamp(0, total as isize - 1) as usize;
+        self.outline_sel = next;
+        if self.mode == Mode::Edit {
+            let o = Outline::scan(&self.editor.to_string(), self.outline_lang());
+            if let Some(sym) = o.0.get(next) {
+                self.editor.set_cursor(sym.line, 0);
+                self.tsel.clear();
+                self.caret_into_view();
+                self.status = format!("→ {}", sym.name);
+            }
+        } else {
+            let cs = Changeset::parse(&self.diff);
+            if let Some(f) = cs.files.get(next) {
+                // Scroll the patch so this file's first hunk is in view. The
+                // patch-line of the file's first `@@` within the whole diff
+                // (Diff renders ≈ one row per patch line — the same
+                // best-effort the diff search uses).
+                let target = self
+                    .diff
+                    .lines()
+                    .position(|l| l.starts_with("+++ ") && l.contains(&f.path))
+                    .or_else(|| self.diff.lines().position(|l| l.starts_with("@@")))
+                    .unwrap_or(0);
+                self.diff_scroll = target;
+                self.diff_col = 0;
+                self.clamp_detail_scroll();
+                self.status = format!("→ {}", f.path);
+            }
+        }
+    }
+}
+
+/// A one-glyph badge for a [`SymbolKind`] (kept ASCII-light so it renders in
+/// any terminal/theme).
+fn kind_glyph(k: SymbolKind) -> &'static str {
+    match k {
+        SymbolKind::Module => "▢",
+        SymbolKind::Struct => "◧",
+        SymbolKind::Enum => "◑",
+        SymbolKind::Trait => "◇",
+        SymbolKind::Impl => "◈",
+        SymbolKind::Function => "ƒ",
+        SymbolKind::Method => "→",
+        SymbolKind::Class => "Ⓒ",
+        SymbolKind::Constant => "□",
+        SymbolKind::Field => "·",
+        SymbolKind::Heading => "#",
+        SymbolKind::Other => "•",
+    }
+}
+
+/// A one-glyph badge for a changed file's status.
+fn status_glyph(f: &rstui_widgets::DiffFile) -> &'static str {
+    use rstui_widgets::FileStatus::{Added, Binary, Copied, Deleted, Modified, Renamed};
+    match f.status {
+        Added => "A",
+        Deleted => "D",
+        Modified => "M",
+        Renamed => "R",
+        Copied => "C",
+        Binary => "B",
+    }
+}
+
+/// Reconstruct a file's *new-side* text from its unified patch slice (keep
+/// context and added lines, drop removed lines and headers) so an
+/// [`Outline`] can be scanned for the diff side. Best-effort: with no hunks
+/// it is empty. Total.
+fn reconstruct_new_side(patch: &str) -> String {
+    let mut out = String::new();
+    let mut in_hunk = false;
+    for line in patch.lines() {
+        if line.starts_with("@@") {
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix(' ') {
+            out.push_str(rest);
+            out.push('\n');
+        } else if let Some(rest) = line.strip_prefix('+') {
+            out.push_str(rest);
+            out.push('\n');
+        }
+        // `-` lines and `\ No newline` markers are not on the new side.
+    }
+    out
 }
 
 impl GitReview {
@@ -896,11 +1542,68 @@ impl GitReview {
         rows.get(disp).and_then(|&(ord, _)| ord)
     }
 
+    /// Map a click/drag in the editor's text rect to a caret + selection
+    /// (gap F, the `Editor::cell_to_doc` mouse seam + the
+    /// `on_press`/`on_pointer_drag` pointer-gesture pattern). The doc
+    /// position is computed *before* any mutation so the borrows don't
+    /// overlap. Returns whether the event was inside the editor (consumed).
+    fn mouse_edit(&mut self, kind: MouseEventKind, pos: Position) -> bool {
+        if self.mode != Mode::Edit {
+            return false;
+        }
+        let Some(tr) = self.geom.get().and_then(|g| g.edit_text) else {
+            return false;
+        };
+        // Reconstruct the same Editor projection `view_detail` drew so its
+        // pure `cell_to_doc` inverse matches the render exactly (no Block —
+        // `text_rect` is already the inner area).
+        let doc = Editor::new(&self.editor)
+            .scroll(self.editor_scroll)
+            .cell_to_doc(tr, pos);
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some((r, c)) = doc {
+                    self.editor.set_cursor(r, c);
+                    // Anchor a fresh selection at the click (extended on drag).
+                    self.tsel.start((r, c), SelKind::Char);
+                    self.caret_into_view();
+                    return true;
+                }
+                tr.contains(pos)
+            }
+            MouseEventKind::Drag(MouseButton::Left) if !self.tsel.is_empty() => {
+                if let Some((r, c)) = doc {
+                    self.editor.set_cursor(r, c);
+                    self.tsel.extend((r, c));
+                    self.caret_into_view();
+                }
+                true
+            }
+            MouseEventKind::ScrollDown if tr.contains(pos) => {
+                self.move_caret(false, |e| {
+                    e.move_down();
+                });
+                true
+            }
+            MouseEventKind::ScrollUp if tr.contains(pos) => {
+                self.move_caret(false, |e| {
+                    e.move_up();
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Handle one mouse event against the geometry `view` recorded.
     fn on_mouse(&mut self, kind: MouseEventKind, pos: Position) -> Cmd<Msg> {
         let Some(g) = self.geom.get() else {
             return Cmd::none();
         };
+        // Edit-mode editor selection/scroll wins inside its text rect.
+        if self.mouse_edit(kind, pos) {
+            return Cmd::none();
+        }
         // The split boundary: a 3-cell-wide hot zone straddling the seam
         // between the two panes (forgiving to grab).
         let on_divider = if g.vertical {
@@ -954,14 +1657,35 @@ impl GitReview {
         Cmd::none()
     }
 
-    /// The detail pane: the patch (Review) or the editor (Edit).
+    /// The detail pane: the patch (Review) or the editor (Edit). When the
+    /// outline panel is open it claims a column on the right via the same
+    /// `Layout` split idiom the main split uses (the `SplitPane` discipline:
+    /// a pure `Rect`-accessor, no retained widget tree — ADR 0012).
     fn view_detail(&self, frame: &mut Frame<'_>, area: Rect) {
+        let (content, panel) = if self.outline_open {
+            // ≤ 36 cells, ≥ a quarter of the pane, never wider than the pane.
+            let w = (area.width / 4)
+                .clamp(0, 36)
+                .min(area.width.saturating_sub(1));
+            if w >= 8 {
+                let [c, p] =
+                    Layout::horizontal([Constraint::Fill(1), Constraint::Length(w)]).areas(area);
+                (c, Some(p))
+            } else {
+                (area, None) // too narrow to split — degrade gracefully
+            }
+        } else {
+            (area, None)
+        };
+        if let Some(p) = panel {
+            self.view_outline(frame, p);
+        }
         if self.mode == Mode::Edit {
             let path = self.edit_path.as_deref().unwrap_or("(file)");
             let dirty = if self.edit_dirty { " ●" } else { "" };
             let block = self.pane(format!(" {path}{dirty}  ·  Ctrl-S save · Esc back "), true);
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
+            let inner = block.inner(content);
+            frame.render_widget(block, content);
             // The gutter is scrolled WITH the text (first visible number =
             // first visible doc row + 1) — fixes the gutter/content desync.
             let gutter = LineNumberGutter::new(
@@ -983,6 +1707,13 @@ impl GitReview {
                 Editor::new(&self.editor)
                     .focused(true)
                     .scroll(self.editor_scroll)
+                    // Caller-owned syntax + search overlay (gaps G/J): the
+                    // reducer rebuilds it on edit/search, the widget reads it.
+                    .syntax(&self.edit_overlay)
+                    // Caller-owned selection (gap F): Shift+motion / mouse
+                    // drive `self.tsel`; the widget projects it per cell.
+                    .selection(&self.tsel)
+                    .selection_style(self.theme.selection())
                     .cursor_style(self.theme.selection()),
                 text_rect,
             );
@@ -1008,31 +1739,81 @@ impl GitReview {
             };
             frame.render_widget(
                 Paragraph::new(msg).style(self.theme.dim()).block(block),
-                area,
+                content,
             );
         } else {
             let d = Diff::new(self.diff.as_str())
                 .syntax(true)
+                // Language-aware diff colour (gap G): resolved best-effort
+                // from the first `+++ b/<path>` in the patch (the git Cmd
+                // seam — the widget stays pure). No header ⇒ `Unknown`, which
+                // is byte-identical to the historical built-in tinter.
+                .language(self.diff_lang())
                 .scroll(self.diff_scroll)
                 .col(self.diff_col);
             let d = if self.diff_split { d.side_by_side() } else { d };
-            frame.render_widget(d.block(block), area);
+            frame.render_widget(d.block(block), content);
         }
+    }
+
+    /// The symbol / outline side panel (gap H): the scanned [`Outline`] of
+    /// the edited file, or the [`Changeset`] file list of the reviewed
+    /// commit. Pure projection of [`outline_rows`](Self::outline_rows)
+    /// through the existing [`List`]; the reducer owns the cursor.
+    fn view_outline(&self, frame: &mut Frame<'_>, area: Rect) {
+        let (rows, here) = self.outline_rows();
+        let total = rows.len();
+        let title = if self.mode == Mode::Edit {
+            format!(" ⌘ Symbols {total} ")
+        } else {
+            format!(" ⌘ Files {total} ")
+        };
+        let sel = if total == 0 {
+            None
+        } else {
+            Some(self.outline_sel.min(total - 1))
+        };
+        // Mark "where you are" (the symbol/file the caret-or-scroll is in)
+        // with a leading ‣, so it reads even when the selection bar is on a
+        // different row (`Outline::at_line`, projected — gap H).
+        let mut lines: Vec<Line> = Vec::with_capacity(total);
+        for (i, l) in rows.into_iter().enumerate() {
+            let mut spans = l.spans;
+            let lead = if Some(i) == here { "‣ " } else { "  " };
+            spans.insert(0, Span::styled(lead, self.theme.good()));
+            lines.push(Line::from(spans));
+        }
+        frame.render_widget(
+            List::new(lines)
+                .selected(sel)
+                .offset(sel.unwrap_or(0).saturating_sub(4))
+                .highlight_style(self.theme.selection())
+                .block(self.pane(title, false)),
+            area,
+        );
     }
 
     /// The bottom status strip.
     fn view_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let repo = self.repo.display().to_string();
         let left = Line::styled(format!(" {repo} · ⎇ {} ", self.branch), self.theme.accent());
-        let center: Line = if self.filtering {
+        let center: Line = if self.searching {
+            Line::styled(
+                format!(" find: {}_ ", self.query.pattern()),
+                self.theme.good(),
+            )
+        } else if self.filtering {
             Line::styled(format!(" filter: {}_ ", self.filter), self.theme.good())
         } else if !self.status.is_empty() {
             Line::styled(format!(" {} ", self.status), self.theme.good())
         } else if self.mode == Mode::Edit {
-            Line::styled("type to edit · Ctrl-S save · Esc back", self.theme.dim())
+            Line::styled(
+                "edit · ⌃S save · u undo/⌃R · Shift+arrows select · y/p · / find · ⌃O outline · Esc back",
+                self.theme.dim(),
+            )
         } else {
             Line::styled(
-                "[ ]: commit · s: split · t: top/left · \\: tree · /: filter · ?: help · ⌃K/?→k: keymap",
+                "[ ]: commit · s: split · t: top/left · \\: tree · /: filter · ⌃O: outline · ⌃F: find · ?: help · ⌃K/?→k: keymap",
                 self.theme.dim(),
             )
         };
@@ -1109,6 +1890,17 @@ impl App for GitReview {
                         self.edit_path = Some(path.clone());
                         self.edit_dirty = false;
                         self.mode = Mode::Edit;
+                        // Entering Edit mode seeds the undo history with the
+                        // loaded buffer (gap E: the loaded file is the first
+                        // undo point, so the *first* edit is recoverable too)
+                        // and resets the selection / query / scroll for the
+                        // fresh file.
+                        self.undo = History::new(self.editor.clone());
+                        self.tsel.clear();
+                        self.query = Query::new("");
+                        self.searching = false;
+                        self.editor_scroll = (0, 0);
+                        self.rebuild_edit_overlays();
                         self.status = format!("editing {path}");
                     }
                     Err(e) => self.status = e,
@@ -1199,13 +1991,22 @@ impl App for GitReview {
                 HelpEntry::new(["\\"], "Toggle the visual commit tree (graph)"),
                 HelpEntry::new(["/"], "Filter commits (Enter keep · Esc clear)"),
                 HelpEntry::new(["Ctrl", "T"], "Theme picker (browse + preview live)"),
+                HelpEntry::new(["Ctrl", "O"], "Symbol / outline panel (Tab steps it)"),
+                HelpEntry::new(["Ctrl", "F"], "Find — n/N next/prev (/ in Edit too)"),
                 HelpEntry::new(["e"], "Edit the commit's first changed file"),
-                HelpEntry::new(["Ctrl", "S"], "Save the edited file (Edit mode)"),
+                HelpEntry::new(
+                    ["Ctrl", "S"],
+                    "Save (Edit) — u undo / Ctrl-R redo, recoverable",
+                ),
+                HelpEntry::new(
+                    ["Shift", "↑↓"],
+                    "Extend a selection · y yank · p paste (Edit)",
+                ),
                 HelpEntry::new(
                     ["Mouse"],
-                    "Click a commit · drag the pane border to resize · wheel scrolls",
+                    "Click a commit · drag in the editor selects · border resizes · wheel scrolls",
                 ),
-                HelpEntry::new(["Esc"], "Leave Edit / close this help"),
+                HelpEntry::new(["Esc"], "Leave Edit / clear find / close this help"),
                 HelpEntry::new(["q"], "Quit"),
                 HelpEntry::new(["k"], "Customise these keybindings (keymap editor)"),
             ];

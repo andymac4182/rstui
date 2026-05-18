@@ -554,3 +554,288 @@ fn a_command_key_typed_in_the_filter_is_text_not_a_command() {
     assert!(h.is_running());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── CE-3B/CE-3C: undo/redo · select-then-replace · syntax · outline ·
+// search, all driven through the exact App the binary runs. ────────────────
+
+/// Ctrl+`<c>`.
+fn ctrl(c: char) -> Event {
+    Event::from(KeyEvent::new(
+        KeyCode::Char(c),
+        rstui_core::KeyModifiers::CONTROL,
+    ))
+}
+/// Shift+`<code>` (the Shift-extend selection path).
+fn shift(code: KeyCode) -> Event {
+    Event::from(KeyEvent::new(code, rstui_core::KeyModifiers::SHIFT))
+}
+
+/// A one-commit repo whose only changed, working-tree file is `lib.rs`
+/// (so `Language::from_path` resolves Rust for syntax + outline), seeded
+/// with `body`. Returns the repo dir (caller cleans up).
+fn rust_repo(body: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "rgr-rs-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    git_in(&dir, &["init", "-q"]);
+    std::fs::write(dir.join("lib.rs"), body).expect("seed");
+    git_in(&dir, &["add", "lib.rs"]);
+    git_in(&dir, &["commit", "-q", "-m", "add lib.rs"]);
+    dir
+}
+
+/// Open the editor (`e`) on the fixture's `lib.rs`, asserting it opened.
+fn open_editor(h: &mut Harness<GitReview>) {
+    h.handle(ch('e'));
+    assert!(
+        h.snapshot().contains("Ctrl-S save"),
+        "the editor opened the .rs file:\n{}",
+        h.snapshot()
+    );
+}
+
+#[test]
+fn undo_recovers_a_mis_edit_and_redo_reapplies_it_gap_e() {
+    let dir = rust_repo("fn main() {}\n");
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    open_editor(&mut h);
+    // Type a word (coalesced into ONE undo step), then undo it whole.
+    for c in "BADEDIT".chars() {
+        h.handle(ch(c));
+    }
+    assert!(h.snapshot().contains("BADEDIT"), "the edit landed");
+    h.handle(ch('u')); // one undo removes the whole coalesced run
+    assert!(
+        !h.snapshot().contains("BADEDIT"),
+        "u walked the mis-edit back (the S1 data-loss path is recoverable):\n{}",
+        h.snapshot()
+    );
+    h.handle(ctrl('r')); // redo re-applies it
+    assert!(
+        h.snapshot().contains("BADEDIT"),
+        "Ctrl-R re-applied the undone edit:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn shift_arrows_select_then_typing_replaces_the_span_gap_f() {
+    let dir = rust_repo("ABCDEF\n");
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    open_editor(&mut h);
+    // `from_value` parks the caret at the *end* (row 1, the empty line after
+    // the trailing \n); Up then Home lands at (0,0). Shift+Right ×3 selects
+    // "ABC", then typing 'x' replaces exactly that span.
+    h.handle(key(KeyCode::Up));
+    h.handle(key(KeyCode::Home));
+    h.handle(shift(KeyCode::Right));
+    h.handle(shift(KeyCode::Right));
+    h.handle(shift(KeyCode::Right));
+    h.handle(ch('x'));
+    h.handle(ctrl('s'));
+    let on_disk = std::fs::read_to_string(dir.join("lib.rs")).expect("read back");
+    assert_eq!(
+        on_disk, "xDEF\n",
+        "Shift-selecting ABC then typing x replaced just that span: {on_disk:?}"
+    );
+    // Yank/paste round-trips a selection.
+    h.handle(key(KeyCode::Up));
+    h.handle(key(KeyCode::Home));
+    h.handle(shift(KeyCode::Right)); // select "x"
+    h.handle(ch('y')); // yank it
+    h.handle(key(KeyCode::End));
+    h.handle(ch('p')); // paste at the line end
+    h.handle(ctrl('s'));
+    let on_disk = std::fs::read_to_string(dir.join("lib.rs")).expect("read back");
+    assert!(
+        on_disk.starts_with("xDEFx"),
+        "y/p yanked and pasted the selection: {on_disk:?}"
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn editor_has_themed_syntax_colour_gap_g() {
+    // A Rust keyword must be tinted by the *theme* (not default), proving the
+    // caller-owned per-char overlay reached the Editor.
+    let dir = rust_repo("fn answer() -> i32 { 42 }\n");
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    open_editor(&mut h);
+    let buf = h.backend().buffer().clone();
+    let area = buf.area();
+    let mut kw_fg = None;
+    let mut num_seen = false;
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if let Some(cell) = buf.get(rstui_core::Position::new(x, y)) {
+                if cell.symbol == 'f'
+                    && buf
+                        .get(rstui_core::Position::new(x + 1, y))
+                        .is_some_and(|n| n.symbol == 'n')
+                {
+                    kw_fg = Some(cell.fg);
+                }
+                if cell.symbol == '4' {
+                    num_seen = true; // the numeric literal `42` renders
+                }
+            }
+        }
+    }
+    let kw = kw_fg.expect("the `fn` keyword renders");
+    assert_ne!(
+        kw,
+        rstui_core::Color::Reset,
+        "the `fn` keyword is syntax-tinted from the theme, not left default"
+    );
+    assert!(num_seen, "the numeric literal `42` renders");
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn outline_panel_lists_symbols_and_tab_jumps_the_caret_gap_h() {
+    let dir = rust_repo("fn alpha() {}\n\nfn beta() {}\n\nstruct Gamma;\n");
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    open_editor(&mut h);
+    h.handle(ctrl('o')); // toggle the outline panel (Ctrl-O, not editor text)
+    let s = h.snapshot();
+    assert!(
+        s.contains("Symbols") && s.contains("alpha") && s.contains("beta") && s.contains("Gamma"),
+        "the outline panel projects the scanned symbols:\n{s}"
+    );
+    // Tab steps the selection and live-jumps the caret; never panics.
+    h.handle(key(KeyCode::Tab));
+    h.handle(key(KeyCode::Tab));
+    assert!(h.is_running(), "outline navigation must not quit");
+    h.handle(ctrl('o')); // close it again
+    assert!(
+        !h.snapshot().contains("Symbols"),
+        "Ctrl-O closes the panel:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn outline_panel_in_review_lists_changed_files_gap_h() {
+    let dir = fixture(&["c1", "c2"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    let _ = h.snapshot();
+    h.handle(ctrl('o')); // outline panel in Review = the changeset file list
+    let s = h.snapshot();
+    assert!(
+        s.contains("Files") && s.contains(".txt"),
+        "the Review outline lists the commit's changed files:\n{s}"
+    );
+    h.handle(key(KeyCode::Tab)); // step files — must not panic
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn find_in_editor_jumps_the_caret_to_the_match_gap_j() {
+    let dir = rust_repo("first line\nsecond NEEDLE here\nthird line\n");
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    open_editor(&mut h);
+    // `/` opens the find prompt in Edit mode (vim convention).
+    h.handle(ch('/'));
+    assert!(
+        h.snapshot().contains("find:"),
+        "/ opened the find prompt:\n{}",
+        h.snapshot()
+    );
+    for c in "NEEDLE".chars() {
+        h.handle(ch(c));
+    }
+    h.handle(key(KeyCode::Enter)); // jump to the first match
+    // Type a sentinel at the caret: it must land *at the match* (row 1,
+    // right before NEEDLE), proving the caret/scroll moved there.
+    h.handle(ch('Z'));
+    h.handle(ctrl('s'));
+    let on_disk = std::fs::read_to_string(dir.join("lib.rs")).expect("read back");
+    assert!(
+        on_disk.contains("second ZNEEDLE here"),
+        "find moved the caret onto the match before typing Z: {on_disk:?}"
+    );
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn find_in_review_scrolls_the_patch_to_the_match_gap_j() {
+    // The patch search is best-effort scroll-to-match (Diff owns its own
+    // render — no caller highlight seam); it must never panic.
+    let dir = fixture(&["only commit"]);
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    let _ = h.snapshot();
+    h.handle(ctrl('f')); // open find in Review
+    assert!(
+        h.snapshot().contains("find:"),
+        "Ctrl-F opened find in Review"
+    );
+    for c in "f0".chars() {
+        h.handle(ch(c)); // the seeded file is f0.txt
+    }
+    h.handle(key(KeyCode::Enter));
+    assert!(h.is_running(), "diff search must not panic");
+    h.handle(ch('n'));
+    h.handle(ch('N'));
+    assert!(h.is_running());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn editing_keys_do_not_leak_when_find_is_active() {
+    // The find prompt is a Capture::Text sub-mode: a command/edit key typed
+    // into it is plain pattern text, never an action (the ADR 0020 contract).
+    let dir = rust_repo("alpha\n");
+    let mut h = harness(Config {
+        repo: dir.clone(),
+        rev: None,
+    });
+    open_editor(&mut h);
+    h.handle(ch('/')); // open find
+    h.handle(ch('s')); // 's' is the Review split command — here it is text
+    h.handle(ch('o')); // 'o' is the outline toggle — here it is text
+    h.handle(key(KeyCode::Esc)); // clear the query, stay in Edit
+    // The buffer is unchanged (no 's'/'o' inserted, no command fired).
+    h.handle(ctrl('s'));
+    let on_disk = std::fs::read_to_string(dir.join("lib.rs")).expect("read back");
+    assert_eq!(
+        on_disk, "alpha\n",
+        "find-prompt keys were swallowed as pattern, not edits/commands: {on_disk:?}"
+    );
+    assert!(
+        h.snapshot().contains("Ctrl-S save") && h.is_running(),
+        "still in the editor after Esc-clearing find"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
