@@ -32,6 +32,17 @@ fn styles() -> SyntaxStyles {
         string: Style::new().fg(Color::Yellow),
         number: Style::new().fg(Color::Magenta),
         keyword: Style::new().fg(Color::Blue),
+        // Distinct sentinels for the new Tier-1 semantic classes so a test
+        // can read back exactly which class painted each char (and prove a
+        // function/type name is *not* the keyword colour).
+        function: Style::new().fg(Color::Cyan),
+        type_: Style::new().fg(Color::Red),
+        constant: Style::new().fg(Color::LightBlue),
+        variable: Style::new().fg(Color::LightGreen),
+        operator: Style::new().fg(Color::LightMagenta),
+        punctuation: Style::new().fg(Color::LightYellow),
+        attribute: Style::new().fg(Color::LightCyan),
+        namespace: Style::new().fg(Color::LightRed),
     }
 }
 
@@ -175,6 +186,53 @@ fn main() {}
         prev = s.line;
         assert!(s.line <= s.end_line && s.end_line < lines);
     }
+}
+
+/// The widening proof: with a real parse tree a `fn`/type/`struct` *name*
+/// now takes the `function`/`type_` semantic class — a colour **distinct**
+/// from the `keyword` class the `fn`/`struct` token itself gets. End-to-end
+/// evidence that the palette widening + `bucket_for` rules actually flow a
+/// non-keyword identifier into a non-keyword bucket (the headline bug:
+/// previously every such name fell through to the body fg).
+#[cfg(feature = "rust")]
+#[test]
+fn rust_function_and_type_names_get_distinct_semantic_classes() {
+    // `Foo` is a struct *type* name; `do_thing` is a function *name*; the
+    // keyword tokens `struct`/`fn` are a different class again.
+    let src = "struct Foo {}\nfn do_thing() -> Foo { Foo {} }\n";
+    let (ov, _) = analyze(TsLanguage::Rust, src);
+    assert_overlay_len(&ov, src);
+    let st = styles();
+
+    // The function name `do_thing` is painted with the *function* class.
+    let f = src.find("do_thing").unwrap();
+    assert_eq!(
+        ov[f], st.function,
+        "the `fn` name must take the function class"
+    );
+    assert_ne!(
+        ov[f], st.keyword,
+        "the function name must NOT be the keyword colour"
+    );
+
+    // The type name `Foo` is painted with the *type_* class (distinct from
+    // both keyword and function).
+    let t = src.find("Foo").unwrap();
+    assert_eq!(ov[t], st.type_, "the type name must take the type_ class");
+    assert_ne!(ov[t], st.keyword, "the type name must NOT be keyword");
+    assert_ne!(ov[t], st.function, "type_ and function are distinct");
+
+    // And the `fn` / `struct` keyword tokens themselves are still keyword —
+    // the legacy precedence is intact.
+    let kw_fn = src.find("fn ").unwrap();
+    assert_eq!(ov[kw_fn], st.keyword, "`fn` token stays keyword");
+    let kw_struct = src.find("struct ").unwrap();
+    assert_eq!(ov[kw_struct], st.keyword, "`struct` token stays keyword");
+
+    // At least one real semantic-class slot exists for each (sanity: the
+    // widening produced *some* coloured output, not all-empty).
+    assert!(count(&ov, st.function) >= "do_thing".len());
+    assert!(count(&ov, st.type_) >= "Foo".len());
 }
 
 #[cfg(feature = "python")]

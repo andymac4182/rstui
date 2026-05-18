@@ -57,6 +57,8 @@ fn main() {
         string: Style::new().fg(Color::Green),
         number: Style::new().fg(Color::Magenta),
         comment: Style::new().fg(Color::DarkGray),
+        // The richer Tier-1-only semantic classes default to no colour.
+        ..Default::default()
     };
 
     // ONE tree-sitter parse → BOTH outputs (ADR 0022 driver 1).

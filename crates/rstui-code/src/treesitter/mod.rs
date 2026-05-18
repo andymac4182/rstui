@@ -67,6 +67,9 @@
 //!     string: Style::new().fg(Color::Green),
 //!     number: Style::new().fg(Color::Magenta),
 //!     comment: Style::new().fg(Color::DarkGray),
+//!     // The richer Tier-1-only semantic classes default to no colour;
+//!     // fill the ones you want and `..Default::default()` the rest.
+//!     ..Default::default()
 //! };
 //! let mut a = Analyzer::new(TsLanguage::Rust);
 //! a.set_source("fn main() {\n    let n = 42; // hi\n}\n");

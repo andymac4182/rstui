@@ -974,11 +974,17 @@ impl GitReview {
     /// comments the dim colour — the reviewer's own role palette, so picking
     /// a theme reskins the code too.
     fn syntax_styles(&self) -> syntax::SyntaxStyles {
+        // git-review stays on the Tier-0 `syntax::line_overlay`, which only
+        // ever fills these four. The richer Tier-1-only semantic classes
+        // (`function`/`type_`/…) default to no colour — correct here: the
+        // dependency-free scanner cannot detect them, so leaving them empty
+        // keeps git-review's rendering byte-identical.
         syntax::SyntaxStyles {
             comment: self.theme.dim(),
             string: self.theme.good(),
             number: self.theme.graph(),
             keyword: self.theme.accent(),
+            ..Default::default()
         }
     }
 

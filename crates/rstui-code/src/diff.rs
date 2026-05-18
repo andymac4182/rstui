@@ -1195,6 +1195,9 @@ fn syntax_styles(theme: &DiffTheme) -> SyntaxStyles {
         string: theme.syntax_string,
         number: theme.syntax_number,
         keyword: theme.syntax_keyword,
+        // `Diff` is Tier-0 only — the richer semantic classes default to no
+        // colour (the dependency-free lexer cannot detect them).
+        ..Default::default()
     }
 }
 

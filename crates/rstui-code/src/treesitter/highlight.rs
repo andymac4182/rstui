@@ -1,4 +1,4 @@
-//! Mapping a tree-sitter highlight query's capture names onto the four
+//! Mapping a tree-sitter highlight query's capture names onto the
 //! [`SyntaxStyles`] theme buckets, and
 //! flattening the result into the exact per-character [`Style`] overlay the
 //! Tier-0 floor already feeds [`Editor::syntax`](crate::Editor).
@@ -6,10 +6,11 @@
 //! # Capture → bucket map
 //!
 //! tree-sitter highlight captures are dotted names (`keyword.control`,
-//! `string.special`, …). Tier-1's job is *accuracy within the same four
-//! buckets Tier-0 paints* — not new colours — so every capture is folded
-//! onto one of `keyword` / `string` / `number` / `comment`, or dropped
-//! (left as `Style::new()`, i.e. no colour, exactly like Tier-0's sentinel):
+//! `string.special`, …). Tier-1's job is *accuracy* — a real parse tree can
+//! tell a function name from a type from a plain variable, which the Tier-0
+//! left-to-right scanner cannot. Every capture is folded onto one of the
+//! semantic buckets below, or dropped (left as `Style::new()`, i.e. no
+//! colour, exactly like Tier-0's sentinel):
 //!
 //! | capture name (prefix-matched) | bucket |
 //! |---|---|
@@ -17,12 +18,23 @@
 //! | `string`, `string.*`, `character`, `char` | **string** |
 //! | `number`, `float`, `constant.numeric`, `constant.numeric.*`, `boolean`, `constant.builtin`, `constant.builtin.*` | **number** |
 //! | `comment`, `comment.*` | **comment** |
-//! | everything else (`type`, `function`, `variable`, `operator`, `property`, `punctuation`, …) | none (`Style::new()`) |
+//! | `function`, `function.*`, `method`, `constructor`, `constructor.*` | **function** |
+//! | `type`, `type.builtin`, `type.definition`, `class` (but **not** `type.qualifier`, already keyword) | **type_** |
+//! | `constant`, `constant.macro` (but **not** `constant.numeric`/`constant.builtin`, already number), `label` | **constant** |
+//! | `variable`, `variable.*`, `property`, `property.*`, `field`, `parameter` | **variable** |
+//! | `attribute`, `attribute.*`, `annotation`, `decorator`, `decorator.*` | **attribute** |
+//! | `namespace`, `namespace.*`, `module` | **namespace** |
+//! | `operator` | **operator** |
+//! | `punctuation`, `punctuation.*` | **punctuation** |
+//! | everything else | none (`Style::new()`) |
 //!
 //! The match is "exact name, or name starts with `prefix.`", so
-//! `keyword.control.return` → keyword and `string.special.key` → string,
-//! while a bare `constant` (not `constant.numeric`/`constant.builtin`) stays
-//! uncoloured. This is the *narrow* set ADR 0022 specifies.
+//! `keyword.control.return` → keyword and `string.special.key` → string.
+//! **Order is load-bearing**: the keyword / string / number / comment blocks
+//! are tested *first* so the narrower legacy precedence still wins —
+//! `constant.numeric` / `constant.builtin` resolve to **number** and
+//! `type.qualifier` to **keyword** before the new bare `constant` / `type`
+//! rules can see them.
 //!
 //! ## Why `constant.builtin` joins the number bucket
 //!
@@ -57,7 +69,7 @@ use crate::syntax::SyntaxStyles;
 use rstui_core::Style;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
-/// Which of the four [`SyntaxStyles`] buckets a capture name maps to, or
+/// Which of the [`SyntaxStyles`] buckets a capture name maps to, or
 /// `None` for an uncoloured capture.
 #[derive(Clone, Copy)]
 enum Bucket {
@@ -65,6 +77,14 @@ enum Bucket {
     String,
     Number,
     Comment,
+    Function,
+    Type,
+    Constant,
+    Variable,
+    Operator,
+    Punctuation,
+    Attribute,
+    Namespace,
 }
 
 /// `true` if `name` is exactly `key`, or is `key` followed by a `.` (a more
@@ -108,6 +128,49 @@ fn bucket_for(name: &str) -> Option<Bucket> {
     if matches(name, "comment") {
         return Some(Bucket::Comment);
     }
+    // --- New semantic classes. These come AFTER the four blocks above so
+    // their narrower precedence still wins: `constant.numeric` /
+    // `constant.builtin` already returned Number and `type.qualifier`
+    // already returned Keyword, so they never reach the bare `constant` /
+    // `type` rules here. ---
+    // function family (`function` / `function.*`, `method`, and exact
+    // `constructor` or any `constructor.*` — `matches` covers both).
+    if matches(name, "function") || name == "method" || matches(name, "constructor") {
+        return Some(Bucket::Function);
+    }
+    // type family (bare / `type.builtin` / `type.definition`;
+    // `type.qualifier` already returned Keyword above).
+    if matches(name, "type") || name == "class" {
+        return Some(Bucket::Type);
+    }
+    // constant family (bare / `constant.macro`; numeric / builtin already
+    // returned Number above). `matches` covers exact `constant` and any
+    // `constant.*` not already routed to Number by the block above.
+    if matches(name, "constant") || name == "label" {
+        return Some(Bucket::Constant);
+    }
+    // variable family (identifiers, parameters, fields / properties)
+    if matches(name, "variable")
+        || matches(name, "property")
+        || name == "field"
+        || name == "parameter"
+    {
+        return Some(Bucket::Variable);
+    }
+    // attribute family (attributes / decorators / annotations)
+    if matches(name, "attribute") || name == "annotation" || matches(name, "decorator") {
+        return Some(Bucket::Attribute);
+    }
+    // namespace family (modules / namespaces)
+    if matches(name, "namespace") || name == "module" {
+        return Some(Bucket::Namespace);
+    }
+    if name == "operator" {
+        return Some(Bucket::Operator);
+    }
+    if matches(name, "punctuation") {
+        return Some(Bucket::Punctuation);
+    }
     None
 }
 
@@ -118,6 +181,14 @@ fn style_for(bucket: Bucket, styles: &SyntaxStyles) -> Style {
         Bucket::String => styles.string,
         Bucket::Number => styles.number,
         Bucket::Comment => styles.comment,
+        Bucket::Function => styles.function,
+        Bucket::Type => styles.type_,
+        Bucket::Constant => styles.constant,
+        Bucket::Variable => styles.variable,
+        Bucket::Operator => styles.operator,
+        Bucket::Punctuation => styles.punctuation,
+        Bucket::Attribute => styles.attribute,
+        Bucket::Namespace => styles.namespace,
     }
 }
 

@@ -26,10 +26,12 @@
 //!   *contiguous* lines through [`LexState`]. This is the deep-dive's
 //!   "comments/strings must never silently span lines" fix: for an editor
 //!   document the caller threads the returned state into the next line.
-//! - **Theme-agnostic.** The four token [`Style`]s come
+//! - **Theme-agnostic.** The token [`Style`]s come
 //!   from the caller via [`SyntaxStyles`] (`Diff` passes its
 //!   `DiffTheme.syntax_*`; `Editor` passes styles derived from
-//!   `rstui-theme`). This module never names a colour.
+//!   `rstui-theme`). This module never names a colour. Tier-0 only ever
+//!   fills the original four buckets (`comment`/`string`/`number`/`keyword`);
+//!   the richer semantic classes are Tier-1 (tree-sitter) only.
 //! - **Total.** [`line_overlay`] accepts any input under any language and
 //!   never panics; the returned overlay length is always
 //!   `content.chars().count()`.
@@ -106,8 +108,17 @@ impl Language {
 // Styles & carried state
 // ---------------------------------------------------------------------------
 
-/// The four token styles the overlay applies, supplied by the caller from
-/// its own theme so this module stays theme-agnostic.
+/// The token styles the overlay applies, supplied by the caller from its own
+/// theme so this module stays theme-agnostic.
+///
+/// **Tier-0 ([`line_overlay`]) only ever fills the original four**
+/// (`comment` / `string` / `number` / `keyword`) — its dependency-free
+/// left-to-right scanner cannot resolve semantic roles. The remaining fields
+/// (`function`, `type_`, `constant`, `variable`, `operator`, `punctuation`,
+/// `attribute`, `namespace`) are **Tier-1 (tree-sitter) only**: they are
+/// populated by the `treesitter` `Analyzer`, which has a real parse tree.
+/// They [`Default`] to an empty (no-colour) [`Style`], so a Tier-0 caller
+/// can leave them unset and a Tier-1 caller fills the ones it wants coloured.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SyntaxStyles {
     /// Line and block comments.
@@ -118,6 +129,23 @@ pub struct SyntaxStyles {
     pub number: Style,
     /// A word in the active keyword set.
     pub keyword: Style,
+    /// Function / method / macro / constructor names and calls (Tier-1 only).
+    pub function: Style,
+    /// Types / classes / enums / traits / builtin type names (Tier-1 only).
+    /// Field name is `type_` because `type` is a keyword.
+    pub type_: Style,
+    /// Named constants and enum variants (Tier-1 only).
+    pub constant: Style,
+    /// Identifiers, parameters, fields / properties (Tier-1 only).
+    pub variable: Style,
+    /// Operators (Tier-1 only).
+    pub operator: Style,
+    /// Brackets and delimiters / punctuation (Tier-1 only).
+    pub punctuation: Style,
+    /// Attributes / decorators / annotations (Tier-1 only).
+    pub attribute: Style,
+    /// Modules / namespaces (Tier-1 only).
+    pub namespace: Style,
 }
 
 /// Which raw-quote flavour an open string is, so escape handling on the
@@ -1030,13 +1058,15 @@ mod tests {
     use rstui_core::Color;
 
     /// Distinct, easily-identified styles so a test can read back exactly
-    /// which classifier painted each char.
+    /// which classifier painted each char. Tier-0 only ever fills these
+    /// four; the richer Tier-1-only classes default to no colour.
     fn styles() -> SyntaxStyles {
         SyntaxStyles {
             comment: Style::new().fg(Color::Green),
             string: Style::new().fg(Color::Yellow),
             number: Style::new().fg(Color::Magenta),
             keyword: Style::new().fg(Color::Blue),
+            ..Default::default()
         }
     }
 

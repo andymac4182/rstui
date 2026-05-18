@@ -10,6 +10,7 @@ use rstui_core::{
 };
 use rstui_runtime::Frame;
 // ADR 0024: `Editor`/`LineNumberGutter` + the syntax engine live in `rstui-code`.
+use rstui_code::treesitter::{Analyzer, TsLanguage};
 use rstui_code::{Editor, LineNumberGutter, syntax};
 use rstui_widgets::{Block, BorderType, List, StatusBar, Tabs};
 
@@ -402,30 +403,65 @@ impl State {
     /// language resolved from the file name, token colours from the live
     /// `theme` (so it follows theme switches). One [`Style`] slot per source
     /// char and a blank slot per `'\n'` — exactly the flattened index
-    /// [`Editor::syntax`] reads — built with the dependency-free Tier-0
-    /// lexer threaded with `LexState` so multi-line strings/comments stay
-    /// coloured across rows. Pure: rebuilt fresh in `view`.
+    /// [`Editor::syntax`] reads.
+    ///
+    /// This screen uses the **tree-sitter `Analyzer` (Tier-1)**: a real
+    /// parse tree resolves function names, types, attributes, namespaces …
+    /// into the widened [`syntax::SyntaxStyles`] semantic classes, so the
+    /// editor is genuinely multi-colour (not "everything one colour +
+    /// comments grey", which is all the Tier-0 four-bucket lexer can do).
+    /// The three demo files (`*.rs` → Rust, `notes.md` → Markdown) are all
+    /// tree-sitter-supported in the default feature set. An unknown
+    /// extension would resolve to `None` and fall back to the Tier-0
+    /// `syntax::line_overlay` loop. A per-frame parse is fine for this demo
+    /// screen. Pure: rebuilt fresh in `view`.
     fn overlay(&self, theme: &Theme) -> Vec<Style> {
         let active = &self.files[self.active];
-        let lang = syntax::Language::from_path(active.0);
+        // A rich themed palette — every Tier-1 semantic class mapped to a
+        // theme role, so picking a theme reskins the whole editor.
         let styles = syntax::SyntaxStyles {
             keyword: Style::new().fg(theme.accent),
-            string: Style::new().fg(theme.accent_alt),
+            function: Style::new().fg(theme.info),
+            type_: Style::new().fg(theme.warn),
+            constant: Style::new().fg(theme.accent_alt),
             number: Style::new().fg(theme.accent_alt),
+            string: Style::new().fg(theme.ok),
             comment: Style::new().fg(theme.dim),
+            attribute: Style::new().fg(theme.accent_alt),
+            namespace: Style::new().fg(theme.accent_alt),
+            operator: Style::new().fg(theme.dim),
+            punctuation: Style::new().fg(theme.dim),
+            variable: Style::default(), // plain identifiers stay the body fg
         };
-        let mut flat: Vec<Style> = Vec::new();
-        let mut st = syntax::LexState::default();
-        let lines = active.1.lines();
-        for (i, line) in lines.iter().enumerate() {
-            let (ov, next) = syntax::line_overlay(line, lang, &styles, st);
-            st = next;
-            flat.extend(ov);
-            if i + 1 < lines.len() {
-                flat.push(Style::new()); // the '\n' between rows
+        match TsLanguage::from_path(active.0) {
+            Some(lang) => {
+                // Tier-1: one real parse → the flattened `Vec<Style>`
+                // (one slot per source char incl. each `'\n'`) — the exact
+                // same shape/length the Tier-0 loop below produces, a true
+                // drop-in for `Editor::syntax`.
+                let mut a = Analyzer::new(lang);
+                a.set_source(&active.1.to_string());
+                a.highlight(&styles)
+            }
+            None => {
+                // Tier-0 fallback for an unknown extension: the
+                // dependency-free lexer threaded with `LexState` so
+                // multi-line strings / comments stay coloured across rows.
+                let lang = syntax::Language::from_path(active.0);
+                let mut flat: Vec<Style> = Vec::new();
+                let mut st = syntax::LexState::default();
+                let lines = active.1.lines();
+                for (i, line) in lines.iter().enumerate() {
+                    let (ov, next) = syntax::line_overlay(line, lang, &styles, st);
+                    st = next;
+                    flat.extend(ov);
+                    if i + 1 < lines.len() {
+                        flat.push(Style::new()); // the '\n' between rows
+                    }
+                }
+                flat
             }
         }
-        flat
     }
 
     /// Typing edits the buffer; arrows move the caret; `PgUp/PgDn` switch
