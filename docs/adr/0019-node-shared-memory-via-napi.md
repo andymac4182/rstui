@@ -1,6 +1,6 @@
 # ADR 0019: Node/Bun shared memory via a napi-rs addon — evaluated, built, measured
 
-- **Status:** Accepted (proof built + measured; **not productionised** — see Decision)
+- **Status:** Accepted (built + measured; **productionised by informed maintainer decision despite ≈0 latency win** — see Decision)
 - **Date:** 2026-05-18
 - **Relates to:** [ADR 0016](0016-shared-memory-plugin-transport.md) (reaffirms its "Rust-only" consequence with evidence), [ADR 0007](0007-plugin-host-and-secure-execution.md)
 
@@ -68,38 +68,52 @@ the conclusion**. The Node runtime, not the IPC, is the floor.
 
 ## Decision
 
-**Build the proof, keep it as a documented escape hatch, do *not*
-productionise it.** The measured result shows shared memory delivers **no
-meaningful p50 win for Node plugins** — it is ≈ Node-stdio because the
-event loop dominates. Therefore:
+The measured result shows shared memory delivers **no meaningful p50 win
+for Node plugins** — it is ≈ Node-stdio because the event loop dominates,
+not the IPC. That fact is recorded here unambiguously and is *not*
+walked back.
 
-- ADR 0016's "shm is the Rust-plugin fast path; Node/Bun plugins use
-  stdio/uds" stands — now backed by measurement, not just by the
-  dependency-free-posture argument.
-- The `crates/rstui-acp-shm-native/` addon is retained as a **gated,
-  reproducible proof and an opt-in escape hatch** (a future Node plugin
-  that *does* want it builds it locally; `RSTUI_SHM_NATIVE` points the
-  `sdk/shm-native/index.mjs` loader at the built `.node`).
-- **No per-platform prebuilt-binary packaging, no TS-SDK `bridge()`
-  integration, no CI matrix** — that cost buys ≈ zero Node latency and
-  would break the TS SDK's dependency-free posture for nothing. The
-  earlier phase-5c/5d plan is **cancelled by this evidence**.
+**Decision (maintainer, with the measurement explicit): productionise it
+anyway — for optionality and transport parity, expressly NOT for
+latency.** Presented with the ≈0-µs-win evidence the maintainer chose the
+full path: a TS/Node plugin *may* opt into shm exactly like a Rust one,
+and it ships as a real per-platform package — uniformity and operator
+choice are judged worth the cost even though speed is not the payoff.
+Therefore:
+
+- The ≈0 Node latency win stands as the honest characterisation;
+  ADR 0016's "shm is the **Rust** fast path" is still true on the
+  numbers. shm-for-Node is a **parity/optionality** feature, and every
+  doc says so plainly so no one adopts it expecting speed.
+- The `crates/rstui-acp-shm-native/` addon is **gated in-workspace**
+  (xtask ci / deny / machete / MSRV), and is wired into the TS SDK
+  `bridge()` (probe + graceful fallback to uds/stdio when the optional
+  addon is absent — the **core TS SDK stays dependency-free**: the addon
+  is an `optionalDependency`, never required).
+- **Phase 5c** (TS `bridge()` shm + probe/fallback) and **phase 5d**
+  (per-platform prebuilt-binary npm package + CI matrix) are **done**,
+  not cancelled — the dependency-free posture is preserved by making the
+  native package strictly optional and probed, never a hard dep.
 
 ## Consequences
 
-- **Easy / preserved:** the TS SDK stays dependency-free and addon-free;
-  the conclusion is now empirical and reproducible (`cargo run --release
-  --example node_rtt -p rstui-acp-shm-native`, after building the
-  `.node`).
-- **Accepted:** Node/Bun plugins do not get a shm latency win — and that
-  is a runtime limit, not a missing feature. A Rust plugin remains the
-  answer when a flat sub-µs tail genuinely matters.
+- **Easy / preserved:** the **core** TS SDK stays dependency-free — the
+  native package is an `optionalDependency`, dynamically probed; absent
+  it, `bridge()` falls back to uds/stdio with one log line. The
+  ≈0-latency conclusion is empirical and reproducible (`cargo run
+  --release --example node_rtt -p rstui-acp-shm-native`).
+- **Accepted (eyes open):** Node/Bun plugins get **no shm latency win** —
+  a runtime limit, not a bug. shm-for-Node is shipped for
+  parity/optionality; every doc says "not faster than stdio for Node" so
+  no one adopts it expecting speed. A Rust plugin remains the answer when
+  a flat sub-µs tail genuinely matters.
+- **Cost taken on:** per-platform prebuilt `.node` packaging + a CI
+  cross-build matrix + a new `unsafe`/lint-deviation crate in the gated
+  workspace — accepted by maintainer decision for transport uniformity,
+  with the no-speed-win caveat recorded.
 - **Deferred / out of scope:** a thread+`ThreadsafeFunction` design is
   *not* pursued — the event-loop-delivery floor makes a materially
   different number unlikely; revisit only with a concrete benchmark
   showing otherwise.
-- **Reversible:** productisation can still happen later if a real
-  workload justifies it; this ADR is the record of why it was not, with
-  the number that decided it.
 
 [`rstui_acp_shm::ShmChannel`]: ../../crates/rstui-acp-shm/src/lib.rs

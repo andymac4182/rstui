@@ -1,0 +1,20 @@
+{
+  "name": "@rstui-acp/plugin-shm-native",
+  "version": "0.0.1",
+  "description": "OPTIONAL shared-memory transport addon for @rstui-acp/plugin-sdk (ADR 0019). Probed at runtime with graceful fallback to uds/stdio. Offered for transport parity/optionality — NOT speed: ≈ Node-stdio latency (the Node event loop is the floor, by design).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": { ".": "./index.mjs" },
+  "files": ["index.mjs"],
+  "repository": "https://github.com/andymac4182/rstui",
+  "engines": { "node": ">=16" },
+  "//": "The per-platform binaries are optionalDependencies: npm installs ONLY the one matching the host (os/cpu/libc gate in each sub-package), and index.mjs require()s it. None of them being installable is non-fatal — the loader falls back and the SDK drops to uds/stdio.",
+  "optionalDependencies": {
+    "@rstui-acp/plugin-shm-native-darwin-arm64": "0.0.1",
+    "@rstui-acp/plugin-shm-native-darwin-x64": "0.0.1",
+    "@rstui-acp/plugin-shm-native-linux-x64-gnu": "0.0.1",
+    "@rstui-acp/plugin-shm-native-linux-x64-musl": "0.0.1",
+    "@rstui-acp/plugin-shm-native-win32-x64-msvc": "0.0.1"
+  }
+}

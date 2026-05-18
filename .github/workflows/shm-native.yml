@@ -1,0 +1,94 @@
+# ADR 0019 phase 5d: cross-build the OPTIONAL shared-memory addon
+# (crates/rstui-acp-shm-native, a napi-rs cdylib) into per-platform
+# `<triple>.node` artifacts, then assemble the npm sub-packages. The
+# core SDK never depends on this — the binaries are optionalDependencies,
+# probed at runtime with graceful fallback (so a missing platform is
+# non-fatal). Publishing is tag-gated and needs an NPM_TOKEN secret.
+name: shm-native
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["shm-native-v*"]
+    paths:
+      - "crates/rstui-acp-shm-native/**"
+      - "crates/rstui-acp-shm/**"
+      - "sdk/shm-native/**"
+      - ".github/workflows/shm-native.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.triple }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, triple: darwin-arm64, ext: dylib }
+          - { os: macos-13, triple: darwin-x64, ext: dylib }
+          - { os: ubuntu-latest, triple: linux-x64-gnu, ext: so }
+          - {
+              os: ubuntu-latest,
+              triple: linux-x64-musl,
+              ext: so,
+              target: x86_64-unknown-linux-musl,
+            }
+          - { os: windows-latest, triple: win32-x64-msvc, ext: dll }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: musl tools
+        if: matrix.triple == 'linux-x64-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: build cdylib
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build -p rstui-acp-shm-native --release --target ${{ matrix.target }}
+            out="target/${{ matrix.target }}/release"
+          else
+            cargo build -p rstui-acp-shm-native --release
+            out="target/release"
+          fi
+          case "${{ matrix.ext }}" in
+            dylib) src="$out/librstui_acp_shm_native.dylib" ;;
+            so)    src="$out/librstui_acp_shm_native.so" ;;
+            dll)   src="$out/rstui_acp_shm_native.dll" ;;
+          esac
+          mkdir -p artifacts
+          cp "$src" "artifacts/${{ matrix.triple }}.node"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.triple }}
+          path: artifacts/${{ matrix.triple }}.node
+          if-no-files-found: error
+
+  package:
+    name: assemble + (tag) publish npm packages
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, registry-url: "https://registry.npmjs.org" }
+      - name: assemble per-platform packages
+        run: node sdk/shm-native/scripts/prepare-packages.mjs artifacts
+      - name: publish (only on shm-native-v* tags)
+        if: startsWith(github.ref, 'refs/tags/shm-native-v')
+        # Requires repo secret NPM_TOKEN with publish rights to the
+        # @rstui-acp scope. No-ops on non-tag runs (assemble-only check).
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -e
+          for d in sdk/shm-native/npm/*/; do
+            (cd "$d" && npm publish --access public)
+          done
+          (cd sdk/shm-native && npm publish --access public)

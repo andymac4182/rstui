@@ -1,5 +1,10 @@
-# Build artifacts: the cdylib target and the platform `.node` are built
-# locally (or by the deferred packaging in ADR 0019 phase 5d), never
-# committed. Cargo.lock is kept (reproducible proof crate).
+# Build artifacts: the cdylib (built into the *workspace* target dir),
+# any stray local `/target/`, the convenience `.node` copy, and the
+# CI-generated per-platform npm sub-packages (npm/<triple>/) are produced
+# by the shm-native CI workflow (ADR 0019 phase 5d) and published from
+# there — never committed. The committed surface is index.mjs +
+# package.json + scripts/ + README.md + smoke.mjs/echo.mjs (the Rust
+# crate lives in crates/rstui-acp-shm-native/).
 /target/
 *.node
+/npm/

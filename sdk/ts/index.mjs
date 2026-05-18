@@ -4,6 +4,10 @@
 // Rust plugins. Transports (chosen by bridge(), precedence top→bottom —
 // mirrors the Rust SDK's serve_auto):
 //   * injected `globalThis.__rstuiHost`  — running under the V8 host.
+//   * `--shm <path>` / RSTUI_PLUGIN_SHM — shared memory via the OPTIONAL
+//     native addon (@rstui-acp/plugin-shm-native); probed, with graceful
+//     fallback when absent. Offered for parity, NOT speed: ≈ Node-stdio
+//     latency (the Node event loop is the floor — ADR 0019).
 //   * `--uds <path>` / RSTUI_PLUGIN_UDS — a Unix-domain-socket server (no
 //     TCP/IP stack, no port — the lowest-overhead local socket).
 //   * `--ws <port>` / RSTUI_PLUGIN_WS=<port> — a dependency-free RFC 6455
@@ -377,6 +381,68 @@ async function makeWsBridge(port) {
   return core;
 }
 
+// Probe the OPTIONAL native shared-memory addon (ADR 0019). The core SDK
+// stays dependency-free: this is a try/catch dynamic import, so when the
+// addon is not installed `bridge()` simply falls back to uds/stdio.
+// Resolution order: explicit env module → the published optional package
+// → the in-repo dev loader (sibling of this file).
+async function loadShmAddon() {
+  const env = globalThis.process?.env ?? {};
+  const cands = [
+    env.RSTUI_SHM_NATIVE_MODULE,
+    "@rstui-acp/plugin-shm-native",
+    new URL("../shm-native/index.mjs", import.meta.url).href,
+  ];
+  for (const c of cands) {
+    if (!c) continue;
+    try {
+      const m = await import(c);
+      if (m?.ShmChannel) return m.ShmChannel;
+    } catch {
+      /* not present — try next */
+    }
+  }
+  return null;
+}
+
+// Shared-memory bridge (ADR 0019): the plugin attaches to the host's
+// segment; framing IS the ring (one whole JSON-RPC message per
+// tryRecv()), so messages are fed straight to the core. Adaptive poll —
+// hot (setImmediate, ≈ one event-loop tick) for a short window after
+// activity, a 1 ms timer when idle (≈0 % CPU). NOTE: this is ≈ Node-stdio
+// latency, not the Rust sub-µs — the Node event loop is the floor, by
+// design (ADR 0019). It is offered for parity/optionality, not speed.
+function makeShmBridge(ShmChannel, path) {
+  const ch = ShmChannel.open(path);
+  const core = makeBridgeCore({
+    writeLine: (s) => ch.send(Buffer.from(s, "utf8")),
+    closeTransport: () => {
+      try {
+        globalThis.process?.exit?.(0);
+      } catch {}
+    },
+  });
+  let hotUntil = 0;
+  const pump = () => {
+    if (ch.isClosed()) {
+      core.finish();
+      return;
+    }
+    let did = false;
+    for (;;) {
+      const msg = ch.tryRecv();
+      if (!msg) break;
+      core.feed(msg.toString("utf8"));
+      did = true;
+    }
+    if (did) hotUntil = Date.now() + 4;
+    if (Date.now() < hotUntil) setImmediate(pump);
+    else setTimeout(pump, 1);
+  };
+  pump();
+  return core;
+}
+
 async function bridge() {
   const injected = globalThis.__rstuiHost;
   if (
@@ -392,13 +458,24 @@ async function bridge() {
     const i = argv.indexOf(f);
     return i >= 0 ? argv[i + 1] : undefined;
   };
+  const shm = argVal("--shm") || env.RSTUI_PLUGIN_SHM;
   const uds = argVal("--uds") || env.RSTUI_PLUGIN_UDS;
   const wsPort = Number(argVal("--ws")) || Number(env.RSTUI_PLUGIN_WS) || 0;
   const lp =
     argv.includes("--lp") ||
     (!!env.RSTUI_PLUGIN_LP && env.RSTUI_PLUGIN_LP !== "0");
-  // Precedence (mirrors the Rust serve_auto): uds → ws → stdio. `--lp`
-  // selects binary framing for the uds/stdio paths; ws has RFC 6455.
+  // Precedence (mirrors the Rust serve_auto): shm → uds → ws → stdio.
+  // shm needs the OPTIONAL native addon; if it is absent we log one line
+  // and fall through (graceful — the core SDK is dependency-free).
+  if (shm) {
+    const ShmChannel = await loadShmAddon();
+    if (ShmChannel) return makeShmBridge(ShmChannel, shm);
+    globalThis.process?.stderr?.write?.(
+      "rstui plugin SDK: --shm requested but @rstui-acp/plugin-shm-native " +
+        "is not installed; falling back to uds/stdio (no latency loss — " +
+        "shm is ≈ stdio for Node anyway, see ADR 0019)\n",
+    );
+  }
   if (uds) return makeUdsBridge(uds, lp);
   if (wsPort) return makeWsBridge(wsPort);
   const haveStdio = globalThis.process?.stdin && globalThis.process?.stdout;
