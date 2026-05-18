@@ -33,7 +33,7 @@ caller-owned state it projects — this is the part that matters most), the
 | **Rich rendering** | Markdown, Link, Diff, Mermaid, Structurizr, JsonCanvas, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
 | **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider, DataTable | [forms-and-data.md](forms-and-data.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
-| **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, KeymapView, Flow | [overlays-and-control.md](overlays-and-control.md) |
+| **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, KeymapView, WhichKey, Flow | [overlays-and-control.md](overlays-and-control.md) |
 | **Observability** | LineChart, Heatmap, Histogram, StatPanel, FlameGraph, TraceWaterfall, LogStream | [observability.md](observability.md) |
 | **Charts & visualization** | Canvas, ScatterPlot, PieChart, RadarChart, BoxPlot, ViolinChart, Candlestick, Waterfall, Funnel, BulletChart, Treemap, Sankey, Gantt, CalendarHeatmap, StackedBarChart | [charts.md](charts.md) |
 
@@ -124,6 +124,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Treemap](charts.md#treemap) | charts | `treemap_demo` |
 | [ViolinChart](charts.md#violinchart) | charts | `violin_chart_demo` |
 | [Waterfall](charts.md#waterfall) | charts | `waterfall_demo` |
+| [WhichKey](overlays-and-control.md#whichkey) | overlays | `which_key_demo` |
 
 ## Shared patterns
 

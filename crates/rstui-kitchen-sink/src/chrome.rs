@@ -6,12 +6,14 @@
 //! Each of those is a real catalog widget doing its real job, not a static
 //! sample — driving the app *is* the demo of the chrome.
 
+use std::borrow::Cow;
+
 use rstui_core::{Constraint, Line, Modifier, Position, Rect, Style, TextEdit, stylize::Stylize};
 use rstui_runtime::Frame;
 use rstui_widgets::{
     Block, BorderType, CommandPalette, Drawer, DrawerSide, HelpEntry, HelpOverlay, KeymapRow,
     KeymapView, Modal, Paragraph, RowState, Sidebar, SidebarItem, StatusBar, Toast, ToastCorner,
-    ToastMessage,
+    ToastMessage, WhichKey,
 };
 
 use crate::keymap;
@@ -222,6 +224,43 @@ pub(crate) fn view_overlays(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect)
         );
     }
     let _ = theme;
+}
+
+/// The transient **which-key** popup: while a leader/prefix is armed, a
+/// small bottom-anchored panel of `key → action` so the sequence is
+/// *discoverable*, not memorised (the opencode / Helix idiom). A pure
+/// projection of [`Keymaps::continuations`](keymap::Keymaps::continuations)
+/// — the reducer owns the armed state; this only draws it. Drawn last so
+/// it floats above the screen; `git-review`/`acp-client` ship no leader
+/// map so they never need it.
+pub(crate) fn view_which_key(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
+    if !ks.keymaps().armed() {
+        return;
+    }
+    let cont = ks.keymaps().continuations();
+    if cont.is_empty() {
+        return;
+    }
+    let theme = ks.theme();
+    let rows: Vec<(Cow<'_, str>, Line<'_>)> = cont
+        .iter()
+        .map(|(keydisp, _action, help)| (Cow::Owned(keydisp.clone()), Line::from(*help)))
+        .collect();
+    frame.render_widget(
+        WhichKey::new(&rows)
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title(Line::from(" ⟨leader⟩ ").style(theme.heading())),
+            )
+            .max_height(12)
+            .column_gap(2)
+            .style(theme.body())
+            .key_style(Style::new().fg(theme.accent))
+            .label_style(Style::new().fg(theme.text))
+            .backdrop_style(Style::new().fg(theme.dim)),
+        area,
+    );
 }
 
 /// The global help overlay — a real [`HelpOverlay`] built from the **live**

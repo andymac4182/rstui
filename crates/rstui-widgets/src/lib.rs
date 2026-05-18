@@ -402,6 +402,7 @@ pub mod tree;
 pub mod treemap;
 pub mod violin_chart;
 pub mod waterfall;
+pub mod which_key;
 
 pub use accordion::{Accordion, AccordionSection};
 pub use alert::{Alert, AlertLevel};
@@ -480,6 +481,7 @@ pub use toast::{Toast, ToastCorner, ToastLevel, ToastMessage};
 pub use tooltip::Tooltip;
 pub use trace_waterfall::{TraceSpan, TraceWaterfall};
 pub use tree::{Tree, TreeGuides, TreeItem};
+pub use which_key::WhichKey;
 // The business-dashboard chart cluster — a later additive export wave (like
 // the group above). `scatter_plot::Series` and the Mermaid AST stay
 // module-qualified; `Series` is too generic to promote to the crate root.
