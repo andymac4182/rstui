@@ -102,7 +102,10 @@ gating on it makes CI flaky) — it is an on-demand instrument.
 `min`/`median`/`mean` ns `rstui-bench --json` emits, same format both
 ways so it round-trips); regenerate it with `--save` on a quiet
 machine after an intended perf change, and let the human narrative
-live in `docs/perf-review.md` / `docs/perf-review-2.md`. For *live*,
+live in `docs/perf-review.md` / `docs/perf-review-2.md` /
+`docs/perf-review-3.md` (the latest: the 120 fps assessment — the engine
+has ~100× headroom; the per-widget content-cache seam is the lever). For
+*live*,
 in-app introspection (per-phase CPU, allocations, FPS, input→frame
 latency, a Chrome-DevTools-style overlay) see
 [`docs/devtools.md`](devtools.md) — the `rstui-devtools` crate
