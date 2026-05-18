@@ -102,6 +102,7 @@
 use std::borrow::Cow;
 
 use crate::block::Block;
+use crate::syntax::{self, Language, LexState, SyntaxStyles};
 use rstui_core::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
 
 /// Lines longer than this skip the (quadratic) intra-line word diff and fall
@@ -239,10 +240,13 @@ pub struct Diff<'a> {
     source: Cow<'a, str>,
     block: Option<Block<'a>>,
     style: Style,
-    scroll: u16,
+    scroll: usize,
+    col: usize,
     theme: DiffTheme,
     layout: DiffLayout,
     syntax: bool,
+    language: Language,
+    tab_width: usize,
 }
 
 impl<'a> Diff<'a> {
@@ -253,9 +257,12 @@ impl<'a> Diff<'a> {
             block: None,
             style: Style::new(),
             scroll: 0,
+            col: 0,
             theme: DiffTheme::default(),
             layout: DiffLayout::default(),
             syntax: false,
+            language: Language::Unknown,
+            tab_width: 4,
         }
     }
 
@@ -277,9 +284,84 @@ impl<'a> Diff<'a> {
 
     /// Skips the first `offset` composed rows: the vertical scroll position
     /// for a patch taller than its area.
+    ///
+    /// `offset` is a [`usize`] (not the historical `u16`): a generated patch
+    /// can exceed 65 535 rows, and the caller clamps with [`row_count`] —
+    /// see its docs for the scroll-clamp recipe (gap K of the
+    /// `code-editor-and-diff-deep-dive`). An `offset` past the last row simply
+    /// renders an empty area, never panics.
+    ///
+    /// [`row_count`]: Diff::row_count
     #[must_use]
-    pub fn scroll(mut self, offset: u16) -> Self {
+    pub fn scroll(mut self, offset: usize) -> Self {
         self.scroll = offset;
+        self
+    }
+
+    /// Sets the first body **content** column drawn — the horizontal scroll
+    /// position so an over-wide line can be panned with `←`/`→` instead of
+    /// being hard-clipped at the right edge (gap B of the
+    /// `code-editor-and-diff-deep-dive`).
+    ///
+    /// Only the *code content* scrolls: the line-number / sign gutter (and a
+    /// full-width file / hunk / metadata / binary / `\ No newline` row) is
+    /// **never** shifted, so the gutter stays put while the code slides under
+    /// it — exactly the behaviour a reader expects from a horizontal pan.
+    /// Tabs are expanded (see [`tab_width`]) *before* this offset is applied,
+    /// so a column is a rendered cell, not a source byte. `0` (the default)
+    /// is byte-identical to the historical render.
+    ///
+    /// [`tab_width`]: Diff::tab_width
+    #[must_use]
+    pub fn col(mut self, off: usize) -> Self {
+        self.col = off;
+        self
+    }
+
+    /// Selects the [`Language`] the syntax overlay lexes when
+    /// [`syntax`](Diff::syntax) is on.
+    ///
+    /// The default is [`Language::Unknown`] — the language-blind common-core
+    /// mode that is **byte-identical** to the historical built-in tinter, so
+    /// `.syntax(true)` on its own renders exactly as it always did. Pick a
+    /// concrete language (the app resolves it from the file path via
+    /// [`Language::from_path`] over the `git` `Cmd` seam — the widget stays
+    /// pure) for that language's own keyword set and string / comment
+    /// delimiters. A diff row is a single, non-contiguous line, so multi-line
+    /// constructs are *not* carried between rows (each row lexes from a fresh
+    /// [`LexState`]); an editor, whose lines are contiguous, threads the
+    /// state instead.
+    ///
+    /// ```
+    /// use rstui_core::{Buffer, Rect, Widget};
+    /// use rstui_widgets::{Diff, Language};
+    ///
+    /// // `fn` is a Rust keyword; the overlay tints it under the add colour.
+    /// let mut buf = Buffer::empty(Rect::new(0, 0, 24, 2));
+    /// Diff::new("@@ -0,0 +1 @@\n+fn main() {}")
+    ///     .syntax(true)
+    ///     .language(Language::Rust)
+    ///     .render(buf.area(), &mut buf);
+    /// ```
+    #[must_use]
+    pub fn language(mut self, lang: Language) -> Self {
+        self.language = lang;
+        self
+    }
+
+    /// Sets how many cells a literal tab (`\t`) in body content expands to:
+    /// it advances to the next multiple of `w` columns (a real tab stop, not
+    /// a fixed run), so source indentation no longer collapses to a single
+    /// cell (gap D of the `code-editor-and-diff-deep-dive`). The default is
+    /// **4**. Header rows (file / hunk / metadata / binary / `\ No newline`)
+    /// are unaffected. A `w` of `0` is treated as `1` so a tab still occupies
+    /// at least one cell (no panic, no zero-width column).
+    ///
+    /// Expansion happens before the horizontal [`col`](Diff::col) slice and
+    /// the width clip, so columns stay correct under a horizontal pan.
+    #[must_use]
+    pub fn tab_width(mut self, w: usize) -> Self {
+        self.tab_width = w;
         self
     }
 
@@ -337,6 +419,29 @@ impl<'a> Diff<'a> {
         self.laid_out(width, usize::MAX)
     }
 
+    /// The number of composed rows at content `width` — the cheap accessor a
+    /// host uses to **clamp [`scroll`]** instead of abusing
+    /// `lines(width).len()` (which re-parses *and* re-allocates every line on
+    /// every keypress; gap K of the `code-editor-and-diff-deep-dive`).
+    ///
+    /// The reducer that owns the scroll offset clamps it to
+    /// `row_count(w).saturating_sub(viewport_h)` so content cannot scroll off
+    /// into a blank pane (the deep-dive Part 2 scroll-clamp recipe). It runs
+    /// the layout once (so it is the true count under the active
+    /// [`DiffLayout`], including the narrow-area split→unified degrade) but
+    /// allocates no rendered cells beyond the row vector — materially cheaper
+    /// than `lines`, and the count is exactly `self.lines(width).len()`.
+    /// `width` of `0` is `0`.
+    ///
+    /// [`scroll`]: Diff::scroll
+    #[must_use]
+    pub fn row_count(&self, width: u16) -> usize {
+        // One layout pass, full (uncapped) count — the documented "every row"
+        // total, identical to `lines(width).len()` but without keeping the
+        // composed `Line`s around.
+        self.laid_out(width, usize::MAX).len()
+    }
+
     /// The composed rows, building at most `row_cap` of them (DIFF-1).
     /// `lines` passes `usize::MAX` (the documented full count); `render`
     /// passes `scroll + height` so off-screen rows skip the heavy layout —
@@ -349,11 +454,42 @@ impl<'a> Diff<'a> {
         }
         let rows = parse_rows(self.source.as_ref());
         let width = width as usize;
+        let opts = RenderOpts {
+            theme: &self.theme,
+            syntax: self.syntax,
+            language: self.language,
+            col: self.col,
+            // A 0 tab width would make a tab a zero-width column; clamp to 1
+            // so the render path stays total.
+            tab_width: self.tab_width.max(1),
+        };
         match self.layout {
-            DiffLayout::Unified => layout_rows(&rows, width, &self.theme, self.syntax, row_cap),
-            DiffLayout::Split => layout_rows_split(&rows, width, &self.theme, self.syntax, row_cap),
+            DiffLayout::Unified => layout_rows(&rows, width, &opts, row_cap),
+            DiffLayout::Split => layout_rows_split(&rows, width, &opts, row_cap),
         }
     }
+}
+
+/// The content-rendering knobs threaded from a [`Diff`] through the layout
+/// layers to [`content_spans`] / [`side_spans`]. Bundled (rather than five
+/// more positional parameters) so the cascade — row → syntax under →
+/// word-mark on top — stays readable as gaps B/D/G/K are wired in.
+#[derive(Clone, Copy)]
+struct RenderOpts<'t> {
+    /// The active [`DiffTheme`] (row, gutter, word-mark and `syntax_*`
+    /// styles).
+    theme: &'t DiffTheme,
+    /// Generic syntax highlighting is on (gap G).
+    syntax: bool,
+    /// The [`Language`] the syntax overlay lexes (gap G); default
+    /// [`Language::Unknown`] is byte-identical to the historical tinter.
+    language: Language,
+    /// First body content column drawn — the horizontal scroll (gap B);
+    /// `0` is byte-identical to the historical render.
+    col: usize,
+    /// Cells a literal tab expands to, advancing to the next multiple (gap
+    /// D); already clamped to `>= 1`.
+    tab_width: usize,
 }
 
 impl Widget for Diff<'_> {
@@ -377,11 +513,13 @@ impl Widget for Diff<'_> {
         // build at most that many rows instead of the whole patch. The
         // produced prefix is byte-identical to the uncapped layout, so the
         // `skip(scroll).take(height)` below selects the exact same cells.
-        let cap = (self.scroll as usize).saturating_add(inner.height as usize);
+        // `scroll` is a `usize` (gap K) — a patch may exceed `u16::MAX` rows;
+        // `skip` past the end just paints nothing.
+        let cap = self.scroll.saturating_add(inner.height as usize);
         let rows = self.laid_out(inner.width, cap);
         for (i, mut line) in rows
             .into_iter()
-            .skip(self.scroll as usize)
+            .skip(self.scroll)
             .take(inner.height as usize)
             .enumerate()
         {
@@ -800,13 +938,12 @@ fn parse_range(s: &str) -> Option<(u32, u32)> {
 
 /// Lays the parsed rows out to display [`Line`]s for a content area `width`
 /// wide: computes the gutter width from the largest line number, pairs change
-/// groups for the intra-line word diff, then renders every row. `syntax`
-/// toggles the generic syntax-highlight overlay on body content.
+/// groups for the intra-line word diff, then renders every row. `opts`
+/// carries the syntax/language/horizontal-scroll/tab-width knobs.
 fn layout_rows(
     rows: &[DiffRow],
     width: usize,
-    theme: &DiffTheme,
-    syntax: bool,
+    opts: &RenderOpts<'_>,
     row_cap: usize,
 ) -> Vec<Line<'static>> {
     let num_w = number_width(rows);
@@ -832,9 +969,7 @@ fn layout_rows(
         if out.len() >= row_cap {
             break;
         }
-        out.push(render_row(
-            idx, row, num_w, sign_w, &marks, width, theme, syntax,
-        ));
+        out.push(render_row(idx, row, num_w, sign_w, &marks, width, opts));
     }
     out
 }
@@ -876,9 +1011,8 @@ fn digits(n: u32) -> usize {
 
 /// Renders one parsed row into a display [`Line`], padding its content with
 /// trailing spaces so a row background spans the full `width`. `sign_w` is
-/// the sign-gutter width (1, or the parent count for a combined hunk);
-/// `syntax` toggles the generic highlight overlay on body content.
-#[allow(clippy::too_many_arguments)]
+/// the sign-gutter width (1, or the parent count for a combined hunk); `opts`
+/// carries the syntax / language / horizontal-scroll / tab-width knobs.
 fn render_row(
     idx: usize,
     row: &DiffRow,
@@ -886,9 +1020,9 @@ fn render_row(
     sign_w: usize,
     marks: &[Option<Vec<bool>>],
     width: usize,
-    theme: &DiffTheme,
-    syntax: bool,
+    opts: &RenderOpts<'_>,
 ) -> Line<'static> {
+    let theme = opts.theme;
     match row {
         DiffRow::File { path } => full_width_line(&format!("─── {path} "), width, theme.file),
         DiffRow::Meta { text } => full_width_line(text, width, theme.meta),
@@ -912,6 +1046,8 @@ fn render_row(
             content,
         } => {
             let (row_style, word_style) = body_styles(*kind, theme);
+            // The gutter is built and measured exactly as before — it never
+            // scrolls horizontally (gap B): only the body content does.
             let gutter = format!(
                 "{old:>w$} {new:>w$} {sign:<sw$} ",
                 old = num_str(*old_no),
@@ -926,7 +1062,7 @@ fn render_row(
             let mut spans = vec![Span::styled(gutter, theme.gutter.patch(row_style))];
             let mask = marks.get(idx).and_then(Option::as_ref).map(Vec::as_slice);
             spans.extend(content_spans(
-                content, body_w, mask, row_style, word_style, theme, syntax,
+                content, body_w, mask, row_style, word_style, opts,
             ));
             Line::from(spans).style(row_style)
         }
@@ -955,58 +1091,110 @@ fn body_styles(kind: ChangeKind, theme: &DiffTheme) -> (Style, Style) {
     }
 }
 
-/// The styled spans for one body line's content, clipped to `body_w` cells
-/// and padded with trailing spaces so the row background reads as a block.
+/// The styled spans for one body line's content, horizontally scrolled by
+/// `opts.col`, clipped to `body_w` cells, and padded with trailing spaces so
+/// the row background reads as a block.
 ///
 /// Each char's style is the three-layer cascade: the row add/del/context
-/// style, then (if `syntax`) the generic syntax overlay, then (where the
-/// intra-line `mask` is set) the changed-word emphasis on top — so a changed
-/// word always wins over a keyword tint, which wins over the plain row. A run
-/// is emitted whenever any of those three layers changes.
+/// style, then (if `opts.syntax`) the [`crate::syntax`] overlay under it,
+/// then (where the intra-line `mask` is set) the changed-word emphasis on top
+/// — so a changed word always wins over a keyword tint, which wins over the
+/// plain row. A run is emitted whenever any of those three layers changes.
+///
+/// The cascade is computed per **original** char (the syntax overlay and the
+/// word `mask` are both original-char-indexed, exactly as before), then a
+/// literal tab is expanded to the next [`tab_width`](Diff::tab_width) stop
+/// (gap D) and the resulting rendered cells are windowed to
+/// `[col, col + body_w)` (gap B) — a style-preserving slice, never a clip of
+/// the composed line. With `col == 0`, the default `tab_width`, and content
+/// free of literal tabs (the overwhelming majority of diff fixtures) every
+/// cell is byte-identical to the historical render.
 fn content_spans(
     content: &str,
     body_w: usize,
     mask: Option<&[bool]>,
     row_style: Style,
     word_style: Style,
-    theme: &DiffTheme,
-    syntax: bool,
+    opts: &RenderOpts<'_>,
 ) -> Vec<Span<'static>> {
+    // 1. The syntax overlay over the *original* content (gap G): delegated
+    //    to the shared `crate::syntax`. A diff row is a single,
+    //    non-contiguous line, so lex from a fresh `LexState` and discard the
+    //    returned state. `Language::Unknown` (the default) reproduces the
+    //    legacy `diff.rs` algorithm byte-for-byte.
     let chars: Vec<char> = content.chars().collect();
-    let overlay = if syntax {
-        syntax_overlay(content, theme)
+    let overlay = if opts.syntax {
+        let styles = syntax_styles(opts.theme);
+        syntax::line_overlay(content, opts.language, &styles, LexState::default()).0
     } else {
         Vec::new()
     };
-    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    // 2. The per-original-char cascade, then tab expansion (gap D), into a
+    //    flat list of rendered cells. A tab's expansion cells inherit that
+    //    char's cascaded style so a tinted / changed tab stays tinted /
+    //    changed across its whole width. `col` tracks the *rendered* column
+    //    so the tab stop lands on a true multiple of `tab_width`.
+    let mut cells: Vec<(char, Style)> = Vec::with_capacity(chars.len());
     let mut col = 0usize;
-    let mut run = String::new();
-    let mut run_style = row_style;
     for (i, &ch) in chars.iter().enumerate() {
-        if col >= body_w {
-            break;
-        }
         let syn = overlay.get(i).copied().unwrap_or_else(Style::new);
         let marked = mask.is_some_and(|m| m.get(i).copied().unwrap_or(false));
         let mut style = row_style.patch(syn);
         if marked {
             style = style.patch(word_style);
         }
+        if ch == '\t' {
+            // Advance to the next multiple of `tab_width` (already clamped to
+            // >= 1); always at least one cell.
+            let stop = col + opts.tab_width - (col % opts.tab_width);
+            for _ in col..stop {
+                cells.push((' ', style));
+            }
+            col = stop;
+        } else {
+            cells.push((ch, style));
+            col += 1;
+        }
+    }
+
+    // 3. Window the rendered cells to `[col_off, col_off + body_w)` — the
+    //    horizontal scroll (gap B), a style-preserving slice (not a clip of
+    //    the composed line, so per-cell styles survive the pan). Then
+    //    coalesce equal-style runs and pad to the full body.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_style = row_style;
+    let mut drawn = 0usize;
+    for &(ch, style) in cells.iter().skip(opts.col).take(body_w) {
         if !run.is_empty() && style != run_style {
             spans.push(Span::styled(std::mem::take(&mut run), run_style));
         }
         run.push(ch);
         run_style = style;
-        col += 1;
+        drawn += 1;
     }
     if !run.is_empty() {
         spans.push(Span::styled(run, run_style));
     }
     // Pad to the full body so the row background reads as a block.
-    if col < body_w {
-        spans.push(Span::styled(" ".repeat(body_w - col), row_style));
+    if drawn < body_w {
+        spans.push(Span::styled(" ".repeat(body_w - drawn), row_style));
     }
     spans
+}
+
+/// Maps a [`DiffTheme`]'s four `syntax_*` style fields into the shared
+/// [`SyntaxStyles`] the [`crate::syntax`] overlay consumes, so `Diff` keeps
+/// owning the colours (and `rstui-theme` themes code for free) while the
+/// lexer stays theme-agnostic.
+fn syntax_styles(theme: &DiffTheme) -> SyntaxStyles {
+    SyntaxStyles {
+        comment: theme.syntax_comment,
+        string: theme.syntax_string,
+        number: theme.syntax_number,
+        keyword: theme.syntax_keyword,
+    }
 }
 
 /// A header row: `text` clipped to `width`, padded with trailing spaces so the
@@ -1069,8 +1257,7 @@ struct SideCell<'r> {
 fn layout_rows_split(
     rows: &[DiffRow],
     width: usize,
-    theme: &DiffTheme,
-    syntax: bool,
+    opts: &RenderOpts<'_>,
     row_cap: usize,
 ) -> Vec<Line<'static>> {
     let num_w = number_width(rows);
@@ -1081,7 +1268,7 @@ fn layout_rows_split(
     let gutter_w = num_w + sign_w + 2;
     let min_side = gutter_w + 1;
     if width < min_side * 2 + 1 {
-        return layout_rows(rows, width, theme, syntax, row_cap);
+        return layout_rows(rows, width, opts, row_cap);
     }
     let left_w = (width - 1) / 2;
     let right_w = width - 1 - left_w;
@@ -1106,7 +1293,7 @@ fn layout_rows_split(
             | DiffRow::Binary { .. }
             | DiffRow::Hunk { .. }
             | DiffRow::NoNewline { .. } => {
-                out.push(full_width_row(&rows[i], width, theme));
+                out.push(full_width_row(&rows[i], width, opts.theme));
                 i += 1;
             }
             DiffRow::Body {
@@ -1130,8 +1317,7 @@ fn layout_rows_split(
                     sign_w,
                     left_w,
                     right_w,
-                    theme,
-                    syntax,
+                    opts,
                 ));
                 i += 1;
             }
@@ -1194,7 +1380,7 @@ fn layout_rows_split(
                         }
                     };
                     out.push(split_line(
-                        &left, &right, num_w, sign_w, left_w, right_w, theme, syntax,
+                        &left, &right, num_w, sign_w, left_w, right_w, opts,
                     ));
                 }
 
@@ -1216,8 +1402,7 @@ fn layout_rows_split(
                         sign_w,
                         left_w,
                         right_w,
-                        theme,
-                        syntax,
+                        opts,
                     ));
                     i += 1;
                 }
@@ -1263,12 +1448,11 @@ fn split_line(
     sign_w: usize,
     left_w: usize,
     right_w: usize,
-    theme: &DiffTheme,
-    syntax: bool,
+    opts: &RenderOpts<'_>,
 ) -> Line<'static> {
-    let mut spans = side_spans(left, num_w, sign_w, left_w, theme, syntax);
+    let mut spans = side_spans(left, num_w, sign_w, left_w, opts);
     spans.push(Span::styled(SPLIT_SEP.to_string(), Style::new()));
-    spans.extend(side_spans(right, num_w, sign_w, right_w, theme, syntax));
+    spans.extend(side_spans(right, num_w, sign_w, right_w, opts));
     Line::from(spans)
 }
 
@@ -1277,14 +1461,14 @@ fn split_line(
 /// padded so the column's background spans the full slot. An empty slot (the
 /// short side of a paired change) is `side_w` blank cells with the
 /// inherit-everything style, so it reads as themed empty space, not a
-/// colored line. `sign_w` is the (combined-aware) sign-column width.
+/// colored line. `sign_w` is the (combined-aware) sign-column width. The
+/// gutter never scrolls horizontally; only the content honours `opts.col`.
 fn side_spans(
     cell: &SideCell<'_>,
     num_w: usize,
     sign_w: usize,
     side_w: usize,
-    theme: &DiffTheme,
-    syntax: bool,
+    opts: &RenderOpts<'_>,
 ) -> Vec<Span<'static>> {
     let Some(DiffRow::Body {
         kind,
@@ -1298,7 +1482,7 @@ fn side_spans(
         return vec![Span::styled(" ".repeat(side_w), Style::new())];
     };
 
-    let (row_style, word_style) = body_styles(*kind, theme);
+    let (row_style, word_style) = body_styles(*kind, opts.theme);
     // A deletion has only an old number, an addition only a new one; a
     // context line has both, so the left column shows old, the right new.
     let shown_no = match cell.side {
@@ -1316,9 +1500,9 @@ fn side_spans(
         sign = signs,
         sw = sign_w,
     );
-    spans.push(Span::styled(gutter, theme.gutter.patch(row_style)));
+    spans.push(Span::styled(gutter, opts.theme.gutter.patch(row_style)));
     spans.extend(content_spans(
-        content, body_w, cell.mask, row_style, word_style, theme, syntax,
+        content, body_w, cell.mask, row_style, word_style, opts,
     ));
     spans
 }
@@ -1502,251 +1686,6 @@ fn mark(mask: &mut [bool], tok: &Token) {
     let len = tok.text.chars().count();
     for slot in mask.iter_mut().skip(tok.start).take(len) {
         *slot = true;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Generic syntax highlight
-// ---------------------------------------------------------------------------
-
-/// A curated, language-agnostic keyword set. Deliberately a *common* core
-/// shared across C-family, Rust, Python, JS/TS, Go, shell, SQL, … rather than
-/// any one grammar — the highlight is a reading aid, not a parser, so a word
-/// that is a keyword in *some* mainstream language is tinted. Sorted so the
-/// lookup can binary-search and the list stays easy to audit.
-const KEYWORDS: &[&str] = &[
-    "abstract",
-    "and",
-    "as",
-    "async",
-    "await",
-    "begin",
-    "bool",
-    "break",
-    "byte",
-    "case",
-    "catch",
-    "char",
-    "class",
-    "const",
-    "continue",
-    "data",
-    "def",
-    "default",
-    "defer",
-    "del",
-    "do",
-    "double",
-    "elif",
-    "else",
-    "end",
-    "enum",
-    "except",
-    "export",
-    "extends",
-    "extern",
-    "false",
-    "final",
-    "finally",
-    "float",
-    "fn",
-    "for",
-    "from",
-    "func",
-    "function",
-    "go",
-    "goto",
-    "if",
-    "impl",
-    "implements",
-    "import",
-    "in",
-    "instanceof",
-    "int",
-    "interface",
-    "is",
-    "lambda",
-    "let",
-    "long",
-    "loop",
-    "match",
-    "mod",
-    "module",
-    "move",
-    "mut",
-    "namespace",
-    "new",
-    "nil",
-    "none",
-    "not",
-    "null",
-    "object",
-    "or",
-    "package",
-    "pass",
-    "private",
-    "protected",
-    "pub",
-    "public",
-    "raise",
-    "ref",
-    "return",
-    "select",
-    "self",
-    "short",
-    "signed",
-    "sizeof",
-    "static",
-    "str",
-    "struct",
-    "super",
-    "switch",
-    "template",
-    "then",
-    "this",
-    "throw",
-    "throws",
-    "trait",
-    "true",
-    "try",
-    "type",
-    "typedef",
-    "typeof",
-    "union",
-    "unsafe",
-    "unsigned",
-    "use",
-    "using",
-    "var",
-    "void",
-    "where",
-    "while",
-    "with",
-    "yield",
-];
-
-/// Whether `word` is in the curated common-keyword set ([`KEYWORDS`]).
-fn is_keyword(word: &str) -> bool {
-    KEYWORDS.binary_search(&word).is_ok()
-}
-
-/// Builds the per-character syntax-style overlay for one body line's content:
-/// `overlay[i]` is the [`Style`] patch for char *i* (an empty [`Style`] where
-/// nothing applies). Dependency-free, deterministic, single left-to-right
-/// pass over the chars.
-///
-/// Recognises, in priority order: line comments (`//`, `#`, `--`) to end of
-/// line, `/* … */` block comments, string literals delimited by `"`, `'` or
-/// `` ` `` (with `\`-escape inside double/back quotes), numeric literals
-/// (a digit run, optionally `0x…`/`0b…`/`0o…`, with `_` / `.` / a trailing
-/// exponent), and otherwise word runs matched against [`KEYWORDS`]. It is a
-/// reading aid, not a compiler: it never spans lines (a diff row is one line)
-/// and an unterminated string simply colours to end of line.
-fn syntax_overlay(content: &str, theme: &DiffTheme) -> Vec<Style> {
-    let chars: Vec<char> = content.chars().collect();
-    let mut overlay = vec![Style::new(); chars.len()];
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-
-        // Line comment: `//`, `--`, or `#` to end of line.
-        if (c == '/' && chars.get(i + 1) == Some(&'/'))
-            || (c == '-' && chars.get(i + 1) == Some(&'-'))
-            || c == '#'
-        {
-            paint(&mut overlay, i, chars.len(), theme.syntax_comment);
-            break;
-        }
-
-        // Block comment `/* … */` (single line; a diff row never spans lines).
-        if c == '/' && chars.get(i + 1) == Some(&'*') {
-            let mut j = i + 2;
-            while j < chars.len() {
-                if chars[j] == '*' && chars.get(j + 1) == Some(&'/') {
-                    j += 2;
-                    break;
-                }
-                j += 1;
-            }
-            paint(&mut overlay, i, j, theme.syntax_comment);
-            i = j;
-            continue;
-        }
-
-        // String / char literal. `"` and `` ` `` honour a `\` escape; `'`
-        // does too (covers escaped char literals without misreading a lone
-        // apostrophe — an unterminated quote just colours to end of line).
-        if c == '"' || c == '\'' || c == '`' {
-            let quote = c;
-            let mut j = i + 1;
-            while j < chars.len() {
-                if chars[j] == '\\' {
-                    j += 2;
-                    continue;
-                }
-                if chars[j] == quote {
-                    j += 1;
-                    break;
-                }
-                j += 1;
-            }
-            let end = j.min(chars.len());
-            paint(&mut overlay, i, end, theme.syntax_string);
-            i = end;
-            continue;
-        }
-
-        // Numeric literal: a digit (optionally a `0x`/`0o`/`0b` radix), then
-        // the run of digits / hex letters / `_` / `.`, plus an `e±` exponent.
-        if c.is_ascii_digit() {
-            let mut j = i + 1;
-            if c == '0' && matches!(chars.get(j), Some('x' | 'X' | 'o' | 'O' | 'b' | 'B')) {
-                j += 1;
-            }
-            while j < chars.len() {
-                let d = chars[j];
-                // A hex/decimal digit, `_` separator, or a `.` that is
-                // followed by another digit (so a method call like `1.foo`
-                // does not absorb the dot) extends the literal.
-                let extends = d.is_ascii_alphanumeric()
-                    || d == '_'
-                    || (d == '.' && chars.get(j + 1).is_some_and(char::is_ascii_digit));
-                if !extends {
-                    break;
-                }
-                j += 1;
-            }
-            paint(&mut overlay, i, j, theme.syntax_number);
-            i = j;
-            continue;
-        }
-
-        // Word run: a keyword gets the keyword style; any other identifier is
-        // left to the row/word styling underneath.
-        if c.is_alphanumeric() || c == '_' {
-            let start = i;
-            let mut j = i;
-            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
-                j += 1;
-            }
-            let word: String = chars[start..j].iter().collect();
-            if is_keyword(&word) {
-                paint(&mut overlay, start, j, theme.syntax_keyword);
-            }
-            i = j;
-            continue;
-        }
-
-        i += 1;
-    }
-    overlay
-}
-
-/// Applies `style` as the syntax overlay for char positions `start..end`
-/// (clamped to the slice), used by [`syntax_overlay`].
-fn paint(overlay: &mut [Style], start: usize, end: usize, style: Style) {
-    for slot in overlay.iter_mut().take(end).skip(start) {
-        *slot = style;
     }
 }
 
@@ -2274,10 +2213,27 @@ index e69de29..4b825dc 100644
         );
     }
 
+    /// The overlay now comes from the shared `crate::syntax` module
+    /// (gap G); `Diff` only maps its `DiffTheme.syntax_*` fields into
+    /// [`SyntaxStyles`] via [`syntax_styles`] and lexes a row from a fresh
+    /// [`LexState`] under [`Language::Unknown`]. These two tests pin that
+    /// mapping *and* the Unknown classification through `Diff`'s own theme,
+    /// exactly as the removed private `syntax_overlay` did — proving the
+    /// delegation is behaviour-preserving on the default path.
+    fn diff_overlay(line: &str, theme: &DiffTheme) -> Vec<Style> {
+        syntax::line_overlay(
+            line,
+            Language::Unknown,
+            &syntax_styles(theme),
+            LexState::default(),
+        )
+        .0
+    }
+
     #[test]
     fn syntax_overlay_classifies_keyword_number_string_comment() {
         let theme = DiffTheme::default();
-        let ov = syntax_overlay("let x = \"hi\"; // tail", &theme);
+        let ov = diff_overlay("let x = \"hi\"; // tail", &theme);
         let at = |s: &str, off: usize| ov[s.chars().count() - 1 + off];
         // `let` → keyword (chars 0..3).
         assert_eq!(ov[0], theme.syntax_keyword);
@@ -2298,20 +2254,20 @@ index e69de29..4b825dc 100644
     fn syntax_overlay_handles_numbers_hash_and_dash_comments_and_block() {
         let t = DiffTheme::default();
         // Hex / float / underscore numbers.
-        let ov = syntax_overlay("0xFF + 3.14 + 1_000", &t);
+        let ov = diff_overlay("0xFF + 3.14 + 1_000", &t);
         assert_eq!(ov[0], t.syntax_number); // 0
         assert_eq!(ov[3], t.syntax_number); // F (last of 0xFF)
         assert_eq!(ov[7], t.syntax_number); // 3 of 3.14
         assert_eq!(ov[9], t.syntax_number); // 1 of 1_000-ish
         // A `#` line comment (shell/python) to end of line.
-        let ov = syntax_overlay("x # note", &t);
+        let ov = diff_overlay("x # note", &t);
         assert_eq!(ov[2], t.syntax_comment);
         assert_eq!(ov[ov.len() - 1], t.syntax_comment);
         // A `--` line comment (SQL/Lua/Haskell).
-        let ov = syntax_overlay("v -- sql note", &t);
+        let ov = diff_overlay("v -- sql note", &t);
         assert_eq!(ov[2], t.syntax_comment);
         // A single-line `/* … */` block comment, code after it un-styled.
-        let ov = syntax_overlay("a /* mid */ b", &t);
+        let ov = diff_overlay("a /* mid */ b", &t);
         let s = "a ".chars().count();
         let e = "a /* mid */".chars().count();
         assert_eq!(ov[s], t.syntax_comment);
@@ -2351,6 +2307,235 @@ index e69de29..4b825dc 100644
         let kw = buf.get(Position::new(4, 1)).unwrap();
         assert_eq!(kw.symbol, 'f');
         assert_eq!(kw.fg, Color::Blue);
+    }
+
+    // -----------------------------------------------------------------------
+    // CE-1: language delegation, horizontal scroll, usize scroll,
+    // cheap row_count, tab expansion (gaps G/B/K/D)
+    // -----------------------------------------------------------------------
+
+    /// Gap G: with an explicit [`Language`] the overlay uses *that* language's
+    /// keyword set, not the language-blind common core. `crate` is a Rust
+    /// keyword but is **not** in the Unknown common-core set, so it is tinted
+    /// under `.language(Rust)` and plain under the default `Unknown` — proof
+    /// the delegation actually threads the language through.
+    #[test]
+    fn language_selects_a_language_specific_keyword_set() {
+        let patch = "@@ -0,0 +1 @@\n+use crate::x;";
+        // 24 wide, addition gutter `  1 + ` = 6 cols; content from col 6:
+        // `use`=6..9, ` `=9, `crate`=10..15.
+        let render = |d: Diff<'_>| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 24, 2));
+            d.render(buf.area(), &mut buf);
+            buf
+        };
+        // Default Unknown: `use` is in the common core (tinted blue) but
+        // `crate` is NOT, so `crate`'s 'c' keeps the plain addition fg.
+        let unknown = render(Diff::new(patch).syntax(true));
+        assert_eq!(unknown.get(Position::new(6, 1)).unwrap().symbol, 'u');
+        assert_eq!(unknown.get(Position::new(6, 1)).unwrap().fg, Color::Blue);
+        let c_unknown = unknown.get(Position::new(10, 1)).unwrap();
+        assert_eq!(c_unknown.symbol, 'c');
+        assert_ne!(c_unknown.fg, Color::Blue);
+        // Rust: `crate` IS a Rust keyword, so now it is tinted blue.
+        let rust = render(Diff::new(patch).syntax(true).language(Language::Rust));
+        let c_rust = rust.get(Position::new(10, 1)).unwrap();
+        assert_eq!(c_rust.symbol, 'c');
+        assert_eq!(c_rust.fg, Color::Blue);
+    }
+
+    /// Gap G: the default language is [`Language::Unknown`], so `.syntax(true)`
+    /// with no `.language(..)` is byte-identical to a patch rendered before
+    /// the delegation — every glyph *and* style. Pinned against an explicit
+    /// `Language::Unknown` (same path) across a representative code patch.
+    #[test]
+    fn default_language_is_unknown_and_byte_identical() {
+        let patch = "@@ -1 +1 @@\n-let n = 0xFF; // c\n+let n = 1_0; /* b */ x";
+        let implicit = Diff::new(patch).syntax(true).lines(48);
+        let explicit = Diff::new(patch)
+            .syntax(true)
+            .language(Language::Unknown)
+            .lines(48);
+        assert_eq!(implicit, explicit);
+    }
+
+    /// Gap B: the horizontal `col` offset slides the **content** left while
+    /// the line-number / sign gutter stays fixed, and the per-span styles of
+    /// the windowed content survive the pan (it is a style-preserving slice,
+    /// not a clip of the composed line).
+    #[test]
+    fn col_scrolls_content_but_not_the_gutter_and_preserves_styles() {
+        // `+let value = 1;` — addition gutter `  1 + ` is 6 cols; content
+        // begins at col 6. Without scroll: `let`=6..9 (keyword, blue).
+        let patch = "@@ -0,0 +1 @@\n+let value = 1;";
+        let mut a = Buffer::empty(Rect::new(0, 0, 24, 2));
+        Diff::new(patch).syntax(true).render(a.area(), &mut a);
+        // Scroll content right by 4: the first 4 content chars (`let `) are
+        // skipped, so `value` now starts at the content origin (col 6). The
+        // gutter (`  1 + `) is byte-for-byte the same — it never scrolls.
+        let mut b = Buffer::empty(Rect::new(0, 0, 24, 2));
+        Diff::new(patch)
+            .syntax(true)
+            .col(4)
+            .render(b.area(), &mut b);
+        let gutter_a: String = (0..6)
+            .map(|x| a.get(Position::new(x, 1)).unwrap().symbol)
+            .collect();
+        let gutter_b: String = (0..6)
+            .map(|x| b.get(Position::new(x, 1)).unwrap().symbol)
+            .collect();
+        assert_eq!(gutter_a, "  1 + ");
+        assert_eq!(
+            gutter_b, gutter_a,
+            "the gutter must not scroll horizontally"
+        );
+        // Content at col 6 is now `value`'s 'v' (was 'l' of `let`).
+        assert_eq!(a.get(Position::new(6, 1)).unwrap().symbol, 'l');
+        let v = b.get(Position::new(6, 1)).unwrap();
+        assert_eq!(v.symbol, 'v');
+        // `value` is a plain identifier → plain addition fg, NOT the keyword
+        // blue: the windowed slice kept each cell's own (cascaded) style.
+        assert_ne!(v.fg, Color::Blue);
+        // And the `1` literal further along is still tinted as a number after
+        // the pan (style preserved, not flattened). `1;` original content
+        // index: `let value = ` is 12 chars, `1` at 12 → after col(4) it is
+        // rendered column 12-4+6 = 14.
+        let num = b.get(Position::new(14, 1)).unwrap();
+        assert_eq!(num.symbol, '1');
+        assert_eq!(num.fg, Color::Magenta);
+    }
+
+    /// Gap B: `col(0)` (the default) is byte-identical to the historical
+    /// render — the horizontal-scroll seam is inert until used.
+    #[test]
+    fn col_zero_is_byte_identical() {
+        let patch = "@@ -1,2 +1,2 @@\n ctx line here\n-old value\n+new value";
+        for split in [false, true] {
+            let base = || {
+                let d = Diff::new(patch).syntax(true);
+                if split { d.side_by_side() } else { d }
+            };
+            assert_eq!(base().col(0).lines(40), base().lines(40), "split={split}");
+        }
+    }
+
+    /// Gap K: `scroll` is a `usize`, so an offset past `u16::MAX` is honoured
+    /// (it simply scrolls a huge generated patch off the top) instead of the
+    /// historical `u16` saturating at 65 535. No panic.
+    #[test]
+    fn usize_scroll_past_u16_max_works() {
+        // A patch with > u16::MAX body rows (plus a hunk header).
+        let n = u16::MAX as usize + 10;
+        let mut patch = String::from("@@ -1,1 +1,1 @@\n");
+        for i in 0..n {
+            patch.push_str(&format!(" line {i}\n"));
+        }
+        let d = Diff::new(patch.as_str());
+        let total = d.row_count(20);
+        assert_eq!(total, n + 1, "hunk header + {n} context rows");
+        // Scroll to exactly the last row (index total-1, which is > u16::MAX):
+        // the single visible row is the very last context line. Wide enough
+        // that the (6-digit) gutter plus `line 65544` is not clipped.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        Diff::new(patch.as_str())
+            .scroll(total - 1)
+            .render(buf.area(), &mut buf);
+        let row: String = (0..40)
+            .map(|x| buf.get(Position::new(x, 0)).unwrap().symbol)
+            .collect();
+        assert!(
+            row.contains(&format!("line {}", n - 1)),
+            "last row should be the final context line, got {row:?}"
+        );
+        // Scrolling past the very end paints an empty (themed) area, no panic.
+        let mut empty = Buffer::empty(Rect::new(0, 0, 20, 1));
+        Diff::new(patch.as_str())
+            .scroll(total + 1000)
+            .render(empty.area(), &mut empty);
+        assert!(empty.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    /// Gap K: `row_count(w)` is exactly `lines(w).len()` for every layout and
+    /// width (including the narrow-area split→unified degrade and `w == 0`),
+    /// so a caller can clamp scroll off the cheap accessor without re-parsing
+    /// per keypress.
+    #[test]
+    fn row_count_matches_lines_len_across_layouts_and_widths() {
+        let patch = "\
+diff --git a/m.rs b/m.rs
+--- a/m.rs
++++ b/m.rs
+@@ -1,3 +1,3 @@ fn run()
+ keep
+-let a = 1;
++let a = 2;
+@@ -9,2 +9,3 @@
+ tail
++added";
+        for split in [false, true] {
+            for w in [0u16, 3, 8, 11, 30, 80] {
+                let d = || {
+                    let x = Diff::new(patch).syntax(true);
+                    if split { x.side_by_side() } else { x }
+                };
+                assert_eq!(
+                    d().row_count(w),
+                    d().lines(w).len(),
+                    "row_count must equal lines().len() (split={split} w={w})"
+                );
+            }
+        }
+    }
+
+    /// Gap D: a literal tab expands to the next multiple of `tab_width`
+    /// columns (a real tab stop, not a fixed run), and the default is 4.
+    #[test]
+    fn tab_expands_to_the_next_column_stop() {
+        // `+\tx` then `+ab\tc` — gutter `  1 + ` = 6 cols, content at col 6.
+        // Default tab_width 4: a leading `\t` at content col 0 advances to
+        // col 4, so `x` lands at content col 4 (screen col 10). For `ab\tc`
+        // the tab at content col 2 advances to col 4 (a 2-cell tab), so `c`
+        // is at content col 4 (screen col 10) too.
+        let patch = "@@ -0,0 +1,2 @@\n+\tx\n+ab\tc";
+        let mut buf = Buffer::empty(Rect::new(0, 0, 16, 3));
+        Diff::new(patch).render(buf.area(), &mut buf);
+        // Row 1 `\tx`: cols 6..10 are the expanded tab (spaces), 'x' at 10.
+        for x in 6..10 {
+            assert_eq!(buf.get(Position::new(x, 1)).unwrap().symbol, ' ');
+        }
+        assert_eq!(buf.get(Position::new(10, 1)).unwrap().symbol, 'x');
+        // Row 2 `ab\tc`: 'a'=6,'b'=7, tab fills 8..10, 'c' at 10 (next stop).
+        assert_eq!(buf.get(Position::new(6, 2)).unwrap().symbol, 'a');
+        assert_eq!(buf.get(Position::new(7, 2)).unwrap().symbol, 'b');
+        assert_eq!(buf.get(Position::new(8, 2)).unwrap().symbol, ' ');
+        assert_eq!(buf.get(Position::new(9, 2)).unwrap().symbol, ' ');
+        assert_eq!(buf.get(Position::new(10, 2)).unwrap().symbol, 'c');
+        // A custom width: tab_width 2 puts `x` of `\tx` at content col 2
+        // (screen col 8).
+        let mut b2 = Buffer::empty(Rect::new(0, 0, 16, 3));
+        Diff::new(patch).tab_width(2).render(b2.area(), &mut b2);
+        assert_eq!(b2.get(Position::new(8, 1)).unwrap().symbol, 'x');
+        // `tab_width(0)` is clamped to 1 (a tab is at least one cell) and
+        // never panics: `\tx` → one space then `x` at content col 1 (col 7).
+        let mut b0 = Buffer::empty(Rect::new(0, 0, 16, 3));
+        Diff::new(patch).tab_width(0).render(b0.area(), &mut b0);
+        assert_eq!(b0.get(Position::new(6, 1)).unwrap().symbol, ' ');
+        assert_eq!(b0.get(Position::new(7, 1)).unwrap().symbol, 'x');
+    }
+
+    /// Gap D: tab expansion happens *before* the horizontal `col` slice, so
+    /// columns stay correct under a pan, and a fixture with **no** tab is
+    /// unaffected by the (default 4) `tab_width` — the byte-identical
+    /// guarantee for the overwhelming majority of diff fixtures.
+    #[test]
+    fn tab_width_default_does_not_touch_tab_free_content() {
+        let patch = "@@ -1 +1 @@\n-let a = 1;\n+let a = 2;";
+        // No literal tab anywhere → default tab_width 4 changes nothing vs an
+        // explicit tab_width(1) (a tab would be 1 cell — moot here).
+        assert_eq!(
+            Diff::new(patch).syntax(true).lines(40),
+            Diff::new(patch).syntax(true).tab_width(1).lines(40),
+        );
     }
 
     // -----------------------------------------------------------------------
