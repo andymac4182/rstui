@@ -58,13 +58,22 @@
 //! both this guard's [`Drop`] and the shell's panic hook call it — so the
 //! on-panic restore provably cannot drift from normal teardown.
 
+use std::fmt;
 use std::io::{self, Write};
 
+use crossterm::Command;
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
+// crossterm's all-modes mouse commands include the any-motion DEC mode
+// `?1003h`; rstui emits the button-event subset ([`EnableButtonMouseCapture`])
+// instead. These upstream commands are still needed to reproduce crossterm's
+// Windows console-mode behaviour verbatim and to anchor the subset tests to
+// the exact upstream bytes — unused on a non-Windows lib build, so cfg-gated
+// to keep `-D warnings` clean.
+#[cfg(any(windows, test))]
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::queue;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -74,6 +83,68 @@ use rstui_core::buffer::Cell;
 use rstui_core::geometry::{Position, Size};
 
 use crate::backend::CrosstermBackend;
+
+/// Enable **button-event** mouse tracking: report press / release / drag /
+/// scroll, but *not* bare pointer motion.
+///
+/// crossterm's `EnableMouseCapture` turns on the DEC private modes
+/// `?1000h ?1002h ?1003h ?1015h ?1006h`. The culprit is **`?1003h`**
+/// ("any-event tracking"): with it on, the terminal emits a mouse report
+/// for *every cell the pointer crosses with no button held*. rstui maps
+/// that bare-motion report to `MouseEventKind::Moved`, which **nothing**
+/// in the workspace consumes (the kitchen sink, the reference app, maps
+/// `Moved → None`). So merely *hovering* the mouse over a running TUI
+/// floods the event loop with thousands of events/sec that every app
+/// discards — yet the loop must still poll, decode and coalesce each one,
+/// burning CPU and spiking input→frame latency the entire time the
+/// pointer moves. That is the "rendering lags / stutters while I move the
+/// mouse" report; the ADR-0018 DevTools/perf tooling is what surfaced it
+/// (the Events tab's coalesced-event count).
+///
+/// This command is `EnableMouseCapture` with **exactly `?1003h` removed**.
+/// Crucially, **drag is a different event from `Moved`**: a drag is motion
+/// *while a button is held*, reported by `?1002h` as `MouseEventKind::Drag`
+/// — which is kept. So press, **drag** (drag-to-select, the kanban card
+/// drag, git-review's split handle), and scroll — the entire documented
+/// `LifecycleOptions::mouse_capture` contract ("press/drag/scroll") — are
+/// byte-for-byte unchanged; only the unused hover storm is gone.
+pub(crate) struct EnableButtonMouseCapture;
+
+impl Command for EnableButtonMouseCapture {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        // crossterm's EnableMouseCapture sequence, minus the any-motion
+        // mode `?1003h`. `?1002h` still reports motion *while a button is
+        // down*, so drag gestures are unaffected; `?1006h` keeps SGR
+        // extended coordinates (no 223-column limit).
+        f.write_str("\x1B[?1000h\x1B[?1002h\x1B[?1015h\x1B[?1006h")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        // Windows console mouse input is a console-mode flag, not these
+        // DEC modes (the any-motion flood is a Unix-terminal phenomenon),
+        // so defer to crossterm there — behaviour is identical to before
+        // on Windows; only the Unix escape path changes.
+        EnableMouseCapture.execute_winapi()
+    }
+}
+
+/// The exact reverse of [`EnableButtonMouseCapture`] — crossterm's
+/// `DisableMouseCapture` with the matching `?1003l` reset removed — so the
+/// enable/disable pair stays a strict, symmetric stack (the
+/// `queue_sequences_are_single_sourced_and_symmetric` invariant).
+pub(crate) struct DisableButtonMouseCapture;
+
+impl Command for DisableButtonMouseCapture {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str("\x1B[?1006l\x1B[?1015l\x1B[?1002l\x1B[?1000l")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        DisableMouseCapture.execute_winapi()
+    }
+}
 
 /// Which terminal modes a [`TerminalGuard`] manages.
 ///
@@ -103,7 +174,11 @@ pub struct LifecycleOptions {
     /// Switch to the alternate screen so the app does not scroll the user's
     /// shell history; the original screen is restored on teardown.
     pub alternate_screen: bool,
-    /// Report mouse press/drag/scroll as input events.
+    /// Report mouse press/drag/scroll as input events. Deliberately
+    /// **button-event** tracking, not any-motion: a bare hover (no button
+    /// held) emits nothing, so moving the pointer over the TUI never
+    /// floods the event loop. Drag still works — it is motion *with* a
+    /// button held, a distinct event from a bare pointer move.
     pub mouse_capture: bool,
     /// Deliver pasted text as one bracketed-paste event instead of as
     /// synthetic keystrokes.
@@ -309,7 +384,10 @@ pub(crate) fn queue_enter_sequence<W: Write>(w: &mut W, opts: LifecycleOptions) 
         queue!(w, EnterAlternateScreen)?;
     }
     if opts.mouse_capture {
-        queue!(w, EnableMouseCapture)?;
+        // Button-event tracking only — see [`EnableButtonMouseCapture`].
+        // (Not crossterm's `EnableMouseCapture`, which adds the any-motion
+        // `?1003h` hover flood that no app consumes.)
+        queue!(w, EnableButtonMouseCapture)?;
     }
     if opts.bracketed_paste {
         queue!(w, EnableBracketedPaste)?;
@@ -349,7 +427,7 @@ pub(crate) fn queue_leave_sequence<W: Write>(w: &mut W, opts: LifecycleOptions) 
         queue!(w, DisableBracketedPaste)?;
     }
     if opts.mouse_capture {
-        queue!(w, DisableMouseCapture)?;
+        queue!(w, DisableButtonMouseCapture)?;
     }
     if opts.alternate_screen {
         queue!(w, LeaveAlternateScreen)?;
@@ -387,7 +465,7 @@ impl<W: Write> Drop for TerminalGuard<W> {
             let _ = queue!(w, DisableBracketedPaste);
         }
         if active.mouse_capture {
-            let _ = queue!(w, DisableMouseCapture);
+            let _ = queue!(w, DisableButtonMouseCapture);
         }
         if active.alternate_screen {
             let _ = queue!(w, LeaveAlternateScreen);
@@ -523,7 +601,7 @@ mod tests {
             encoded(|w| queue!(
                 w,
                 EnterAlternateScreen,
-                EnableMouseCapture,
+                EnableButtonMouseCapture,
                 EnableBracketedPaste,
                 EnableFocusChange,
                 // Kitty keyboard enhancement is pushed last in acquisition.
@@ -540,7 +618,7 @@ mod tests {
                 PopKeyboardEnhancementFlags,
                 DisableFocusChange,
                 DisableBracketedPaste,
-                DisableMouseCapture,
+                DisableButtonMouseCapture,
                 LeaveAlternateScreen,
             )),
         );
@@ -583,6 +661,60 @@ mod tests {
         assert!(encoded(|w| queue_leave_sequence(w, LifecycleOptions::NONE)).is_empty());
     }
 
+    /// The mouse-flood fix (the "rendering lags / stutters while I move the
+    /// mouse" report; the ADR-0018 DevTools/perf tooling surfaced it):
+    /// rstui must emit crossterm's mouse sequence **with exactly the
+    /// any-motion mode `?1003h` removed**, so a bare hover produces no
+    /// events at all, while press / drag (`?1002h`) / scroll stay
+    /// byte-for-byte unchanged. Drag is a *separate* event from `Moved`
+    /// (drag = `?1002h` motion-with-button), so nothing observable is lost.
+    #[test]
+    fn mouse_capture_is_button_event_not_any_motion() {
+        fn contains(hay: &[u8], needle: &[u8]) -> bool {
+            hay.windows(needle.len()).any(|w| w == needle)
+        }
+
+        let ours = encoded(|w| queue!(w, EnableButtonMouseCapture));
+        let crossterm_all = encoded(|w| queue!(w, EnableMouseCapture));
+
+        // Exactly crossterm's EnableMouseCapture with `?1003h` spliced out.
+        let needle = b"\x1b[?1003h";
+        let at = crossterm_all
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .expect("crossterm's EnableMouseCapture still includes ?1003h");
+        let mut expected = crossterm_all.clone();
+        expected.drain(at..at + needle.len());
+        assert_eq!(ours, expected, "must be EnableMouseCapture minus ?1003h");
+
+        // The hover-flood mode is gone; press/drag/SGR are still requested.
+        assert!(
+            !contains(&ours, b"?1003h"),
+            "any-motion ?1003h must NOT be requested (it is the hover flood)"
+        );
+        for mode in [&b"\x1b[?1000h"[..], b"\x1b[?1002h", b"\x1b[?1006h"] {
+            assert!(contains(&ours, mode), "mode {mode:?} must still be set");
+        }
+
+        // Disable is the symmetric reverse: crossterm's DisableMouseCapture
+        // with exactly the matching `?1003l` reset spliced out (no reset
+        // for a mode that was never set).
+        let off = encoded(|w| queue!(w, DisableButtonMouseCapture));
+        let crossterm_off = encoded(|w| queue!(w, DisableMouseCapture));
+        let dneedle = b"\x1b[?1003l";
+        let dat = crossterm_off
+            .windows(dneedle.len())
+            .position(|w| w == dneedle)
+            .expect("crossterm's DisableMouseCapture still includes ?1003l");
+        let mut expected_off = crossterm_off.clone();
+        expected_off.drain(dat..dat + dneedle.len());
+        assert_eq!(
+            off, expected_off,
+            "disable must be DisableMouseCapture minus ?1003l"
+        );
+        assert!(!contains(&off, b"?1003l"), "no ?1003l reset");
+    }
+
     #[test]
     fn enter_writes_the_modes_in_acquisition_order() {
         let backend = CrosstermBackend::new(Vec::new());
@@ -592,7 +724,7 @@ mod tests {
             queue!(
                 w,
                 EnterAlternateScreen,
-                EnableMouseCapture,
+                EnableButtonMouseCapture,
                 EnableBracketedPaste,
                 EnableFocusChange,
                 PushKeyboardEnhancementFlags(KITTY_KEYBOARD_FLAGS),
@@ -618,14 +750,14 @@ mod tests {
             queue!(
                 w,
                 EnterAlternateScreen,
-                EnableMouseCapture,
+                EnableButtonMouseCapture,
                 EnableBracketedPaste,
                 EnableFocusChange,
                 PushKeyboardEnhancementFlags(KITTY_KEYBOARD_FLAGS),
                 PopKeyboardEnhancementFlags,
                 DisableFocusChange,
                 DisableBracketedPaste,
-                DisableMouseCapture,
+                DisableButtonMouseCapture,
                 LeaveAlternateScreen,
             )
         });
@@ -651,14 +783,14 @@ mod tests {
             queue!(
                 w,
                 EnterAlternateScreen,
-                EnableMouseCapture,
+                EnableButtonMouseCapture,
                 EnableBracketedPaste,
                 EnableFocusChange,
                 PushKeyboardEnhancementFlags(KITTY_KEYBOARD_FLAGS),
                 PopKeyboardEnhancementFlags,
                 DisableFocusChange,
                 DisableBracketedPaste,
-                DisableMouseCapture,
+                DisableButtonMouseCapture,
                 LeaveAlternateScreen,
             )
         });

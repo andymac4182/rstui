@@ -103,6 +103,47 @@ append-only conversation only mutates its last (streaming) message, so
 older entries are immutable and cache permanently — exactly the
 acp-client transcript situation that UI-1/MD-1 solved byte-identically.
 
+### Finding R2-MOUSE-1 — any-motion mouse capture floods the loop on hover
+
+**Status: fixed** — `rstui-crossterm` now requests *button-event* mouse
+tracking, not any-motion; the documented contract is unchanged and the
+fix is gate-enforced.
+
+Found exactly the way the tooling is meant to be used: running the
+kitchen sink with the live DevTools overlay (`F12`) and **moving the
+mouse**. The Events tab's coalesced-event count and input→frame latency
+spiked the whole time the pointer moved, and rendering visibly
+stuttered — a real, user-reported jank the overlay made obvious.
+
+Root cause: `rstui-crossterm` enabled crossterm's `EnableMouseCapture`,
+which turns on DEC private mode `?1003h` ("any-event tracking"). With it
+on, the terminal emits a mouse report for **every cell the pointer
+crosses with no button held**. rstui maps that to `MouseEventKind::Moved`,
+which **nothing** in the workspace consumes (the kitchen sink maps
+`Moved → None`). So merely *hovering* floods the loop with thousands of
+events/sec that every app discards — yet the loop must still poll,
+decode, and run the RT-01 coalesce drain (up to `COALESCE_TIME_BUDGET`
+= 8 ms per cycle) on each burst, continuously, burning CPU and delaying
+real input/ticks the whole time the mouse moves. RT-01 correctly skips
+the *repaint* (`Moved → None` ⇒ `produced = false`); it cannot remove
+the *event* flood itself — that is upstream of it and only exists
+because rstui asked the terminal for it.
+
+Fix: emit the button-event subset — crossterm's sequence with **exactly
+`?1003h` removed** (`EnableButtonMouseCapture`/`DisableButtonMouseCapture`
+in `lifecycle.rs`). A bare hover now produces **no events at all**, so
+the flood never reaches the loop (the only zero-cost outcome — coalescing
+a flood is still work; not generating it is free). Drag is a *separate*
+event (`?1002h`, motion *with* a button) and is kept, so drag-to-select,
+the kanban card drag, and git-review's split handle are byte-for-byte
+unchanged — as is the documented `mouse_capture` ("press/drag/scroll")
+contract. Windows is unaffected (its mouse input is a console-mode flag,
+not these DEC modes; `execute_winapi` still defers to crossterm).
+Gate-enforced by `mouse_capture_is_button_event_not_any_motion` (the
+emitted sequence must be *exactly* crossterm's minus `?1003h`/`?1003l`).
+It is also the end-to-end proof the perf tooling works: a real,
+user-visible stall, surfaced live by the overlay, root-caused, fixed.
+
 ### `rstui-jsonui` — clean
 
 `UiNode::render` re-projects the parsed document to a fresh tree every

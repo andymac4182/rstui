@@ -340,11 +340,12 @@ mod tests {
     #[test]
     fn emit_leave_matches_the_full_preset_teardown_sequence() {
         use crossterm::event::{
-            DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
-            PopKeyboardEnhancementFlags,
+            DisableBracketedPaste, DisableFocusChange, PopKeyboardEnhancementFlags,
         };
         use crossterm::queue;
         use crossterm::terminal::LeaveAlternateScreen;
+
+        use crate::lifecycle::DisableButtonMouseCapture;
 
         let mut got = Vec::new();
         emit_leave(&mut got);
@@ -358,7 +359,7 @@ mod tests {
             PopKeyboardEnhancementFlags,
             DisableFocusChange,
             DisableBracketedPaste,
-            DisableMouseCapture,
+            DisableButtonMouseCapture,
             LeaveAlternateScreen,
         )
         .unwrap();
