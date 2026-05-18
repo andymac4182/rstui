@@ -19,10 +19,16 @@ choose; the TS SDK's `bridge()` mirrors the same selection and precedence
 (minus shm). See `sdk/bench/OPTIMISATION.md` for the overhead analysis and
 the QUIC / protobuf / Cap'n Proto evaluation. Two SDKs, one wire:
 
-| SDK | Language | Role |
+Since **ADR 0021** the comms stack is an **app-agnostic framework** with a
+thin ACP layer on top, so other applications reuse it (see *Reusing the
+framework* below):
+
+| Layer | Language | Role |
 |---|---|---|
-| `rstui-acp-plugin-sdk` (`crates/`) | Rust | Owns the **whole** comms stack (framing, handshake, dispatch). A Rust plugin only writes handlers. |
-| `@rstui-acp/plugin-sdk` (`sdk/ts`) | TypeScript | Marshals handlers ↔ the transport. `bridge()` auto-selects the injected **V8-host** bridge, else a standalone stdio / uds / ws transport (with optional `--lp` framing) — same selection/precedence as the Rust `serve_auto`. |
+| `rstui-plugin-core` (`crates/`) | Rust | The framework: JSON-RPC envelope, every transport, and a `Protocol`-generic serve loop (`serve_auto`/…). **No app vocabulary.** |
+| `rstui-acp-plugin-sdk` (`crates/`) | Rust | Thin ACP layer: `proto` (`HostEvent`/`PluginAction`) + `AcpProtocol` + ergonomic `Plugin`/`Host`. Re-exports core; **API byte-stable**. |
+| `@rstui-acp/plugin-sdk/core` (`sdk/ts/core.mjs`) | JS | The framework: transports + `bridge(proto)`, generic over `{ actionMethod, initializeResult, isShutdown }`. **No app vocabulary.** |
+| `@rstui-acp/plugin-sdk` (`sdk/ts/index.mjs`) | JS | Thin ACP layer: `ACTION_METHOD` + `definePlugin` host surface, on `core.mjs`. **API unchanged.** |
 
 ## Wire (JSON-RPC 2.0)
 
@@ -34,6 +40,29 @@ the QUIC / protobuf / Cap'n Proto evaluation. Two SDKs, one wire:
   `ui/note`, `ui/log`, `ui/modal`, `ui/askUser`.
 - `params` carries the typed payload (`{"type":"set_status",…}`), so the
   Rust and TS SDKs are byte-compatible.
+
+## Reusing the framework in another app (ADR 0021)
+
+The transports + serve loop are **not ACP-specific**. To give *your* app a
+plugin system, depend on the core and bring your own vocabulary — no fork:
+
+- **Rust:** depend on `rstui-plugin-core`, define your own `Event`/`Action`
+  enums and one `impl Protocol` (`initialize_ack` / `decode_event` /
+  `encode_action` / `is_shutdown`), then call `serve_auto(MyProto, |ev,
+  emit| { … })`. Every transport (stdio/lp/uds/ws/shm) +
+  `--shm/--uds/--ws/--lp` selection comes for free. A compile-tested
+  end-to-end example of a non-ACP protocol is the doctest in
+  `rstui-plugin-core`'s crate docs.
+- **JS/TS:** `import { bridge } from "@rstui-acp/plugin-sdk/core"` (i.e.
+  `sdk/ts/core.mjs`), pass `proto = { actionMethod, initializeResult,
+  isShutdown }`, and drive `feed`/`nextObj`/`emitObj` with your own loop —
+  `definePlugin` (ACP) is just one such loop built on it.
+
+ACP stays the reference consumer; its API is byte-stable. **Naming
+caveat:** `rstui-acp-shm` / `rstui-acp-shm-native` and the
+`@rstui-acp/plugin-shm-native` npm package are **generic transports** —
+the `acp` is historical (ADR 0021), they carry no ACP vocabulary and are
+reusable by any app.
 
 ## Capabilities (opencode/pi parity)
 
