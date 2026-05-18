@@ -149,21 +149,26 @@ language-blind (one global keyword set), comments/strings never span lines,
 and `Editor` had none. [ADR 0022](adr/0022-syntax-colour-and-symbol-engine.md)
 decides **two tiers**:
 
-- **Tier 0 (landed): `rstui_widgets::syntax`** — the lexer extracted into a
+- **Tier 0 (landed): `rstui_code::syntax`** — the lexer extracted into a
   shared module used by both `Diff` and `Editor`, made language-aware
   (`Language::from_path`), with a carried end-of-line `LexState` so multi-line
   strings/comments colour correctly. `Language::Unknown` is **byte-identical**
   to the old scanner (gate-enforced), so existing diff snapshots are
   unaffected. Colours come from the caller's theme (`SyntaxStyles`), so
   `rstui-theme` themes code for free.
-- **Tier 1 (LANDED — `crates/rstui-treesitter`, ADR 0023): tree-sitter** —
-  one `tree_sitter::Tree` → both the highlight overlay (`highlights.scm` →
-  `SyntaxStyles`) *and* the symbol `Outline` (`tags.scm`), a drop-in for the
-  Tier-0 shapes. A **workspace-`exclude`d opt-in leaf** so the five CI gates
-  never compile it (ADR 0023 realises ADR 0022's no-gate invariant under the
-  `--all-features --workspace` gate); validated out-of-gate. Default builds
-  never compile it; the floor is always present. TextMate/
-  Oniguruma was rejected (highlight-only — see ADR 0022 Evidence).
+- **Tier 1 (LANDED — `rstui_code::treesitter::{Analyzer, TsLanguage}`, ADR
+  0024): tree-sitter** — one `tree_sitter::Tree` → both the highlight overlay
+  (`highlights.scm` → `SyntaxStyles`) *and* the symbol `Outline` (`tags.scm`),
+  a drop-in for the Tier-0 shapes. The engine is now folded into the
+  `rstui-code` crate as a **first-class, gate-protected dependency** — no
+  longer an excluded out-of-gate leaf: **[ADR 0024](adr/0024-code-widget-crate-and-treesitter-exemption.md)
+  supersedes ADR 0023**, moving the code widgets + the tree-sitter engine into
+  one crate so only `rstui-code` consumers pull tree-sitter while
+  `rstui-core`/`rstui-widgets` stay tree-sitter-free, and the
+  `--all-features --workspace` gate *does* compile and test it (a scoped
+  exemption, not an exclusion). The dependency-free Tier-0 floor is always
+  present. TextMate/Oniguruma was rejected (highlight-only — see ADR 0022
+  Evidence).
 
 The `Editor` change is a borrowed overlay exactly like `extmarks`: a per-cell
 style set the reducer rebuilds on edit and the widget only reads, cascading
@@ -190,7 +195,7 @@ composition.md.
 
 ## Part 5 — A symbol/outline side panel (editor *and* diff)
 
-Greenfield — no prior art. **Landed:** `rstui_widgets::outline` —
+Greenfield — no prior art. **Landed:** `rstui_code::outline` —
 `Symbol { name, kind, line, end_line, depth }`, `Outline(Vec<Symbol>)`, a
 dependency-free per-`Language` heuristic scanner (`Outline::scan`) and
 `Outline::at_line` (deepest enclosing symbol — the "current symbol"). It is a
@@ -198,7 +203,7 @@ dependency-free per-`Language` heuristic scanner (`Outline::scan`) and
 `Tree`/`List`, and navigation is reducer arithmetic over the ordered vector
 (the sibling's `C.4` "the index is the gap, not the state" insight).
 
-**Diff side (Part 7 CE-7):** the landed `rstui_widgets::changeset`
+**Diff side (Part 7 CE-7):** the landed `rstui_code::changeset`
 (`Changeset → DiffFile → HunkRef`, multi-file, ordered hunk index) supplies
 which file's content to outline (new-side, via the git `Cmd` seam) and a
 hunk→symbol join (`Outline::at_line(hunk.new_start)`) → a symbol list
@@ -249,7 +254,7 @@ sibling's `E*`/`R*`.
 | CE-1 | `Diff`: delegate to `syntax` (+`Language`), `col` + horizontal slice, `usize` scroll, cached `row_count`, `tab_width` | A/B/G/K/D | **P0** | Part 7 |
 | CE-2 | `Editor`: `syntax` overlay borrow, `DocSelection` projection + caret shape, `tab_width`, `wrap` | C/D/F/G | **P0** | Part 7 |
 | CE-3 | `rstui-git-review`: `editor_scroll`+`detail_viewport` (resize), scrolled gutter, `scroll_into_view`, diff clamp/col, undo keys + undo-before-save, selection (mouse+shift+replace), `Language`, symbol panel (editor+diff), search UI | A/B/E/F/G/H/J end-to-end | **P0** | Part 7 |
-| CE-4 | `rstui-treesitter` excluded leaf (ADR 0022 Tier 1 / ADR 0023) → one parse: highlight + outline; `code_editor` example | G/H accuracy | **P2** | **Landed** |
+| CE-4 | tree-sitter folded into `rstui-code` as a first-class gated dep (ADR 0022 Tier 1 / ADR 0024 supersedes 0023) → one parse: highlight + outline; `code_editor` example | G/H accuracy | **P2** | **Landed** |
 | CE-5 | `Editor::wrap`, `usize` measure (`content_height`), `outline`/`syntax` `Language` dedup | C/M + tidy | **P2** | Part 7 |
 
 **Critical path:** CE-1 → CE-2 → CE-3 (CE-3's undo wiring gates further

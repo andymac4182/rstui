@@ -74,25 +74,6 @@ Link::activate(index: usize) -> LinkActivation
 
 ---
 
-## Diff
-
-![Diff demo](media/diff_demo.gif)
-
-A unified-diff parser with a line-number gutter, a three-colour scheme and
-intra-line word highlighting. Unified or split (side-by-side) layout.
-
-- **Companion types:** `DiffLayout` (`Unified`/`Split`), `DiffTheme`
-- **State model:** pure projection of caller-owned diff source text.
-
-```rust
-Diff::new(src: &str)
-.layout(DiffLayout) .side_by_side() .syntax(bool) .theme(DiffTheme)
-```
-
-**Demo:** `cargo run -p rstui-widgets --example diff_demo`
-
----
-
 ## Mermaid
 
 ![Mermaid demo](media/mermaid_demo.gif)
@@ -211,26 +192,7 @@ Extmark::new(range: Range<usize>, style: Style)
 Extmark::pill(range: Range<usize>, style: Style)
 ```
 
-**Demo:** `cargo run -p rstui-widgets --example extmark_demo`
-
----
-
-## LineNumberGutter
-
-![LineNumberGutter demo](media/line_number_gutter_demo.gif)
-
-A right-aligned numeric gutter with an optional per-row sign column and an
-inner accessor — the gutter `Editor`/`Diff`-style views render beside.
-
-- **State model:** pure layout projection of caller-owned line-number metadata.
-
-```rust
-LineNumberGutter::new(first: u64, rows: usize)
-.signs(&[char]) .row_styles(&[Style])
-.inner(area: Rect) -> Rect          // the text rect beside the gutter
-```
-
-**Demo:** `cargo run -p rstui-widgets --example line_number_gutter_demo`
+**Demo:** `cargo run -p rstui-code --example extmark_demo`
 
 ---
 

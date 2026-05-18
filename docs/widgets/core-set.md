@@ -387,26 +387,6 @@ Select::new(options: impl IntoIterator)
 
 ---
 
-## Editor
-
-![Editor demo](media/editor_demo.gif)
-
-A multi-line text-entry panel with a rendered 2-D caret and caller-owned 2-D
-scroll — `Input`'s multi-line sibling.
-
-- **Companion types:** `Extmark`
-- **State model:** pure projection of a borrowed caller-owned [`TextArea`](../core-reference.md#textarea) + 2-D scroll + `focused`.
-
-```rust
-Editor::new(area: &TextArea)
-.scroll(impl Into<Position>) .focused(bool)
-.placeholder(impl Into<Cow<str>>) .cursor_style(Style) .extmarks(&[Extmark])
-```
-
-**Demo:** `cargo run -p rstui-widgets --example editor_demo`
-
----
-
 Next: [Rich rendering](rich-rendering.md) · [Forms & data](forms-and-data.md) ·
 [Navigation & layout](navigation-and-layout.md) ·
 [Overlays & control](overlays-and-control.md)

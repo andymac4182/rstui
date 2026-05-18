@@ -29,8 +29,9 @@ caller-owned state it projects — this is the part that matters most), the
 
 | Family | Widgets | Reference |
 |--------|---------|-----------|
-| **Core set** | Block, Paragraph, List, Tabs, Gauge, Scrollbar, Spinner, FpsCounter, Table, Checkbox, Button, Radio, Input, Modal, StatusBar, Toast, Tree, Select, Editor | [core-set.md](core-set.md) |
-| **Rich rendering** | Markdown, Link, Diff, Mermaid, Structurizr, JsonCanvas, Extmark, LineNumberGutter | [rich-rendering.md](rich-rendering.md) |
+| **Core set** | Block, Paragraph, List, Tabs, Gauge, Scrollbar, Spinner, FpsCounter, Table, Checkbox, Button, Radio, Input, Modal, StatusBar, Toast, Tree, Select | [core-set.md](core-set.md) |
+| **Rich rendering** | Markdown, Link, Mermaid, Structurizr, JsonCanvas, Extmark | [rich-rendering.md](rich-rendering.md) |
+| **Code** | Editor, Diff, LineNumberGutter | [code.md](code.md) |
 | **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider, DataTable | [forms-and-data.md](forms-and-data.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
 | **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, KeymapView, WhichKey, Flow | [overlays-and-control.md](overlays-and-control.md) |
@@ -62,10 +63,10 @@ caller-owned state it projects — this is the part that matters most), the
 | [DataTable](forms-and-data.md#datatable) | forms/data | `data_table_demo` |
 | [DatePicker](forms-and-data.md#datepicker) | forms/data | `date_picker_demo` |
 | [DescriptionList](forms-and-data.md#descriptionlist) | forms/data | `description_list_demo` |
-| [Diff](rich-rendering.md#diff) | rich | `diff_demo` |
+| [Diff](code.md#diff) | code | `diff_demo` |
 | [Divider](forms-and-data.md#divider) | forms/data | `divider_demo` |
 | [Drawer](overlays-and-control.md#drawer) | overlays | `drawer_demo` |
-| [Editor](core-set.md#editor) | core | `editor_demo` |
+| [Editor](code.md#editor) | code | `editor_demo` |
 | [Extmark](rich-rendering.md#extmark) | rich | `extmark_demo` |
 | [FlameGraph](observability.md#flamegraph) | observability | `flame_graph_demo` |
 | [Flow](overlays-and-control.md#flow) | overlays | `flow_demo` |
@@ -82,7 +83,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Kbd](overlays-and-control.md#kbd) | overlays | `kbd_demo` |
 | [KeymapView](overlays-and-control.md#keymapview) | overlays | `keymap_view_demo` |
 | [LineChart](observability.md#linechart) | observability | `line_chart_demo` |
-| [LineNumberGutter](rich-rendering.md#linenumbergutter) | rich | `line_number_gutter_demo` |
+| [LineNumberGutter](code.md#linenumbergutter) | code | `line_number_gutter_demo` |
 | [Link](rich-rendering.md#link) | rich | `markdown_links_demo` |
 | [List](core-set.md#list) | core | `list_demo` |
 | [LogStream](observability.md#logstream) | observability | `log_stream_demo` |

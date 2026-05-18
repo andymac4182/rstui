@@ -39,7 +39,8 @@ fits what you are doing.
 | Crate | Responsibility |
 |-------|----------------|
 | [`rstui-core`](core-reference.md) | Dependency-free substrate: geometry, style, layout, buffer, backend, terminal, event, focus, the `Widget` trait, text, text-edit, text-area, scroll, selection |
-| [`rstui-widgets`](widgets/README.md) | The concrete widget set (~57), one module per widget. The worked reference for third-party widget crates |
+| [`rstui-widgets`](widgets/README.md) | The concrete general widget set (~54), one module per widget. The worked reference for third-party widget crates; tree-sitter-free |
+| [`rstui-code`](widgets/code.md) | The code-editing widget crate — `Editor`, `Diff`, `LineNumberGutter` + the syntax/outline/changeset models + the tree-sitter engine (ADR 0024). The only crate that pulls `tree-sitter`; `rstui-core`/`rstui-widgets` stay tree-sitter-free |
 | [`rstui-runtime`](runtime.md) | Elm-style `App`/`Cmd`, the deterministic `Harness`, and the live `run` loop they share |
 | [`rstui-keymap`](keymaps.md) | Customisable keybinding engine: semantic actions, multi-keymap, per-OS layers, leader sequences, runtime remap (ADR 0015) |
 | [`rstui-crossterm`](runtime.md#crossterm-the-live-terminal) | The crossterm-backed terminal driver — the only external dependency, isolated here |

@@ -22,7 +22,7 @@ and walked through, with code, in [`docs/composition.md`](composition.md). The
 `gallery` example is its executable proof:
 
 ```sh
-cargo run  -p rstui-widgets --example gallery   # every widget, one reducer
+cargo run  -p rstui-widgets --example gallery   # every rstui-widgets widget, one reducer
 cargo test -p rstui-widgets --example gallery   # the same, asserted
 ```
 
@@ -60,17 +60,20 @@ surface to justify it.
                  rstui-core         (zero deps; the substrate + the Widget trait)
                 /     |      \
    rstui-widgets  rstui-runtime  rstui-plugin-host   (each depends only on core)
-                       |                 (zero deps, no unsafe)
-                 rstui-crossterm
-                  (the only crate with an external dep: crossterm)
-                       |
-                 rstui-acp-client     (a real app: ACP chat, plugins in the TUI)
+        |              |                 (zero deps, no unsafe)
+   rstui-code     rstui-crossterm
+  (core+widgets+   (the only crate with an external dep: crossterm)
+   tree-sitter;          |
+   the only        rstui-acp-client     (a real app: ACP chat, plugins in the TUI)
+   tree-sitter
+   consumer — ADR 0024)
 ```
 
 | Crate | Owns | Depends on | Doc |
 |-------|------|-----------|-----|
 | `rstui-core` | Geometry, style, layout, buffer, terminal, event, focus, the `Widget` trait, text, the editing/scroll/selection models | *nothing* | [Core reference](core-reference.md) |
-| `rstui-widgets` | The ~57 concrete widgets, one module each | `rstui-core` | [Component library](widgets/README.md) |
+| `rstui-widgets` | The ~54 concrete general widgets, one module each; tree-sitter-free | `rstui-core` | [Component library](widgets/README.md) |
+| `rstui-code` | The code-editing widgets (`Editor`, `Diff`, `LineNumberGutter`) + the syntax/outline/changeset models + the first-class tree-sitter engine; the only crate that pulls tree-sitter (ADR 0024) | `rstui-core`, `rstui-widgets`, `tree-sitter` | [Code widgets](widgets/code.md) |
 | `rstui-runtime` | `App`/`Cmd`, the `Harness`, the live `run` loop | `rstui-core` | [Runtime](runtime.md) |
 | `rstui-crossterm` | crossterm `Backend` + `EventSource` + panic-safe lifecycle, `run_app` | `rstui-core`, `rstui-runtime`, crossterm | [Runtime](runtime.md#crossterm-the-live-terminal) |
 | `rstui-plugin-host` | Capability model, manifest, policy, frame protocol, host mediation, plugin SDK | *nothing*, no `unsafe` | [Plugin system](plugins.md) |
@@ -136,5 +139,9 @@ you are changing.
 | [0015](adr/0015-keymap-architecture.md) | Customisable keymap engine as a shared crate (`rstui-keymap`) |
 | [0016](adr/0016-shared-memory-plugin-transport.md) | Shared-memory plugin transport (opt-in, Rust-only, spin) |
 | [0017](adr/0017-ai-app-widgets-and-declarative-agent-ui.md) | AI-app widgets + declarative agent-driven UI rendering (`rstui-ai`, `rstui-jsonui`) |
+| [0022](adr/0022-syntax-colour-and-symbol-engine.md) | Syntax-colour & symbol engine: dependency-free lexer floor + optional feature-gated tree-sitter tier (one parse → highlight *and* symbols) |
+| [0023](adr/0023-treesitter-tier1-excluded-leaf-crate.md) | tree-sitter Tier-1 as a workspace-`exclude`d opt-in leaf crate — *superseded by [0024](adr/0024-code-widget-crate-and-treesitter-exemption.md)* |
+| [0024](adr/0024-code-widget-crate-and-treesitter-exemption.md) | `rstui-code` widget crate (move `Editor`/`Diff`/code modules + fold the tree-sitter engine in) with a first-class, gate-protected tree-sitter exemption — supersedes 0023, amends 0022 & 0002; only `rstui-code` consumers pull tree-sitter |
 
-See [`docs/adr/README.md`](adr/README.md) for the ADR format and statuses.
+This table is a curated subset; see [`docs/adr/README.md`](adr/README.md) for
+the complete ADR index, format and statuses.
