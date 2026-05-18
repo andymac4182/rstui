@@ -138,14 +138,29 @@ use rstui_core::{Backend, EventSource, Terminal};
 use crate::app::App;
 use crate::cmd::{Cmd, CommandExecutor, InlineExecutor};
 
+/// The frame-rate the loop's time-based budgets are sized for. One number
+/// so the cadence tracks the target instead of two unexplained magic
+/// millisecond literals (perf-review-3 R3-4). 120 fps: the loop is
+/// event-driven (no fixed-FPS pacing — it renders when something changed),
+/// so this is not a cap on how *fast* it runs; it is the unit the
+/// flood/poll budgets below are expressed in, so they stay one frame even
+/// if the target moves.
+const TARGET_FPS: u64 = 120;
+
+/// One frame's wall-clock budget at [`TARGET_FPS`] — 1/120 s ≈ 8.33 ms.
+/// The single source the time budgets below derive from.
+const FRAME_BUDGET: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
+
 /// How often [`run_threaded`] wakes to drain off-loop command results when
 /// nothing else (input or a tick) would wake it.
 ///
-/// ~60 Hz: brisk enough that a finished background `Cmd::perform`/`Cmd::tick`
-/// repaints within a frame, cheap enough to be invisible (an empty channel
-/// drain plus an empty cell diff is a handful of microseconds). The default
-/// inline [`run`] never uses this — it still blocks purely on input.
-const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(16);
+/// **One [`FRAME_BUDGET`]** (≈ 8.33 ms at 120 fps): a finished background
+/// `Cmd::perform`/`Cmd::tick` repaints within a single frame, cheap enough
+/// to be invisible (an empty channel drain plus an empty cell diff is a
+/// handful of microseconds — `buffer/diff/identical` ≈ 12 µs, ~0.1 % of
+/// the budget). The default inline [`run`] never uses this — it still
+/// blocks purely on input.
+const COMMAND_POLL_INTERVAL: Duration = FRAME_BUDGET;
 
 /// Max input events folded in one burst before forcing a repaint, so a
 /// pathological never-ending input flood can still never starve rendering,
@@ -165,11 +180,14 @@ const COALESCE_LIMIT: usize = 1024;
 /// mouse-move reports any-motion mouse capture emits while the pointer
 /// moves) the loop could stay in the drain long enough to starve the tick
 /// deadline and the steady repaint cadence — the "frames freeze while I move
-/// the mouse" report. Breaking the drain after roughly one frame guarantees
-/// the loop returns to re-check the tick and present at a bounded cadence
-/// no matter how fast input arrives; state is still exact (every event was
-/// folded), only the *batch* is time-sliced.
-const COALESCE_TIME_BUDGET: Duration = Duration::from_millis(8);
+/// the mouse" report. Breaking the drain after **one [`FRAME_BUDGET`]**
+/// guarantees the loop returns to re-check the tick and present at a
+/// bounded cadence (≈ [`TARGET_FPS`] under a continuous flood) no matter
+/// how fast input arrives; state is still exact (every event was folded),
+/// only the *batch* is time-sliced. Deriving it from the budget makes the
+/// "present at least once per frame even while flooded" guarantee explicit
+/// rather than a coincidence of an `8` that happened to ≈ a 120 fps frame.
+const COALESCE_TIME_BUDGET: Duration = FRAME_BUDGET;
 
 /// The default cap on `update`/`perform` steps a single input may produce
 /// before the command loop gives up. Generous enough for real cascades, low

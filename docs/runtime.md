@@ -97,6 +97,27 @@ not the end).
 `EventSource`, so the same app runs on crossterm, on a channel, or on a test
 double with no code change.
 
+### Frame budget & cadence (120 fps)
+
+The loop is **event-driven — there is no fixed-FPS pacing**. It blocks on
+`poll_event`, renders only when an event produced a change (an idle screen
+or a no-op event repaints nothing), and is otherwise bounded by how fast
+`view → diff → flush` runs. So "fps" is just *one event → one frame*
+latency, not a cap to lift: a representative whole-app frame is ~80 µs
+(`runtime/frame/idle`), ≈ 1 % of a 120 fps frame — the engine has ~100×
+headroom (see [`docs/perf-review-3.md`](perf-review-3.md)).
+
+The loop's two *time* budgets derive from one `FRAME_BUDGET` =
+`1 / TARGET_FPS` (120 fps ≈ 8.33 ms), not magic millisecond literals:
+the input-flood coalesce drain breaks after **one frame** (so even under a
+continuous event flood the loop still presents at ≈ the target rate), and
+`run_threaded`'s idle command-result poll wakes **once per frame** (a
+finished background `Cmd` repaints within a frame). Move `TARGET_FPS` and
+both follow. The only thing bounding a real screen's frame rate is the
+heaviest widget on it; cache a heavy content widget's parse with a
+caller-owned `MarkdownCache`/`DiagramCache`
+([ADR 0025](adr/0025-caller-owned-line-cache.md)) and 120 fps holds.
+
 ## The `Harness`: deterministic, TTY-free
 
 ```rust

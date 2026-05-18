@@ -62,8 +62,19 @@ as the pattern**, not to rewrite the engine.
 >   standalone keyword diagram re-parsed every animated frame is not a
 >   real app hot path (flowchart, the common one, has `from_graph`). Noted,
 >   not a residual defect.
-> - **R3-4 — pending** (next slice; the runtime `FRAME_BUDGET`). The
->   conflict-free batch order below stands.
+> - **R3-4 — DONE.** `rstui-runtime/run.rs` now has one `TARGET_FPS = 120`
+>   → `FRAME_BUDGET` (1/120 s ≈ 8.33 ms); `COALESCE_TIME_BUDGET` and
+>   `COMMAND_POLL_INTERVAL` are both `FRAME_BUDGET` (one frame) instead of
+>   magic `8`/`16` ms literals — the flood-coalesce and background-poll
+>   cadence now track the target by construction. Internal constants only,
+>   no API change; the 120 fps stance is documented in
+>   [`docs/runtime.md`](runtime.md).
+>
+> **The perf-review-3 programme is COMPLETE** (R3-1…R3-5 landed;
+> Mermaid-keyword `from_parsed` deliberately deferred with cause). The
+> engine had ~100× headroom and the heaviest widget (Markdown, 1.49 ms)
+> is now ~0.10 ms cached — 120 fps holds for any screen that uses the
+> caller-owned-cache seam, which is now one documented pattern.
 
 ## The budget
 
@@ -114,26 +125,25 @@ report in one row.
 The engine itself needs **no structural change** for 120 fps. Three loop
 constants touch the boundary; one is a latent papercut:
 
-- **`COALESCE_TIME_BUDGET = 8 ms`** (`run.rs:172`) — the wall-clock cap on
-  folding an input flood before a forced repaint. It pins the worst-case
-  cadence under a continuous flood to ~125 fps, which is *coincidentally*
-  ≈ a 120 fps frame. It is correct today but is a **magic `8`**: it should
-  be **derived from a single target frame budget**, so the flood floor
-  tracks the fps goal instead of silently being "120-ish".
-- **`COMMAND_POLL_INTERVAL = 16 ms`** (`run.rs:148`, `run_threaded` only) —
-  an off-loop `Cmd::perform`/`tick` result can repaint up to 16 ms late
-  (~2 × a 120 fps frame). Fine at 60 fps; for a 120 fps app it is the one
-  place background work feels a frame behind. Should also derive from the
-  frame budget.
+- **`COALESCE_TIME_BUDGET`** (`run.rs`) — the wall-clock cap on folding an
+  input flood before a forced repaint; pins the worst-case flood cadence to
+  ≈ the target. Was a **magic `8 ms`** (coincidentally ≈ a 120 fps frame);
+  **R3-4 (landed)** redefines it as one `FRAME_BUDGET`, so the flood floor
+  tracks the fps goal by construction instead of silently being "120-ish".
+- **`COMMAND_POLL_INTERVAL`** (`run.rs`, `run_threaded` only) — the idle
+  off-loop command-result poll. Was `16 ms` (~2 × a 120 fps frame, so
+  background work could feel a frame behind); **R3-4 (landed)** ties it to
+  one `FRAME_BUDGET` (one frame), so a finished background `Cmd` repaints
+  within a 120 fps frame.
 - **RT-01 produced-gating + `buffer/diff` (~12 µs)** — already optimal
   (review 1). An idle screen does **not** repaint; a no-op event does not
   diff. Nothing to do.
 
-**Recommendation R3-4:** introduce one `FRAME_BUDGET` (from a target-fps
-constant, default 120) and express `COALESCE_TIME_BUDGET` and
-`COMMAND_POLL_INTERVAL` as fractions of it. Pure internal constants, no API
-change, removes two magic numbers and makes the fps target explicit and
-tunable.
+**R3-4 — landed.** One `TARGET_FPS = 120` → `FRAME_BUDGET`;
+`COALESCE_TIME_BUDGET` and `COMMAND_POLL_INTERVAL` are both `FRAME_BUDGET`
+(one frame). Pure internal constants, no API change; the two magic numbers
+are gone and the fps target is explicit and tunable in one place
+([`docs/runtime.md`](runtime.md)).
 
 ## The single root cause (restated for 120 fps)
 
