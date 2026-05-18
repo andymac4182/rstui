@@ -135,7 +135,6 @@ pub fn detect(text: &str) -> Option<RichUiPayload> {
 #[must_use]
 pub fn render_lines(payload: &RichUiPayload, width: u16, max_height: u16) -> Vec<Line<'static>> {
     let width = width.max(1);
-    let height = max_height.max(1);
     let node = match payload.format {
         RichUiFormat::A2ui => {
             let mut surface = A2uiSurface::new();
@@ -148,6 +147,11 @@ pub fn render_lines(payload: &RichUiPayload, width: u16, max_height: u16) -> Vec
         },
     };
 
+    // Size the scratch to the document's *content* height (clamped by
+    // the caller's cap), not the cap itself — otherwise a bordered
+    // container expands to fill `max_height` and, with the transcript's
+    // sticky-bottom autoscroll, the content scrolls out of view.
+    let height = node.measure_height(width).clamp(1, max_height.max(1));
     let mut scratch = Buffer::empty(Rect::new(0, 0, width, height));
     let mut hits = HitMap::new();
     node.render(scratch.area(), &mut scratch, &mut hits);

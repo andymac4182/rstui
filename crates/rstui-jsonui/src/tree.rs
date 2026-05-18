@@ -658,6 +658,56 @@ impl UiNode {
             _ => String::new(),
         }
     }
+
+    /// The node's natural content height in rows at `width` — total,
+    /// panic-free, never `0`.
+    ///
+    /// This is what a *line-oriented* host (e.g. an ACP transcript that
+    /// embeds a rendered document) sizes its scratch buffer to, so a
+    /// region/bordered widget renders at its content size instead of
+    /// expanding to fill an arbitrary area (a `Card` given 40 rows would
+    /// otherwise become a 40-row box with the content only at the top).
+    /// Leaves are one row; containers compose their children the way
+    /// [`render`](Self::render) lays them out.
+    #[must_use]
+    pub fn measure_height(&self, width: u16) -> u16 {
+        let width = width.max(1);
+        let height = match self {
+            Self::Column { children, .. } => children
+                .iter()
+                .map(|child| u32::from(child.measure_height(width)))
+                .sum(),
+            Self::Row { children, .. } | Self::Stack(children) => children
+                .iter()
+                .map(|child| u32::from(child.measure_height(width)))
+                .max()
+                .unwrap_or(1),
+            // A bordered frame: the child plus the top/bottom border.
+            Self::Card { child, .. } => {
+                u32::from(child.measure_height(width.saturating_sub(2))) + 2
+            }
+            Self::Scroll { child, .. } => u32::from(child.measure_height(width)),
+            Self::Markdown(source) => {
+                Markdown::new(source.as_str()).lines(width).len().max(1) as u32
+            }
+            Self::Text { spans, .. } => {
+                let text: String = spans.iter().map(|(run, _)| run.as_str()).collect();
+                text.split('\n')
+                    .map(|line| {
+                        let columns = line.chars().count().max(1);
+                        columns.div_ceil(width as usize).max(1) as u32
+                    })
+                    .sum::<u32>()
+                    .max(1)
+            }
+            Self::KeyValue(rows) => (rows.len().max(1)) as u32,
+            // Single-row leaves (Button, Link, Badge, Gauge, Spinner,
+            // StatusLine, TextField, Checkbox, Media, Divider, Spacer,
+            // Placeholder).
+            _ => 1,
+        };
+        height.clamp(1, u32::from(u16::MAX)) as u16
+    }
 }
 
 fn render_divider(vertical: bool, label: &Option<String>, area: Rect, buf: &mut Buffer) {

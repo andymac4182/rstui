@@ -927,3 +927,107 @@ fn help_then_k_is_the_universal_gateway_into_the_keymap_editor() {
     );
     assert!(h.is_running());
 }
+
+// ── ADR 0017 end-to-end: the client sends the catalog, and an
+// agent-authored A2UI / json-render document renders in the transcript
+// through the real reducer + view (no tokio, no agent). ──────────────
+
+use rstui_acp_client::acp::{RichUiFormat, RichUiPayload, render_capability_meta};
+
+/// The exact client-capability `_meta` the ACP `initialize` sends must
+/// carry the full catalog for *both* formats — not just a name.
+#[test]
+fn acp_initialize_meta_ships_the_full_catalog_for_both_formats() {
+    let meta = render_capability_meta();
+
+    // A2UI: the canonical id AND the self-contained inline catalog with
+    // every one of the 18 basic-catalog components + the functions.
+    let a2ui = &meta["a2uiClientCapabilities"]["v0.10"];
+    assert_eq!(
+        a2ui["supportedCatalogIds"][0],
+        "https://a2ui.org/specification/v0_10/basic_catalog.json"
+    );
+    let catalog = &a2ui["inlineCatalogs"][0];
+    let components = catalog["components"]
+        .as_object()
+        .expect("inline A2UI catalog carries the component schemas");
+    assert_eq!(components.len(), 18, "all 18 A2UI components are sent");
+    let button = &catalog["components"]["Button"];
+    assert!(button.is_object(), "Button schema travels inline");
+    assert!(
+        serde_json::to_string(button).unwrap().contains("action"),
+        "the Button schema carries its real props (child/action)"
+    );
+    assert!(catalog["functions"]["formatString"].is_object());
+    assert!(
+        !serde_json::to_string(catalog)
+            .unwrap()
+            .contains("common_types.json#"),
+        "the inline catalog is self-contained (no external $ref)"
+    );
+
+    // json-render: the full component catalog + the LLM prompt.
+    let json_render = &meta["rstuiJsonUi"]["jsonRender"];
+    assert_eq!(
+        json_render["catalog"].as_object().unwrap().len(),
+        27,
+        "the json-render component catalog is sent"
+    );
+    assert!(
+        json_render["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("flat element map"),
+        "the json-render authoring prompt is sent"
+    );
+}
+
+/// An agent that replies with an A2UI document (createSurface +
+/// updateComponents + updateDataModel JSONL) has it detected, folded
+/// into the transcript, and rendered — verified through the public
+/// reducer + the real `view`.
+#[test]
+fn agent_a2ui_document_renders_in_the_transcript() {
+    let mut h = chatting(120, 40);
+    let stream = [
+        r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"https://a2ui.org/specification/v0_10/basic_catalog.json"}}"#,
+        r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":[{"id":"root","component":"Column","children":["greeting","cta"]},{"id":"greeting","component":"Text","text":{"path":"/who"}},{"id":"cta","component":"Button","child":"ctaLabel","action":{"event":{"name":"go"}}},{"id":"ctaLabel","component":"Text","text":"Proceed"}]}}"#,
+        r#"{"version":"v0.10","updateDataModel":{"surfaceId":"s1","path":"/who","value":"Hello from the agent"}}"#,
+    ]
+    .join("\n");
+    h.message(Msg::Acp(AcpEvent::RichUi(RichUiPayload {
+        format: RichUiFormat::A2ui,
+        source: stream,
+    })));
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("Hello from the agent"),
+        "the data-bound A2UI Text rendered:\n{screen}"
+    );
+    assert!(
+        screen.contains("Proceed"),
+        "the A2UI Button label rendered:\n{screen}"
+    );
+    assert!(h.is_running());
+}
+
+/// An agent that replies with a json-render flat spec has it detected
+/// and rendered through the same path.
+#[test]
+fn agent_json_render_document_renders_in_the_transcript() {
+    let mut h = chatting(120, 40);
+    let spec = r#"{"root":"card","elements":{
+        "card":{"type":"Card","props":{"title":"Status"},"children":["line"]},
+        "line":{"type":"Text","props":{"text":"json-render works end to end"}}
+    }}"#;
+    h.message(Msg::Acp(AcpEvent::RichUi(RichUiPayload {
+        format: RichUiFormat::JsonRender,
+        source: spec.to_owned(),
+    })));
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("json-render works end to end"),
+        "the json-render document rendered in the transcript:\n{screen}"
+    );
+    assert!(h.is_running());
+}

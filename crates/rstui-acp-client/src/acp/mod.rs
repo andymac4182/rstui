@@ -28,4 +28,6 @@ pub use events::{
     AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, TodoEntry, TodoStatus,
     ToolBody, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus,
 };
-pub use richui::{RichUiFormat, RichUiPayload, render_source as render_rich_ui};
+pub use richui::{
+    RichUiFormat, RichUiPayload, render_capability_meta, render_source as render_rich_ui,
+};
