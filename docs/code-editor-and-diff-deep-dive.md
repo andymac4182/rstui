@@ -156,9 +156,13 @@ decides **two tiers**:
   to the old scanner (gate-enforced), so existing diff snapshots are
   unaffected. Colours come from the caller's theme (`SyntaxStyles`), so
   `rstui-theme` themes code for free.
-- **Tier 1 (Part 7 CE-6, optional): feature-gated tree-sitter** — one
-  incremental parse → both the highlight overlay *and* the symbol outline.
-  Default builds never compile it; the floor is always present. TextMate/
+- **Tier 1 (LANDED — `crates/rstui-treesitter`, ADR 0023): tree-sitter** —
+  one `tree_sitter::Tree` → both the highlight overlay (`highlights.scm` →
+  `SyntaxStyles`) *and* the symbol `Outline` (`tags.scm`), a drop-in for the
+  Tier-0 shapes. A **workspace-`exclude`d opt-in leaf** so the five CI gates
+  never compile it (ADR 0023 realises ADR 0022's no-gate invariant under the
+  `--all-features --workspace` gate); validated out-of-gate. Default builds
+  never compile it; the floor is always present. TextMate/
   Oniguruma was rejected (highlight-only — see ADR 0022 Evidence).
 
 The `Editor` change is a borrowed overlay exactly like `extmarks`: a per-cell
@@ -245,7 +249,7 @@ sibling's `E*`/`R*`.
 | CE-1 | `Diff`: delegate to `syntax` (+`Language`), `col` + horizontal slice, `usize` scroll, cached `row_count`, `tab_width` | A/B/G/K/D | **P0** | Part 7 |
 | CE-2 | `Editor`: `syntax` overlay borrow, `DocSelection` projection + caret shape, `tab_width`, `wrap` | C/D/F/G | **P0** | Part 7 |
 | CE-3 | `rstui-git-review`: `editor_scroll`+`detail_viewport` (resize), scrolled gutter, `scroll_into_view`, diff clamp/col, undo keys + undo-before-save, selection (mouse+shift+replace), `Language`, symbol panel (editor+diff), search UI | A/B/E/F/G/H/J end-to-end | **P0** | Part 7 |
-| CE-4 | tree-sitter feature (ADR 0022 Tier 1) → highlight + outline | G/H accuracy | **P2** | Part 7 |
+| CE-4 | `rstui-treesitter` excluded leaf (ADR 0022 Tier 1 / ADR 0023) → one parse: highlight + outline; `code_editor` example | G/H accuracy | **P2** | **Landed** |
 | CE-5 | `Editor::wrap`, `usize` measure (`content_height`), `outline`/`syntax` `Language` dedup | C/M + tidy | **P2** | Part 7 |
 
 **Critical path:** CE-1 → CE-2 → CE-3 (CE-3's undo wiring gates further
