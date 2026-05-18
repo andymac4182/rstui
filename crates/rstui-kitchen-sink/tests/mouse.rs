@@ -276,22 +276,87 @@ fn select_word(h: &mut Harness<KitchenSink>, needle: &str) {
     drag(h, x, y, x + needle.chars().count() as u16 - 1, y);
 }
 
+/// A unique, letters-only sentinel the clipboard tests *type in themselves*
+/// so the assertions own their exact content and can never be broken by a
+/// demo screen reseed. Chosen to never collide with chrome or any seed.
+const CLIP: &str = "ZQWFCLIPMARK";
+
+/// Type a literal string into the focused editable, one key event per char
+/// (exactly what a user pressing keys produces).
+fn type_text(h: &mut Harness<KitchenSink>, s: &str) {
+    for c in s.chars() {
+        h.handle(ch(c));
+    }
+}
+
+/// The first run of ≥4 ASCII letters rendered **strictly inside the content
+/// panel** (never the header/sidebar/border/footer), with its cell.
+///
+/// This is the reliability fix: the clipboard tests used to drag a
+/// *hard-coded demo word* (`"KitchenSink"`, `"Morning"`, `"tiny"`,
+/// `"blockers"`, `"CommonMark"`, …), so every reseed of a demo screen
+/// silently broke them (4ccc7c7 → ee0a0cc, repeatedly red on `main`).
+/// Reading the target *out of the actual render* makes them invariant to
+/// what any screen happens to seed: the test still proves "drag what you
+/// see → that exact text is on the clipboard", but cannot rot.
+///
+/// The window is a safe interior, derived from the snapshot's own size
+/// (so it adapts to a resized harness): the rail is a fixed 20 columns
+/// then a bordered content panel, so starting at column 26 clears the
+/// rail and the panel border, and staying four rows off every edge clears
+/// the header, footer, title and borders for every content screen.
+fn content_word(h: &Harness<KitchenSink>) -> (u16, u16, String) {
+    let snap = h.snapshot();
+    let nlines = snap.lines().count();
+    for (y, line) in snap.lines().enumerate() {
+        if y < 4 || y + 4 >= nlines {
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let hi = chars.len().saturating_sub(3);
+        let mut x = 26usize;
+        while x < hi {
+            if chars[x].is_ascii_alphabetic() {
+                let start = x;
+                while x < hi && chars[x].is_ascii_alphabetic() {
+                    x += 1;
+                }
+                if x - start >= 4 {
+                    return (start as u16, y as u16, chars[start..x].iter().collect());
+                }
+            } else {
+                x += 1;
+            }
+        }
+    }
+    panic!("no content word inside the content panel:\n{snap}");
+}
+
+/// Drag-select `word` at `(x, y)` (it must be a single rendered run on one
+/// row) and assert the clipboard/selection holds **exactly** it — the
+/// round-trip the "clipboard is reliable" guarantee rests on.
+fn drag_word(h: &mut Harness<KitchenSink>, x: u16, y: u16, word: &str) {
+    drag(h, x, y, x + word.chars().count() as u16 - 1, y);
+}
+
 #[test]
 fn dragging_selects_and_copies_markdown_text() {
     let mut h = harness();
     h.handle(ch('7')); // Rich Text
     h.handle(key(KeyCode::Right)); // → Markdown sub-tab
-    // "CommonMark" only appears in the rendered Markdown body.
-    select_word(&mut h, "CommonMark");
+    // Drag whatever word the Markdown body actually renders (not a
+    // hard-coded seed token) and prove the clipboard holds *exactly* it.
+    let (x, y, word) = content_word(&h);
+    drag_word(&mut h, x, y, &word);
     assert!(
         h.snapshot().contains("Copied"),
-        "the copy is confirmed:\n{}",
+        "the auto-copy is confirmed:\n{}",
         h.snapshot()
     );
-    assert!(
-        h.app().clipboard().contains("CommonMark"),
-        "a read-only render auto-copies the covered text to the clipboard: {:?}",
-        h.app().clipboard()
+    assert_eq!(
+        h.app().clipboard().trim(),
+        word,
+        "a read-only render auto-copies exactly the covered text"
     );
 }
 
@@ -299,11 +364,17 @@ fn dragging_selects_and_copies_markdown_text() {
 fn dragging_selects_paragraph_prose() {
     let mut h = harness();
     h.handle(ch('7')); // Rich Text, Paragraph tab (default)
-    select_word(&mut h, "three-level"); // a word in the prose's first line
-    let s = h.snapshot();
+    let (x, y, word) = content_word(&h); // whatever prose actually renders
+    drag_word(&mut h, x, y, &word);
     assert!(
-        s.contains("Copied") && s.contains("three-level"),
-        "drag-select over a Paragraph copies the prose:\n{s}"
+        h.snapshot().contains("Copied"),
+        "drag-select over a Paragraph confirms the copy:\n{}",
+        h.snapshot()
+    );
+    assert_eq!(
+        h.app().clipboard().trim(),
+        word,
+        "drag-select over a Paragraph copies exactly the prose dragged"
     );
 }
 
@@ -329,11 +400,17 @@ fn selection_is_correct_after_a_resize() {
     h.resize(96, 28);
     h.handle(ch('7'));
     h.handle(key(KeyCode::Right)); // Markdown tab
-    select_word(&mut h, "CommonMark");
+    let (x, y, word) = content_word(&h);
+    drag_word(&mut h, x, y, &word);
     assert!(
         h.snapshot().contains("Copied"),
         "drag-select still copies after a resize:\n{}",
         h.snapshot()
+    );
+    assert_eq!(
+        h.app().clipboard().trim(),
+        word,
+        "after a resize the copy still tracks the rendered geometry exactly"
     );
 }
 
@@ -342,8 +419,10 @@ fn navigating_after_a_selection_clears_it_without_panicking() {
     let mut h = harness();
     h.handle(ch('7'));
     h.handle(key(KeyCode::Right));
-    select_word(&mut h, "CommonMark");
+    let (x, y, word) = content_word(&h);
+    drag_word(&mut h, x, y, &word);
     assert!(h.snapshot().contains("Copied"));
+    assert_eq!(h.app().clipboard().trim(), word);
     // A navigation key drops the stale selection; the app stays healthy.
     h.handle(ch('1')); // jump to Welcome
     assert!(h.is_running());
@@ -488,13 +567,15 @@ fn ctrl_c_quits_only_when_nothing_is_selected() {
 fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
     // Chat is editable → its drag-selection is NOT auto-copied; it stays
     // live with a hint, and Ctrl+C performs the copy.
+    // An editable container's drag-selection is NOT auto-copied: it stays
+    // live with a hint and Ctrl+C performs the copy. The code editor is
+    // such a container; the test types its own sentinel so a screen reseed
+    // can never break it (the failure mode this whole change removes).
     let mut h = harness();
-    goto(&mut h, "chat"); // Chat (palette is index-stable; digit 9 is now Data Grid)
-    // 4ccc7c7 reseeded chat with a longer thread that opens scrolled to
-    // the newest messages, so the old top-of-thread word ("Morning") is
-    // above the fold. Target a stable word visible in the default view.
-    let (x, y) = cell_of(&h, "blockers"); // "Standup proper: blockers?"
-    drag(&mut h, x, y, x + "blockers".len() as u16 - 1, y);
+    goto(&mut h, "Code Editor");
+    type_text(&mut h, CLIP);
+    let (x, y) = cell_of(&h, CLIP);
+    drag_word(&mut h, x, y, CLIP);
     assert!(
         h.snapshot().contains("Selected") && !h.snapshot().contains("Copied"),
         "an editable container leaves it selected, not auto-copied:\n{}",
@@ -502,10 +583,10 @@ fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
     );
     assert!(h.app().clipboard().is_empty(), "nothing copied yet");
     h.handle(ctrl('c'));
-    assert!(
-        h.app().clipboard().contains("blockers"),
-        "Ctrl+C copies the still-live selection: {:?}",
-        h.app().clipboard()
+    assert_eq!(
+        h.app().clipboard().trim(),
+        CLIP,
+        "Ctrl+C copies exactly the still-live selection"
     );
     assert!(h.snapshot().contains("Copied"));
     assert!(
@@ -518,44 +599,45 @@ fn editable_container_keeps_the_selection_until_ctrl_c_copies_it() {
 fn ctrl_x_cuts_selected_text_out_of_the_code_editor() {
     let mut h = harness();
     goto(&mut h, "Code Editor");
-    // 4ccc7c7 reseeded the Code Editor with a counter-app sample; target
-    // a stable, single-occurrence token in the new seed's first visible
-    // line (the same needle-retarget that commit applied to siblings).
-    assert!(
-        h.snapshot().contains("tiny"),
-        "seed code is visible:\n{}",
-        h.snapshot()
-    );
-    let (x, y) = cell_of(&h, "tiny");
-    drag(&mut h, x, y, x + "tiny".len() as u16 - 1, y);
+    // Type a unique sentinel into the editor so the test owns the exact
+    // text it cuts, independent of whatever the screen seeds (that seed
+    // changed three times and broke this test each time — 4ccc7c7, then
+    // again, then ee0a0cc).
+    type_text(&mut h, CLIP);
+    let (x, y) = cell_of(&h, CLIP);
+    drag_word(&mut h, x, y, CLIP);
     h.handle(ctrl('x')); // cut
-    assert!(
-        h.app().clipboard().contains("tiny"),
-        "cut puts the text on the clipboard: {:?}",
-        h.app().clipboard()
+    assert_eq!(
+        h.app().clipboard().trim(),
+        CLIP,
+        "cut puts exactly the selected text on the clipboard"
     );
     assert!(
-        !h.snapshot().contains("tiny"),
+        !h.snapshot().contains(CLIP),
         "cut removed it from the buffer:\n{}",
         h.snapshot()
     );
-    assert!(h.snapshot().contains("Cut"));
+    assert!(h.snapshot().contains("Cut"), "the cut is confirmed");
 }
 
 #[test]
 fn ctrl_v_pastes_the_clipboard_into_a_focused_input() {
     let mut h = harness();
-    // Auto-copy a word from a read-only render to load the clipboard.
-    h.handle(ch('7'));
-    h.handle(key(KeyCode::Right)); // Markdown tab
-    select_word(&mut h, "CommonMark");
-    assert!(h.app().clipboard().contains("CommonMark"));
-    // Now paste it into the Logs filter input.
+    // Load the clipboard with a known sentinel via a real copy (type →
+    // select → Ctrl+C in the editable code editor), then paste it into
+    // the Logs filter input: an exact copy→paste round-trip the test
+    // fully owns end to end.
+    goto(&mut h, "Code Editor");
+    type_text(&mut h, CLIP);
+    let (x, y) = cell_of(&h, CLIP);
+    drag_word(&mut h, x, y, CLIP);
+    h.handle(ctrl('c'));
+    assert_eq!(h.app().clipboard().trim(), CLIP, "clipboard loaded by copy");
     goto(&mut h, "Live Logs");
     h.handle(ctrl('v'));
     assert!(
-        h.snapshot().contains("CommonMark"),
-        "Ctrl+V pasted the clipboard into the filter input:\n{}",
+        h.snapshot().contains(CLIP),
+        "Ctrl+V pasted exactly the clipboard into the filter input:\n{}",
         h.snapshot()
     );
     assert!(h.is_running());
