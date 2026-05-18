@@ -1,6 +1,8 @@
 //! The Rich Text screen: a [`Tabs`] strip over a scrollable [`Paragraph`], a
 //! scrollable [`Markdown`] document (whose `[text](href)` exercises
-//! [`Link`](rstui_widgets::Link)), a [`Mermaid`] flowchart, and a styled
+//! [`Link`](rstui_widgets::Link) and whose §10 embeds a [`Mermaid`] and a
+//! [`Structurizr`] diagram *inline* via [`Markdown::diagrams`]), a
+//! standalone [`Mermaid`] flowchart, and a styled
 //! [`Span`]/[`Line`] sampler — with a persistent [`Kbd`] strip. `←/→`
 //! switches tabs, `↑/↓` scrolls.
 
@@ -247,6 +249,55 @@ can degrade and no tree that can grow without bound.
 > Scroll back to the top. The document wraps exactly the same way it did
 > the first time, because nothing here remembers that you already read it.
 
+## 10. Diagrams embed inline
+
+The fenced blocks above are verbatim. These are not. A fenced `mermaid`,
+`structurizr`, or `canvas` block is *rendered as the diagram it
+describes*, rasterised straight into this scrolling document by the same
+projection contract: the renderer hands the fence to the matching widget,
+reads the drawn cells back as rows, and splices them between the prose. No
+retained tree, no separate viewer — just more `Line`s, scrolled and
+clamped exactly like the text around them.
+
+A Mermaid flowchart of this very embedding pipeline:
+
+```mermaid
+graph TD
+  F[fenced block] --> P[parse blocks]
+  P --> Q{diagram lang?}
+  Q -->|mermaid / structurizr / canvas| W[render the widget]
+  Q -->|no| C[code block]
+  W --> O[cells to rows]
+  C --> O
+  O --> D[spliced into the flow]
+```
+
+And a Structurizr C4 model — auto-laid-out from *structure*, not
+coordinates — describing the same seam:
+
+```structurizr
+workspace \"rstui\" \"Markdown embeds diagrams\" {
+  model {
+    reader = person \"Reader\" \"Scrolls the handbook\"
+    md = softwareSystem \"Markdown widget\" \"Projects prose to cells\" {
+      parser = container \"Block parser\" \"Fences to blocks\" \"Rust\"
+      embed = container \"Diagram embed\" \"Fence to Mermaid/Structurizr\" \"Rust\"
+    }
+    reader -> parser \"Scrolls\"
+    parser -> embed \"Hands a diagram fence\"
+  }
+  views {
+    systemContext md \"Embedding\" {
+      include *
+      autolayout lr
+    }
+  }
+}
+```
+
+Scroll past them: the prose below resumes with no seam, because to the
+scroll offset a diagram is just some more rows — the whole point.
+
 ---
 
 *End of handbook — keep scrolling to confirm the tail clamps cleanly.*";
@@ -365,7 +416,7 @@ impl State {
             // including the identical view-time scroll clamp — so the
             // widget's own link hit-test lands on exactly the drawn label.
             let sc = self.scroll.min(self.max_scroll(body));
-            let md = Markdown::new(DOC)
+            let md = doc_md()
                 .scroll(sc)
                 .block(Block::bordered().border_type(BorderType::Rounded));
             if let Some(idx) = md.link_at(pos, body) {
@@ -401,7 +452,7 @@ impl State {
             0 => Paragraph::new(PROSE)
                 .wrap(Wrap { trim: true })
                 .line_count(inner.width),
-            1 => Markdown::new(DOC).lines(inner.width).len(),
+            1 => doc_md().lines(inner.width).len(),
             _ => return 0,
         };
         u16::try_from(rows.saturating_sub(inner.height as usize)).unwrap_or(u16::MAX)
@@ -451,10 +502,10 @@ impl State {
                 body,
             ),
             1 => frame.render_widget(
-                Markdown::new(DOC)
+                doc_md()
                     .scroll(sc)
                     .style(theme.body())
-                    .block(framed(theme, "Markdown · links + ↑↓ PgUp/Dn scroll")),
+                    .block(framed(theme, "Markdown · links + embedded diagrams")),
                 body,
             ),
             2 => {
@@ -547,6 +598,18 @@ impl State {
             area,
         );
     }
+}
+
+/// The handbook [`Markdown`] widget, configured **once** so the three
+/// places that must agree — the renderer, the link hit-test, and the
+/// scroll-extent measurement — cannot drift apart. They have to parse the
+/// *same* source with the *same* options, and that now includes
+/// [`diagrams(true)`](Markdown::diagrams): §10's fenced ```` ```mermaid ````
+/// and ```` ```structurizr ```` blocks render as real diagrams *inline in
+/// the document*, scrolled and clamped like the prose around them, instead
+/// of as verbatim code.
+fn doc_md() -> Markdown<'static> {
+    Markdown::new(DOC).diagrams(true)
 }
 
 /// A plain rounded framing block.

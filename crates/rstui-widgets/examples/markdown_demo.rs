@@ -11,8 +11,11 @@
 //! - a GFM **table** with per-column alignment,
 //! - an `![image]()`, an inline `[link]()`, a **reference-style** link, an
 //!   `<autolink>`,
-//! - **HTML passthrough** (entities, a `<b>` tag, a comment, `<br>`), and a
-//!   thematic break.
+//! - **HTML passthrough** (entities, a `<b>` tag, a comment, `<br>`), a
+//!   thematic break, and
+//! - **embedded diagrams** — with `.diagrams(true)` a fenced ` ```mermaid `
+//!   and a fenced ` ```structurizr ` block render *inline as the diagram*
+//!   (delegated to `Mermaid`/`Structurizr`), not as verbatim code.
 //!
 //! ```text
 //! cargo run -p rstui-widgets --example markdown_demo
@@ -66,15 +69,47 @@ HTML &amp; entities (&copy; &mdash; &#x2713;), a <b>bold</b> tag, a
 
 [rs]: https://rust-lang.org
 
+---
+
+A fenced `mermaid` block renders *inline as the diagram*, not as code:
+
+```mermaid
+graph TD
+  A[fence] --> B[Markdown]
+  B --> C{diagram?}
+  C -->|yes| D[render widget]
+  C -->|no| E[code block]
+```
+
+…and a `structurizr` C4 model, auto-laid-out from structure:
+
+```structurizr
+workspace \"demo\" {
+  model {
+    u = person \"Reader\"
+    s = softwareSystem \"Markdown\" \"Embeds diagrams inline\"
+    u -> s \"Scrolls\"
+  }
+  views {
+    systemContext s \"Ctx\" { include * }
+  }
+}
+```
+
 ---";
 
 fn main() {
-    let mut terminal = Terminal::new(TestBackend::new(50, 46)).expect("TestBackend is infallible");
+    let mut terminal = Terminal::new(TestBackend::new(60, 92)).expect("TestBackend is infallible");
 
     terminal
         .draw(|frame| {
             frame.render_widget(
-                Markdown::new(DOC).block(Block::bordered().title("markdown")),
+                // `.diagrams(true)` rasterises the fenced ```mermaid /
+                // ```structurizr blocks inline as their diagrams (opt-in;
+                // a non-diagram fence stays verbatim code).
+                Markdown::new(DOC)
+                    .diagrams(true)
+                    .block(Block::bordered().title("markdown")),
                 frame.area(),
             );
         })

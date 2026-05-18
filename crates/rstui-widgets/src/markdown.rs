@@ -81,7 +81,10 @@
 use std::borrow::Cow;
 
 use crate::block::Block;
+use crate::json_canvas::JsonCanvas;
 use crate::link::Link;
+use crate::mermaid::Mermaid;
+use crate::structurizr::Structurizr;
 use rstui_core::{Alignment, Buffer, Color, Line, Modifier, Position, Rect, Span, Style, Widget};
 
 /// The styles [`Markdown`] applies to each kind of element.
@@ -215,6 +218,7 @@ pub struct Markdown<'a> {
     scroll: u16,
     theme: MarkdownTheme,
     focused_link: Option<usize>,
+    diagrams: bool,
 }
 
 /// Where a link's label landed on screen, returned by
@@ -241,6 +245,7 @@ impl<'a> Markdown<'a> {
             scroll: 0,
             theme: MarkdownTheme::default(),
             focused_link: None,
+            diagrams: false,
         }
     }
 
@@ -290,6 +295,26 @@ impl<'a> Markdown<'a> {
         self
     }
 
+    /// Renders a fenced ```` ```mermaid ````, ```` ```structurizr ````, or
+    /// ```` ```canvas ```` block as the diagram it describes — rasterised
+    /// inline into the document flow by the matching [`Mermaid`] /
+    /// [`Structurizr`] / [`JsonCanvas`] widget — instead of as a verbatim
+    /// code block.
+    ///
+    /// Off by default, so `Markdown::new(src)` stays byte-identical: this is
+    /// a purely additive opt-in. A non-diagram fence (```` ```rust ````, a
+    /// bare ```` ``` ````) is untouched, and an unparseable diagram degrades
+    /// to its renderer's own visible placeholder, never a panic — the same
+    /// total, deterministic projection `rstui_ai::stream_markdown` uses to
+    /// put a Mermaid diagram inside streamed agent prose. The recognised
+    /// info strings are `mermaid`/`mmd`, `structurizr`/`c4`/`dsl`/`workspace`,
+    /// and `canvas`/`jsoncanvas`.
+    #[must_use]
+    pub fn diagrams(mut self, on: bool) -> Self {
+        self.diagrams = on;
+        self
+    }
+
     /// Parses the source and lays it out to display rows for a content area
     /// `width` columns wide. Public so a host can measure a document (its row
     /// count) for scroll math or a surrounding scrollbar without re-rendering.
@@ -304,7 +329,14 @@ impl<'a> Markdown<'a> {
         let mut links = Vec::new();
         let blocks = blocks_into(&src, &mut links, self.focused_link, &self.theme, &defs);
         let mut rows = Vec::new();
-        layout_blocks(&blocks, width as usize, &self.theme, true, &mut rows);
+        layout_blocks(
+            &blocks,
+            width as usize,
+            &self.theme,
+            true,
+            self.diagrams,
+            &mut rows,
+        );
         rows
     }
 
@@ -1887,6 +1919,7 @@ fn layout_blocks(
     width: usize,
     theme: &MarkdownTheme,
     spacing: bool,
+    diagrams: bool,
     out: &mut Vec<Line<'static>>,
 ) {
     for (idx, block) in blocks.iter().enumerate() {
@@ -1906,6 +1939,15 @@ fn layout_blocks(
             }
             MdBlock::Paragraph(spans) => wrap_spans(spans, width, &[], out),
             MdBlock::Code { lines, lang } => {
+                // Opt-in: a ```mermaid / ```structurizr / ```canvas fence is
+                // the diagram it describes, rasterised into the document flow
+                // in place of the verbatim code rendering.
+                if diagrams {
+                    if let Some(kind) = diagram_lang(lang) {
+                        diagram_rows(&lines.join("\n"), kind, width, out);
+                        continue;
+                    }
+                }
                 // The fenced info string's language, shown as a dim caption.
                 if !lang.is_empty() {
                     let mut cap: String = lang.chars().take(width).collect();
@@ -1936,6 +1978,7 @@ fn layout_blocks(
                     width.saturating_sub(rail_w),
                     theme,
                     spacing,
+                    diagrams,
                     &mut sub,
                 );
                 for line in sub {
@@ -1969,6 +2012,7 @@ fn layout_blocks(
                         width.saturating_sub(label.chars().count()),
                         theme,
                         *loose,
+                        diagrams,
                         &mut sub,
                     );
                     for (k, line) in sub.into_iter().enumerate() {
@@ -1988,6 +2032,87 @@ fn layout_blocks(
                 out.push(Line::from(Span::styled("─".repeat(width), theme.rule)));
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Embedded diagrams (opt-in via `Markdown::diagrams`)
+// ---------------------------------------------------------------------------
+
+/// Which sibling diagram widget a fenced block's info string selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagramKind {
+    Mermaid,
+    Structurizr,
+    JsonCanvas,
+}
+
+/// Maps a fenced info string's first word to the diagram renderer it selects,
+/// or `None` for a non-diagram language (which stays a verbatim code block).
+/// The mapping mirrors `rstui_ai::diagram::DiagramLanguage` so an agent's
+/// ```` ```mermaid ````/```` ```structurizr ````/```` ```canvas ```` renders
+/// identically whether it is lifted out of a turn or left inside the prose.
+fn diagram_lang(info: &str) -> Option<DiagramKind> {
+    match info.trim().to_ascii_lowercase().as_str() {
+        "mermaid" | "mmd" => Some(DiagramKind::Mermaid),
+        "structurizr" | "c4" | "dsl" | "workspace" => Some(DiagramKind::Structurizr),
+        "canvas" | "jsoncanvas" => Some(DiagramKind::JsonCanvas),
+        _ => None,
+    }
+}
+
+/// Scratch-buffer height when rasterising an embedded diagram: a fixed,
+/// generous bound (trailing blank rows are trimmed after) so a hostile
+/// diagram cannot drive an unbounded allocation — totality over adversarial
+/// input, the same bound `rstui_ai::stream_markdown` uses for an inline
+/// Mermaid.
+const DIAGRAM_MAX_ROWS: u16 = 512;
+
+/// Rasterises one embedded diagram into display rows: dispatch the fence
+/// language to the matching draw-only widget, render it into a scratch
+/// `width`×[`DIAGRAM_MAX_ROWS`] buffer, then read the cells back as styled
+/// (coalesced) [`Line`]s with trailing all-blank rows trimmed. Deterministic
+/// and side-effect-free — the same scratch-buffer bridge
+/// [`Markdown::link_regions`] and `rstui_ai::stream_markdown` use — and
+/// total: an unparseable diagram is the underlying widget's own visible
+/// placeholder, never a panic.
+fn diagram_rows(source: &str, kind: DiagramKind, width: usize, out: &mut Vec<Line<'static>>) {
+    let Ok(w) = u16::try_from(width) else { return };
+    if w == 0 {
+        return;
+    }
+    let mut scratch = Buffer::empty(Rect::new(0, 0, w, DIAGRAM_MAX_ROWS));
+    let area = scratch.area();
+    match kind {
+        DiagramKind::Mermaid => Mermaid::new(source.to_owned()).render(area, &mut scratch),
+        DiagramKind::Structurizr => Structurizr::new(source.to_owned()).render(area, &mut scratch),
+        DiagramKind::JsonCanvas => JsonCanvas::new(source.to_owned()).render(area, &mut scratch),
+    }
+    let mut rows: Vec<Line<'static>> = Vec::with_capacity(DIAGRAM_MAX_ROWS as usize);
+    for y in 0..DIAGRAM_MAX_ROWS {
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
+        for x in 0..w {
+            if let Some(cell) = scratch.get(Position::new(x, y)) {
+                spans.push(Span::styled(cell.symbol.to_string(), cell.style()));
+            }
+        }
+        rows.push(Line::from(coalesce(spans)));
+    }
+    // The diagram widgets centre their canvas inside the (generous) scratch
+    // area, so the rendered glyphs sit in a band with blank rows above *and*
+    // below. Keep only that band — strip the leading and trailing all-blank
+    // runs (interior spacer rows survive) so the diagram hugs the surrounding
+    // prose instead of opening with a screenful of whitespace. An empty /
+    // unparseable body has no band: keep a single row so the block still
+    // occupies the flow and `lines()` stays stable.
+    let blank = |l: &Line<'static>| l.spans.iter().all(|s| s.content.trim().is_empty());
+    let first = rows.iter().position(|l| !blank(l));
+    match first {
+        Some(top) => {
+            let bot = rows.iter().rposition(|l| !blank(l)).unwrap_or(top);
+            out.extend(rows.drain(top..=bot));
+        }
+        None => out.push(Line::default()),
     }
 }
 
@@ -3155,5 +3280,100 @@ mod tests {
         Markdown::new("# x").render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
         assert!(Markdown::new("# x").lines(0).is_empty());
+    }
+
+    // --- embedded diagrams (opt-in via `diagrams`) -------------------------
+
+    #[test]
+    fn diagram_lang_maps_only_the_diagram_info_strings() {
+        assert_eq!(diagram_lang("mermaid"), Some(DiagramKind::Mermaid));
+        assert_eq!(diagram_lang("MMD"), Some(DiagramKind::Mermaid));
+        assert_eq!(diagram_lang("structurizr"), Some(DiagramKind::Structurizr));
+        assert_eq!(diagram_lang("c4"), Some(DiagramKind::Structurizr));
+        assert_eq!(diagram_lang("canvas"), Some(DiagramKind::JsonCanvas));
+        assert_eq!(diagram_lang("jsoncanvas"), Some(DiagramKind::JsonCanvas));
+        // A real programming language stays a code block.
+        assert_eq!(diagram_lang("rust"), None);
+        assert_eq!(diagram_lang(""), None);
+    }
+
+    #[test]
+    fn diagrams_off_is_byte_identical_and_keeps_a_fence_as_code() {
+        // Default: a ```mermaid fence is still verbatim code (the raw DSL
+        // text and the dim language caption are present) — unchanged.
+        let src = "```mermaid\ngraph TD\nA-->B\n```";
+        let code = lines(Markdown::new(src), 24, 6);
+        assert!(code.contains("graph TD"), "raw DSL shown as code:\n{code}");
+        assert!(code.contains("mermaid"), "language caption:\n{code}");
+        // `.diagrams(false)` is exactly the default; the opt-in is additive.
+        assert_eq!(
+            Markdown::new(src).lines(24),
+            Markdown::new(src).diagrams(false).lines(24)
+        );
+        // A document with no diagram fence renders identically either way,
+        // so turning the feature on cannot regress existing prose.
+        let doc = "# Title\n\nSome **prose** and a list:\n\n- one\n- two\n\n\
+                   ```rust\nfn main() {}\n```\n\n> a quote\n";
+        assert_eq!(
+            Markdown::new(doc).lines(40),
+            Markdown::new(doc).diagrams(true).lines(40),
+            "no diagram fence ⇒ `diagrams(true)` is a no-op"
+        );
+    }
+
+    #[test]
+    fn diagrams_on_renders_a_mermaid_fence_as_a_diagram() {
+        let src = "```mermaid\ngraph TD\nA-->B\n```";
+        let out = lines(Markdown::new(src).diagrams(true), 30, 16);
+        // The nodes are drawn and connected by a real (top-down) arrow…
+        assert!(out.contains('A') && out.contains('B'), "nodes:\n{out}");
+        assert!(out.contains('▼'), "a rendered down-arrow:\n{out}");
+        // …and the raw DSL header is no longer shown verbatim as code.
+        assert!(!out.contains("graph TD"), "rendered, not code:\n{out}");
+        // Deterministic — same source, same width, same pixels.
+        assert_eq!(out, lines(Markdown::new(src).diagrams(true), 30, 16));
+    }
+
+    #[test]
+    fn diagrams_on_renders_a_structurizr_c4_fence() {
+        let src = "```structurizr\nworkspace \"S\" {\n model {\n \
+                   u = person \"User\"\n s = softwareSystem \"Sys\"\n \
+                   u -> s \"Uses\"\n }\n views {\n systemContext s {\n \
+                   include *\n }\n }\n}\n```";
+        let out = lines(Markdown::new(src).diagrams(true), 60, 20);
+        assert!(out.contains("System Context"), "C4 view header:\n{out}");
+        assert!(out.contains("User"), "the person element:\n{out}");
+        assert!(
+            !out.contains("workspace \"S\""),
+            "rendered, not code:\n{out}"
+        );
+    }
+
+    #[test]
+    fn diagrams_on_leaves_a_non_diagram_fence_as_code() {
+        // Only the diagram info strings are intercepted; ```rust is still a
+        // syntax-highlighted, verbatim code block even with diagrams on.
+        let src = "```rust\nfn main() {}\n```";
+        let out = lines(Markdown::new(src).diagrams(true), 20, 2);
+        assert!(out.contains("rust"), "language caption kept:\n{out}");
+        assert!(out.contains("fn main() {}"), "code verbatim:\n{out}");
+    }
+
+    #[test]
+    fn an_unparseable_embedded_diagram_degrades_not_panics() {
+        // Hostile / empty bodies are the renderer's own placeholder, never a
+        // panic, and always contribute at least one row.
+        let bad = "intro\n\n```mermaid\n%%%% not a diagram\n```\n\nafter";
+        let rows = Markdown::new(bad).diagrams(true).lines(40);
+        assert!(!rows.is_empty());
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 4));
+        Markdown::new("```structurizr\n\n```")
+            .diagrams(true)
+            .render(buf.area(), &mut buf);
+        // A zero-width nested context still cannot panic.
+        let mut tiny = Buffer::empty(Rect::new(0, 0, 2, 2));
+        Markdown::new("```canvas\n{}\n```")
+            .diagrams(true)
+            .render(tiny.area(), &mut tiny);
     }
 }

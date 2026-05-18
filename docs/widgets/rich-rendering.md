@@ -14,12 +14,25 @@ A read-only CommonMark-ish renderer: headings, emphasis, inline + fenced code,
 tables, lists, links — with a hand-written parser. Exposes link regions so the
 reducer can implement focus/activation.
 
+With `.diagrams(true)` a fenced ` ```mermaid `, ` ```structurizr `, or
+` ```canvas ` block is rasterised **inline into the document flow** as the
+diagram it describes — the renderer hands the fence body to
+[Mermaid](#mermaid) / [Structurizr](#structurizr) / [JsonCanvas](#jsoncanvas)
+and splices the drawn rows between the prose, scrolled and clamped like the
+text around them. It is **off by default** (the fence stays a verbatim code
+block), so `Markdown::new` is byte-identical — a purely additive opt-in, the
+same total projection `rstui_ai::stream_markdown` uses for an inline diagram
+([ADR 0012](../adr/0012-widget-composition-and-layout-model.md)). A
+non-diagram fence is untouched and an unparseable diagram degrades to the
+renderer's own placeholder, never a panic.
+
 - **Companion types:** `MarkdownTheme`, `LinkRegion`, [`Link`](#link)
 - **State model:** pure projection of caller-owned markdown source + optional focused-link index.
 
 ```rust
 Markdown::new(src: &str)
 .theme(MarkdownTheme) .focused_link(Option<usize>)
+.diagrams(bool)                     // opt-in: ```mermaid/```structurizr/```canvas → inline diagram
 .links() -> Vec<Link>               // for keyboard focus/activation
 .link_regions() -> Vec<LinkRegion>  // hit-test rectangles
 .link_at(pos: Position) -> Option<usize>
@@ -82,7 +95,9 @@ box-and-arrow renderer), `sequenceDiagram`, `classDiagram`,
 degrades to a legible placeholder, never a panic; non-flowchart types share
 one `Surface` toolkit and approximate non-textual shapes honestly (a radar
 is a polygon of spokes, a mindmap a left-rooted bracket tree). Zero new
-dependencies — every parser is line-oriented and lenient.
+dependencies — every parser is line-oriented and lenient. Embeds **inline**
+in a [Markdown](#markdown) document — a fenced ` ```mermaid ` block — when
+the document is built with `.diagrams(true)`.
 
 - **Companion types:** `MermaidError`, `MermaidTheme`, `MermaidGraph` (flowchart AST), [`Link`](#link)
 - **State model:** pure projection of caller-owned Mermaid source + optional focused link.
@@ -112,7 +127,9 @@ box around a system's containers, and labelled relationship arrows, with a
 [Mermaid](#mermaid), so a separate widget; the two share one internal
 drawing surface (`crate::diagram`) rather than reinventing rasterisation.
 Hand-written brace/quote/comment-aware parser, zero new dependencies,
-lenient (an unparseable line is skipped, never a panic).
+lenient (an unparseable line is skipped, never a panic). Embeds **inline**
+in a [Markdown](#markdown) document — a fenced ` ```structurizr ` block —
+when the document is built with `.diagrams(true)`.
 
 - **Companion types:** `StructurizrError`, `StructurizrTheme`, `Workspace`
   (C4 model AST: `Element`/`ElementKind`/`Relationship`/`View`/`ViewKind`)
@@ -146,7 +163,9 @@ whole 1.0 spec; the bounding box is scaled to fit the area so the chosen
 *relative* placement is preserved and snapshot-testable. Malformed/hostile
 input never panics. Shares the internal `crate::diagram` surface the other
 diagram widgets render onto. It is the format an agent emits when it needs
-to place objects itself (advertised via `rstui_jsonui::capability`).
+to place objects itself (advertised via `rstui_jsonui::capability`). Embeds
+**inline** in a [Markdown](#markdown) document — a fenced ` ```canvas `
+block — when the document is built with `.diagrams(true)`.
 
 - **Companion types:** `JsonCanvasError`, `JsonCanvasTheme`,
   `json_canvas::Canvas` (AST: `CanvasNode`/`NodeKind`/`CanvasEdge`/

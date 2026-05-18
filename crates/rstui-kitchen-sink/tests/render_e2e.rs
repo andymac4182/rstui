@@ -144,3 +144,49 @@ fn rendering_survives_navigation_resize_and_ticks_across_all_screens() {
         "theme intact after the tour"
     );
 }
+
+/// §10 of the Rich Text → Markdown handbook embeds a Mermaid flowchart and a
+/// Structurizr C4 model *inside the prose* via [`Markdown::diagrams`]. Paging
+/// the document to that section must show the **rendered diagrams**, never
+/// their raw DSL echoed as a code block — that distinction is the feature.
+#[test]
+fn markdown_tab_embeds_rendered_diagrams_not_their_dsl() {
+    let mut h = harness();
+    h.handle(ch('7')); // Rich Text
+    h.handle(key(KeyCode::Right)); // → Markdown sub-tab
+
+    let mut saw_heading = false;
+    let mut saw_mermaid_arrow = false;
+    let mut saw_c4_header = false;
+    // Walk the long handbook to its tail; §10 is the last section. The
+    // accumulation is across frames, so a diagram counts as long as *some*
+    // scroll position showed it fully.
+    for _ in 0..80 {
+        let snap = h.snapshot();
+        // The raw DSL must NEVER surface: the fence is rendered, not echoed.
+        assert!(
+            !snap.contains("graph TD"),
+            "the mermaid fence must render as a diagram, not code:\n{snap}"
+        );
+        assert!(
+            !snap.contains("systemContext md"),
+            "the structurizr fence must render as C4, not code:\n{snap}"
+        );
+        saw_heading |= snap.contains("Diagrams embed inline");
+        saw_mermaid_arrow |= snap.contains('▼'); // a rendered TD edge
+        saw_c4_header |= snap.contains("System Context"); // the C4 view
+        if saw_heading && saw_mermaid_arrow && saw_c4_header {
+            break;
+        }
+        h.handle(key(KeyCode::PageDown));
+    }
+    assert!(saw_heading, "the §10 heading was reached");
+    assert!(
+        saw_mermaid_arrow,
+        "the embedded Mermaid flowchart rendered (a ▼ edge glyph)"
+    );
+    assert!(
+        saw_c4_header,
+        "the embedded Structurizr C4 rendered (a System Context view)"
+    );
+}
