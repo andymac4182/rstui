@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Line, Size, TextArea};
-use rstui_keymap::{Action, Chord, Keymap, Keymaps};
+use rstui_keymap::{Action, Chord, Dispatch, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd, Frame};
 use rstui_widgets::Markdown;
 
@@ -365,10 +365,6 @@ pub struct ChatApp {
     /// `RSTUI_KEYMAP` may load user overrides). Resolved before the
     /// screen dispatch, after the plugin-chord layer.
     keymaps: Keymaps,
-    /// Monotonic per-key counter — the deterministic clock
-    /// [`Keymaps::resolve`] needs (no animation tick; the map has no
-    /// leader, so this only has to advance).
-    tick: u64,
     /// The keymap settings panel (the shared `KeymapView` widget) is open.
     keymap_panel: bool,
     /// Selected row in the keymap panel.
@@ -427,7 +423,6 @@ impl ChatApp {
             theme_restore: None,
             picking: false,
             keymaps: acp_keymaps(),
-            tick: 0,
             keymap_panel: false,
             km_sel: 0,
             km_rebind: None,
@@ -1333,14 +1328,14 @@ impl ChatApp {
         // Global commands resolve through the keymap *after* the plugin
         // chords (a plugin binding still wins) and before the screen
         // dispatch — so quit/help/keymap-panel are remappable and
-        // RSTUI_KEYMAP-configurable, uniformly on every screen. Only
-        // non-text chords are bound, so plain keys fall straight through.
-        self.tick = self.tick.wrapping_add(1);
-        if let Some(action) = self.keymaps.resolve(&key, self.tick) {
-            return self.do_action(action);
-        }
-        if self.keymaps.armed() {
-            return Cmd::none();
+        // RSTUI_KEYMAP-configurable, uniformly on every screen. One call;
+        // only non-text chords are bound so plain keys `Fall` straight
+        // through. acp's map has no leader sequence → no clock, no loop:
+        // `0` is correct forever.
+        match self.keymaps.dispatch(&key, 0) {
+            Dispatch::Act(action) => return self.do_action(action),
+            Dispatch::Pending => return Cmd::none(),
+            Dispatch::Fall => {}
         }
         match self.screen {
             Screen::Picker => self.picker_key(key),

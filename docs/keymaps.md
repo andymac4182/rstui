@@ -21,7 +21,7 @@ owns no terminal or runtime state, and never panics on any input.
 | `Chord` | A `KeyCode` + modifier set, **normalised** so `Ctrl+C`/`Ctrl+c`/`Shift`-implied uppercase compare equal. `parse("ctrl+shift+p")`, `from_event(&KeyEvent)`, a `parse`-able `spec()`, and an OS-aware `display()` (`⌘⌥⌃⇧` on macOS, `Ctrl/Alt/Super` elsewhere). |
 | `Trigger` | A single `Chord`, **or** a two-chord sequence (opencode's `<leader> x`): a prefix chord then a key, within a timeout. |
 | `Keymap` | A named set of `Action → Trigger`s + the leader chord/timeout. `keys_for(action)` is the **reverse lookup** the UI reads; `override_action(action, keys)` remaps (or `"none"` disables). |
-| `Keymaps` | The registry: several keymaps, the active one, the user-override layer **merged over** it, and the leader state machine. `resolve(&KeyEvent, tick) -> Option<Action>` is the one call the reducer makes. |
+| `Keymaps` | The registry: several keymaps, the active one, the user-override layer **merged over** it, and the leader state machine. `dispatch(&KeyEvent, now_ms) -> Dispatch` (`Act`/`Pending`/`Fall`) is the one call the reducer makes; `now_ms` is a monotonic-ms clock, or just `0` when the map has no leader sequence. |
 
 The golden rule, same as Textual: **the shell reacts to actions, never to
 physical keys**, and the UI is a *reverse lookup* of the live keymap so it
@@ -29,40 +29,68 @@ can never disagree with what a key actually does.
 
 ## Wiring it into an `App`
 
-The keymap is caller-owned model state. The reducer resolves; the pure
-view reverse-looks-up. This is the kitchen-sink pattern:
+The keymap is caller-owned model state. The reducer dispatches; the pure
+view reverse-looks-up. One call — [`Keymaps::dispatch`] — is the whole
+**listen → map → act** seam:
 
 ```rust
-use rstui_keymap::{Action, Keymaps};
+use rstui_keymap::{Action, Dispatch, Keymaps};
 
 struct MyApp { keymaps: Keymaps, /* … */ }
 
-// in `update`, for a key event:
-match self.keymaps.resolve(&key_event, self.tick) {
-    Some(Action::Palette)     => { /* open palette */ }
-    Some(Action::Copy)        => { /* copy selection */ }
-    Some(Action::CycleKeymap) => { let name = self.keymaps.cycle(); /* toast */ }
-    Some(other)               => { /* … */ }
-    None => {
-        if self.keymaps.armed() {
-            // a leader/prefix was pressed — swallow, wait for the rest
-        } else {
-            // unbound: hand the raw key to the focused screen
-        }
-    }
+// in `update`, for a key event. `0` is the clock — see below; an app
+// whose keymap has no leader sequence passes `0` forever.
+match self.keymaps.dispatch(&key_event, 0) {
+    Dispatch::Act(Action::Palette)     => { /* open palette */ }
+    Dispatch::Act(Action::CycleKeymap) => { let name = self.keymaps.cycle(); }
+    Dispatch::Act(other)               => { /* … */ }
+    Dispatch::Pending                  => { /* leader armed — swallow */ }
+    Dispatch::Fall                     => { /* unbound — raw key → screen */ }
 }
-
-// on the animation tick, drop a leader that timed out:
-self.keymaps.expire(self.tick);
 
 // in `view`, the help/footer derive from the *live* map:
 let km = self.keymaps.effective();
 let palette_keys = km.keys_for(Action::Palette);   // e.g. ":" / "⌘K"
 ```
 
-`resolve` returns `None` both when a key is unbound *and* when a leader
-was just armed; `armed()` distinguishes them so an unbound key falls
-through to the screen while a half-typed sequence is swallowed.
+That replaces the hand-written `resolve` + `armed()` + fall-through trio
+every app used to copy-paste. (The kitchen sink keeps raw `resolve`
+because it must *peek* the action — a clipboard chord fires even while an
+overlay is up — but that is the rare advanced case; `dispatch` is the
+norm.)
+
+## Do you need an animation loop? **No.**
+
+The `now_ms` argument is the *only* place time enters the keymap, and it
+exists **solely** for the opencode-style leader-sequence timeout. The
+rule, so apps stay at peak performance:
+
+- **Resolution is event-driven.** Completing `⟨leader⟩ p` is decided by
+  the *next key press*, never a clock — and a stale prefix **self-clears
+  on the next key inside `resolve`**. So a leader sequence is fully
+  correct with **no clock and no loop at all**.
+- **If your keymap has no leader sequence** (the common case — only the
+  opencode-style map ships one), the clock is dead weight: pass **`0`**
+  forever. No timer, no tick, nothing.
+- **`now_ms` is honest milliseconds** (`Instant::elapsed().as_millis()`
+  live; a controlled value under the `Harness`) — *not* frames. There is
+  no hidden "≈ a frame" assumption anymore, so you never need a render
+  loop to make the unit meaningful.
+- **`expire()` is optional and purely cosmetic** — it drops a stale
+  *armed indicator* on a screen that is *truly idle* (a leader pressed,
+  then nothing). Only an app that both ships a leader map *and* shows the
+  armed hint needs it, and only from a clock **it already has** — never
+  add a loop for it.
+
+**Performance stance:** an idle TUI should cost ~0% CPU — render only
+when state changes, never on a heartbeat (the `render()`-every-tick
+idle-CPU anti-pattern, `RT-01` in [`docs/perf-review.md`](perf-review.md)).
+The keymap is built so it *never* forces you off that path: the kitchen
+sink runs an animation loop because it has spinners and a clock to
+animate — it merely *reuses* that existing tick for the cosmetic
+`expire`; git-review and acp-client run **no loop**, idle at zero cost,
+and pass `dispatch(&ev, 0)`. Add an animation loop when you have
+animation, not because of keymaps.
 
 ## Multiple keymaps
 
@@ -217,9 +245,10 @@ git-review and acp-client). The rule: *if you can find help, you can find
 ## Testing
 
 Everything is deterministic and TTY-free. `Chord::parse`/`matches`/`spec`
-are pure; `Keymaps::resolve` takes the tick as its clock so leader
-timeouts are exact under the `Harness` (advance ticks, assert the
-sequence). See `rstui-keymap`'s unit tests and the kitchen sink's
+are pure; `dispatch`/`resolve` take the `now_ms` clock as a *caller*
+argument (the engine never reads a real clock itself), so leader
+timeouts are exact under the `Harness` — pass explicit millisecond
+values and assert the sequence, no wall clock involved. See `rstui-keymap`'s unit tests and the kitchen sink's
 `tests/keymap.rs` (cycle, leader+timeout, help re-derivation, live
 rebind, disable, per-OS) for the worked patterns.
 

@@ -14,7 +14,7 @@ use rstui_core::{
     Constraint, Event, Frame, KeyCode, KeyEvent, KeyModifiers, Layout, Line, MouseButton,
     MouseEventKind, Position, Rect, Span, Style, TextArea,
 };
-use rstui_keymap::{Action, Chord, Keymap, Keymaps};
+use rstui_keymap::{Action, Chord, Dispatch, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd};
 use rstui_widgets::{
     Block, BorderType, Diff, Editor, HelpEntry, HelpOverlay, KeymapRow, KeymapView,
@@ -176,10 +176,6 @@ pub struct GitReview {
     /// The customisable keymap (one app-owned map; `RSTUI_KEYMAP` may load
     /// user overrides). Every command resolves through it.
     keymaps: Keymaps,
-    /// A monotonic per-key counter — the deterministic clock
-    /// [`Keymaps::resolve`]/[`Keymaps::expire`] need (this app has no
-    /// animation tick; its map has no leader, so this only has to advance).
-    tick: u64,
     /// The keymap settings panel ([`KeymapView`]) is open.
     keymap_panel: bool,
     /// The selected row in the keymap panel.
@@ -269,7 +265,6 @@ impl GitReview {
             edit_dirty: false,
             help: false,
             keymaps: git_review_keymaps(),
-            tick: 0,
             keymap_panel: false,
             km_sel: 0,
             km_rebind: None,
@@ -424,16 +419,14 @@ impl GitReview {
         if self.mode == Mode::Edit {
             return self.on_key_edit(code, mods);
         }
-        // Review: commands through the keymap, motions raw.
-        self.tick = self.tick.wrapping_add(1);
-        let ev = KeyEvent::new(code, mods);
-        if let Some(action) = self.keymaps.resolve(&ev, self.tick) {
-            return self.do_action(action);
+        // Review: commands through the keymap, motions raw. One call —
+        // git-review's map has no leader sequence, so it needs no clock
+        // and no animation loop: `0` is correct forever.
+        match self.keymaps.dispatch(&KeyEvent::new(code, mods), 0) {
+            Dispatch::Act(action) => self.do_action(action),
+            Dispatch::Pending => Cmd::none(), // leader armed — swallow
+            Dispatch::Fall => self.on_key_motion(code),
         }
-        if self.keymaps.armed() {
-            return Cmd::none(); // a leader/prefix was pressed — swallow it
-        }
-        self.on_key_motion(code)
     }
 
     /// Perform a resolved command [`Action`] — the single place a Review
