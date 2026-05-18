@@ -197,6 +197,9 @@ Table::new(rows, widths)
 .header(Row) .selected(Option<usize>) .offset(usize)
 .highlight_symbol(impl Into<Cow<str>>) .column_spacing(u16)
 .wrap_cells(bool) .column_fit(TableColumnFit)
+// column mouse seam (pure; faithful to render, drift-tested):
+.column_rects(area: Rect) -> Vec<Rect>
+.header_cell_at(area: Rect, pos: Position) -> Option<usize>  // press→drag a header to reorder
 ```
 
 **Demo:** `cargo run -p rstui-widgets --example table_demo`

@@ -337,6 +337,103 @@ impl<'a> Table<'a> {
         self.offset = offset;
         self
     }
+
+    /// The on-screen rect of every column, in column order — a faithful
+    /// re-derivation of the render layout (the framing
+    /// [`block`](Self::block), the reserved selection gutter, and the active
+    /// [`column_fit`](Self::column_fit), `Proportional` included), so
+    /// click-to-x and drag-to-reorder hit-test exactly what is drawn (a
+    /// consistency test pins this to [`render`](Widget::render)). Empty when
+    /// there is nothing to lay out.
+    #[must_use]
+    pub fn column_rects(&self, area: Rect) -> Vec<Rect> {
+        if area.is_empty() {
+            return Vec::new();
+        }
+        let inner = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        };
+        if inner.is_empty() {
+            return Vec::new();
+        }
+        let gutter_width = self
+            .highlight_symbol
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .count() as u16;
+        let columns_area = Rect::new(
+            inner.x.saturating_add(gutter_width),
+            inner.y,
+            inner.width.saturating_sub(gutter_width),
+            inner.height,
+        );
+        let vis_h = inner
+            .height
+            .saturating_sub(u16::from(self.header.is_some())) as usize;
+        let sized_rows = || {
+            self.rows
+                .iter()
+                .skip(self.offset)
+                .take(vis_h)
+                .chain(self.header.iter())
+        };
+        let col_count = if self.widths.is_empty() {
+            sized_rows().map(|r| r.cells.len()).max().unwrap_or(0)
+        } else {
+            self.widths.len()
+        };
+        if col_count == 0 {
+            return Vec::new();
+        }
+        let constraints: Vec<Constraint> = match self.column_fit {
+            TableColumnFit::Manual => {
+                if self.widths.is_empty() {
+                    vec![Constraint::Fill(1); col_count]
+                } else {
+                    self.widths.clone()
+                }
+            }
+            TableColumnFit::Balanced => vec![Constraint::Fill(1); col_count],
+            TableColumnFit::Proportional => {
+                let mut max_w = vec![0u16; col_count];
+                for r in sized_rows() {
+                    for (i, cell) in r.cells.iter().enumerate().take(col_count) {
+                        let w = u16::try_from(cell.width()).unwrap_or(u16::MAX);
+                        max_w[i] = max_w[i].max(w);
+                    }
+                }
+                max_w.into_iter().map(Constraint::Length).collect()
+            }
+        };
+        Layout::horizontal(constraints)
+            .spacing(self.column_spacing)
+            .split(columns_area)
+    }
+
+    /// The column whose **header cell** is at `pos` for `area`, if any.
+    ///
+    /// `None` when there is no header, `pos` is not on the header row, or it
+    /// lands in an inter-column gap. Hit-test on mouse-down to start a
+    /// drag-reorder: press header `i`, release over header `j`, then the
+    /// caller moves column `i`→`j` in its own [`widths`](Self::widths) and
+    /// each row's cells — `Table` is a pure projection, so the column order
+    /// is yours (the same press→drag→release recipe as the kanban board).
+    #[must_use]
+    pub fn header_cell_at(&self, area: Rect, pos: Position) -> Option<usize> {
+        self.header.as_ref()?; // no header ⇒ no header row to hit
+        let inner = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        };
+        if inner.is_empty() || pos.y != inner.top() {
+            return None;
+        }
+        self.column_rects(area)
+            .iter()
+            .position(|r| !r.is_empty() && pos.x >= r.x && pos.x < r.right())
+    }
 }
 
 impl Widget for Table<'_> {
@@ -957,5 +1054,48 @@ mod tests {
             .selected(Some(1))
             .render(area, &mut borrowed);
         assert_eq!(owned.cells(), borrowed.cells());
+    }
+
+    #[test]
+    fn column_rects_and_header_cell_at_match_the_render() {
+        let area = Rect::new(0, 0, 20, 4);
+        let build = || {
+            Table::new(
+                [Row::new(["r0a", "r0b", "r0c"])],
+                [
+                    Constraint::Length(4),
+                    Constraint::Length(6),
+                    Constraint::Fill(1),
+                ],
+            )
+            .header(Row::new(["H0", "H1", "H2"]))
+        };
+        // Default column_spacing 1 ⇒ a 1-cell gap between columns.
+        assert_eq!(
+            build().column_rects(area),
+            vec![
+                Rect::new(0, 0, 4, 4),
+                Rect::new(5, 0, 6, 4),
+                Rect::new(12, 0, 8, 4),
+            ]
+        );
+        let t = build();
+        assert_eq!(t.header_cell_at(area, Position::new(2, 0)), Some(0));
+        assert_eq!(t.header_cell_at(area, Position::new(4, 0)), None); // gap
+        assert_eq!(t.header_cell_at(area, Position::new(5, 0)), Some(1));
+        assert_eq!(t.header_cell_at(area, Position::new(19, 0)), Some(2));
+        assert_eq!(t.header_cell_at(area, Position::new(2, 1)), None); // not header row
+        // No header ⇒ no header hit.
+        assert_eq!(
+            Table::new([Row::new(["x"])], [Constraint::Length(3)])
+                .header_cell_at(area, Position::new(0, 0)),
+            None
+        );
+        // Drift guard: the header text is painted at each column's x.
+        let mut buf = Buffer::empty(area);
+        build().render(area, &mut buf);
+        assert_eq!(buf.get(Position::new(0, 0)).unwrap().symbol, 'H');
+        assert_eq!(buf.get(Position::new(5, 0)).unwrap().symbol, 'H');
+        assert_eq!(buf.get(Position::new(12, 0)).unwrap().symbol, 'H');
     }
 }

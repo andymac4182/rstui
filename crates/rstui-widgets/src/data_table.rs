@@ -607,6 +607,43 @@ impl DataTableState {
         self.group_by = column;
     }
 
+    /// Reorder the columns: the column at visual index `from` moves to
+    /// `to`, and every column-indexed piece of state (the sort keys and
+    /// [`group_by`](Self::set_group_by)) is remapped so it keeps pointing at
+    /// the **same column** afterwards.
+    ///
+    /// `DataTable` does not own the column slice — the caller does (it is
+    /// passed to [`project`]/[`DataTable::new`] each frame). So a
+    /// drag-reorder driven by [`hit`](DataTable::hit) returning
+    /// [`Header(i)`](DataTableHit::Header) is: the caller moves the column
+    /// in its own `Vec` (`let c = cols.remove(from); cols.insert(to, c);`)
+    /// **and** calls this, so the active sort/grouping follow the column
+    /// rather than the slot. `from == to` (or out of range) is a total
+    /// no-op.
+    pub fn reorder_column(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        // The index any *other* column lands on after one `remove`+`insert`.
+        let remap = |i: usize| -> usize {
+            if i == from {
+                to
+            } else if from < to && i > from && i <= to {
+                i - 1
+            } else if from > to && i >= to && i < from {
+                i + 1
+            } else {
+                i
+            }
+        };
+        for key in &mut self.sort {
+            key.0 = remap(key.0);
+        }
+        if let Some(g) = self.group_by {
+            self.group_by = Some(remap(g));
+        }
+    }
+
     /// The order the *groups* are listed in (tier 1) — independent of the
     /// sort keys, which order rows *within* a group (tier 2).
     #[must_use]
@@ -2554,5 +2591,42 @@ mod tests {
             );
         }
         // Reaching here proves no operation panicked for any input.
+    }
+
+    #[test]
+    fn reorder_column_keeps_sort_and_group_on_the_same_column() {
+        let mut s = DataTableState::new();
+        s.set_sort_keys([
+            (0, SortDirection::Ascending),
+            (2, SortDirection::Descending),
+        ]);
+        s.set_group_by(Some(1));
+
+        // Move column 0 → position 2 (drag its header right past 1 and 2).
+        s.reorder_column(0, 2);
+        assert_eq!(
+            s.sort_keys(),
+            &[
+                (2, SortDirection::Ascending),
+                (1, SortDirection::Descending)
+            ]
+        );
+        assert_eq!(s.grouped_by(), Some(0));
+
+        // Moving it back restores the original references exactly.
+        s.reorder_column(2, 0);
+        assert_eq!(
+            s.sort_keys(),
+            &[
+                (0, SortDirection::Ascending),
+                (2, SortDirection::Descending)
+            ]
+        );
+        assert_eq!(s.grouped_by(), Some(1));
+
+        // A no-op move changes nothing and never panics.
+        s.reorder_column(1, 1);
+        s.reorder_column(99, 100);
+        assert_eq!(s.grouped_by(), Some(1));
     }
 }
