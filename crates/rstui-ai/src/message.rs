@@ -52,6 +52,7 @@
 use rstui_core::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
 use rstui_widgets::Markdown;
 
+use crate::conversation_cache::{ConversationCache, measure_height};
 use crate::model::{Role, UiMessage, UiPart};
 
 /// The display label for a [`Role`] (the ai-elements role text, title-cased).
@@ -146,6 +147,7 @@ pub fn message_body_markdown(message: &UiMessage) -> String {
 pub struct Message<'a> {
     message: &'a UiMessage,
     style: Style,
+    cache: Option<&'a ConversationCache>,
 }
 
 impl<'a> Message<'a> {
@@ -155,6 +157,7 @@ impl<'a> Message<'a> {
         Self {
             message,
             style: Style::new(),
+            cache: None,
         }
     }
 
@@ -165,6 +168,26 @@ impl<'a> Message<'a> {
         self
     }
 
+    /// Attaches a caller-owned [`ConversationCache`] so
+    /// [`height`](Self::height) can reuse a memoized measurement instead
+    /// of re-parsing the body markdown every call (the UI-1/MD-1 model).
+    /// Purely an optimization: a cache miss measures fresh and returns the
+    /// same number, so a cached turn renders byte-identically.
+    #[must_use]
+    pub fn cache(mut self, cache: &'a ConversationCache) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// Like [`cache`](Self::cache) but for an already-optional cache (the
+    /// seam [`Conversation`](crate::conversation::Conversation) threads its
+    /// own optional cache through without re-branching at each call site).
+    #[must_use]
+    pub(crate) fn cache_opt(mut self, cache: Option<&'a ConversationCache>) -> Self {
+        self.cache = cache;
+        self
+    }
+
     /// The number of rows this turn needs at `width` columns: the role
     /// line (1) plus the wrapped body. A **pure measurement** of the
     /// borrowed model owning no state and touching no [`Buffer`], exactly
@@ -172,14 +195,20 @@ impl<'a> Message<'a> {
     /// — what [`crate::conversation::Conversation`] uses to lay out and
     /// window turns. `width == 0` yields `1` (just the role line);
     /// saturates at [`u16::MAX`].
+    ///
+    /// With a [`cache`](Self::cache) attached this is an O(1) memoized
+    /// read on a hit (the common, non-streaming case); a miss falls back
+    /// to the same fresh measurement, so the result is identical either
+    /// way. Without a cache it is always the fresh measurement (the
+    /// pre-cache behavior, unchanged).
     #[must_use]
     pub fn height(&self, width: u16) -> u16 {
-        if width == 0 {
-            return 1;
+        if let Some(cache) = self.cache {
+            if let Some(h) = cache.height(self.message, width) {
+                return h;
+            }
         }
-        let body = message_body_markdown(self.message);
-        let body_rows = Markdown::new(body).lines(width).len();
-        u16::try_from(1 + body_rows).unwrap_or(u16::MAX)
+        measure_height(self.message, width)
     }
 
     /// The role line [`Line`]: `▸ You` / `▸ Assistant` / `▸ System`,

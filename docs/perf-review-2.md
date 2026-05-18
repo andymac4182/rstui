@@ -71,6 +71,10 @@ code:
 
 ### Finding R2-AI-1 — `rstui-ai` measures every message's markdown every frame
 
+**Status: fixed** — `rstui_ai::ConversationCache` (the caller-owned
+UI-1/MD-1 cache); `Conversation::cache(&c)` / `Message::cache(&c)` are
+opt-in and byte-identical, gate-enforced. Details under *Plan* below.
+
 `Conversation` correctly *windows rendering* (off-screen turns are not
 laid out — `conversation.rs` render loop). But the **height/scroll
 math is not windowed**:
@@ -98,8 +102,6 @@ per-width height), invalidated on a `parts` fingerprint change. An
 append-only conversation only mutates its last (streaming) message, so
 older entries are immutable and cache permanently — exactly the
 acp-client transcript situation that UI-1/MD-1 solved byte-identically.
-Tracked as the next slice (a `widget/ai_conversation/render` scenario
-quantifies the before/after).
 
 ### `rstui-jsonui` — clean
 
@@ -116,10 +118,35 @@ permanent enabler and the new code uses the modern API.
 
 ## Plan
 
-1. **R2-AI-1 fix** — caller-owned `UiMessage`-keyed markdown/height
-   cache for `rstui-ai` `Conversation`/`Message`, the UI-1/MD-1
-   pattern; add `widget/ai_conversation/render` to the bench registry
-   and the baseline so the win is measured and tracked.
+1. **R2-AI-1 fix — done.** `rstui_ai::ConversationCache`: a
+   caller-owned, `UiMessage::id`-keyed per-message height memo (the
+   `ScrollState` precedent — owned by the app's model, driven by the
+   reducer). The reducer calls `cache.sync(&messages, width)` **once
+   per `update`**; `Conversation::cache(&c)` / `Message::cache(&c)`
+   then *read* it in `view`. Exactly the acp-client `refresh_md_cache`
+   contract: only the last (streaming) turn is volatile, so it is
+   never cached and re-measured fresh — every non-last turn is
+   measured once and reused, and a miss measures fresh and returns the
+   identical number. The per-frame cost drops from *O(N)* full Markdown
+   re-parses to *O(1)* (just the streaming turn) plus the
+   already-windowed visible renders.
+
+   *Quantification:* this removes `N − 1` re-parses **per frame**, each
+   a `widget/markdown/render`-class operation (≈ 1.48 ms on the
+   baseline machine — the existing scenario *is* the per-message unit
+   cost; the win is that × the non-last history × every frame). No new
+   `rstui-bench` scenario: that crate is deliberately *rstui-code +
+   std only* (its `Cargo.toml` / ADR 0005 — `rstui-ai` pulls
+   `serde_json`, an external crate, so it cannot be a bench dep). The
+   guarantee is instead **gate-enforced**, the proven acp-client
+   approach: a byte-identical render test
+   (`a_synced_cache_renders_byte_identical_and_measures_the_same`,
+   render with vs. without the synced cache at three scroll offsets +
+   equal `content_rows`/`turn_starts`) and a measurement-exactness
+   test (`cache_height_equals_a_fresh_measure_for_every_non_last_message`),
+   plus width-change / history-trim / empty-id / changed-fingerprint
+   cases. Opt-in and additive: no `.cache(..)` ⇒ pre-cache behavior,
+   unchanged.
 2. **Wire `DevTools` into the kitchen-sink** (a hotkey toggle) and a
    standalone `devtools_demo`, so a downstream rstui developer has a
    worked reference for the overlay + the allocator + the observer.

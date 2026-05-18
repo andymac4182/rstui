@@ -50,6 +50,7 @@
 use rstui_core::scroll::ScrollState;
 use rstui_core::{Buffer, Color, Line, Rect, Style, Widget};
 
+use crate::conversation_cache::ConversationCache;
 use crate::message::{Message, message_body_markdown, role_label};
 use crate::model::UiMessage;
 
@@ -106,6 +107,7 @@ pub struct Conversation<'a> {
     scroll: &'a ScrollState,
     style: Style,
     empty_text: &'a str,
+    cache: Option<&'a ConversationCache>,
 }
 
 impl<'a> Conversation<'a> {
@@ -118,6 +120,7 @@ impl<'a> Conversation<'a> {
             scroll,
             style: Style::new(),
             empty_text: "No messages yet",
+            cache: None,
         }
     }
 
@@ -136,6 +139,23 @@ impl<'a> Conversation<'a> {
         self
     }
 
+    /// Attaches a caller-owned [`ConversationCache`] (the UI-1/MD-1
+    /// model). The per-frame windowing math —
+    /// [`content_rows`](Self::content_rows), `turn_starts`, and the render
+    /// loop — measures **every** turn's [`Message::height`] every frame; a
+    /// transcript of *N* turns otherwise pays *N* full Markdown re-parses
+    /// per frame regardless of how few are on screen (perf-review-2
+    /// R2-AI-1). With a cache the reducer measures each immutable turn
+    /// **once** (in `update`, via [`ConversationCache::sync`]); the widget
+    /// only reads it here. A miss measures fresh and yields the same
+    /// number, so a cached transcript renders **byte-identically** — this
+    /// is a pure, opt-in optimization (ADR 0012 §P1).
+    #[must_use]
+    pub fn cache(mut self, cache: &'a ConversationCache) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
     /// The total content height in rows at `width`: every turn's
     /// [`Message::height`] plus a one-row gap between turns. The
     /// `content_len` the caller passes to [`ScrollState`] (a pure
@@ -147,7 +167,7 @@ impl<'a> Conversation<'a> {
             if i > 0 {
                 rows += u32::from(TURN_GAP);
             }
-            rows += u32::from(Message::new(message).height(width));
+            rows += u32::from(Message::new(message).cache_opt(self.cache).height(width));
         }
         u16::try_from(rows).unwrap_or(u16::MAX)
     }
@@ -174,7 +194,7 @@ impl<'a> Conversation<'a> {
                 y += u32::from(TURN_GAP);
             }
             starts.push(u16::try_from(y).unwrap_or(u16::MAX));
-            y += u32::from(Message::new(message).height(width));
+            y += u32::from(Message::new(message).cache_opt(self.cache).height(width));
         }
         starts
     }
@@ -209,7 +229,7 @@ impl Widget for Conversation<'_> {
         // virtualization model (docs/composition.md).
         for (i, message) in self.messages.iter().enumerate() {
             let start = starts[i] as usize;
-            let h = Message::new(message).height(width) as usize;
+            let h = Message::new(message).cache_opt(self.cache).height(width) as usize;
             let end = start + h;
             if end <= view_top || start >= view_bottom {
                 continue;
@@ -439,5 +459,63 @@ mod tests {
             Conversation::new(&msgs, &ScrollState::new()).content_rows(0),
             3
         );
+    }
+
+    fn id_msg(id: &str, role: &str, body: &str) -> UiMessage {
+        UiMessage::from_value(&json!({
+            "id": id, "role": role,
+            "parts": [{ "type": "text", "text": body }]
+        }))
+    }
+
+    /// The R2-AI-1 gate (perf-review-2): an attached, synced
+    /// [`ConversationCache`](crate::conversation_cache::ConversationCache)
+    /// must change *nothing* observable — the same `content_rows`, the
+    /// same `turn_starts`, and a **byte-identical** render at every scroll
+    /// position. It only removes the per-frame O(history) re-parse.
+    #[test]
+    fn a_synced_cache_renders_byte_identical_and_measures_the_same() {
+        let msgs = vec![
+            id_msg(
+                "a",
+                "user",
+                "# Title\n\nfirst **turn** with [a link](http://e.com) and words to wrap",
+            ),
+            id_msg(
+                "b",
+                "assistant",
+                "- alpha\n- beta\n- gamma delta epsilon zeta eta theta iota",
+            ),
+            id_msg("c", "user", "short"),
+            id_msg(
+                "d",
+                "assistant",
+                "the still-streaming last turn, a longer body that spans several rows here",
+            ),
+        ];
+        let width = 18;
+        let mut cache = ConversationCache::new();
+        cache.sync(&msgs, width);
+
+        let scroll = ScrollState::new();
+        let plain = Conversation::new(&msgs, &scroll);
+        let cached = Conversation::new(&msgs, &scroll).cache(&cache);
+        assert_eq!(plain.content_rows(width), cached.content_rows(width));
+        assert_eq!(plain.turn_starts(width), cached.turn_starts(width));
+
+        // Top, middle, and clamped-to-bottom offsets exercise the
+        // above/inside/below-window branches.
+        for off in [0usize, 3, 9999] {
+            let mut s = ScrollState::new();
+            s.set_offset(off);
+            let area = Rect::new(0, 0, width, 6);
+            let mut a = Buffer::empty(area);
+            let mut b = Buffer::empty(area);
+            Conversation::new(&msgs, &s).render(area, &mut a);
+            Conversation::new(&msgs, &s)
+                .cache(&cache)
+                .render(area, &mut b);
+            assert_eq!(a, b, "cached render must be byte-identical at offset {off}");
+        }
     }
 }
