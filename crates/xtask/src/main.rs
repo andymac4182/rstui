@@ -13,6 +13,9 @@
 //! - `bench` — build and run the `rstui-bench` hot-path benchmarks in
 //!   release. Deliberately *not* a `ci` gate so the fast loop stays fast
 //!   (ADR 0005); see `docs/benchmarking.md`.
+//! - `perf` — the repeatable perf review (ADR 0018): run the benches and
+//!   diff against the checked-in `docs/perf-baseline.json`, flagging
+//!   regressions. Also *not* a `ci` gate (ADR 0005).
 //! - `record` — regenerate the documentation media with VHS (widget GIFs,
 //!   the `gallery` hero, the kitchen sink at four resolutions, the e2e
 //!   smoke). Also *not* a `ci` gate (needs the VHS toolchain); see
@@ -25,6 +28,7 @@ mod bench;
 mod ci;
 mod merge_check;
 mod naming;
+mod perf;
 mod publish_check;
 mod record;
 // Release-readiness drift guards: `#[test]`s only, so compiled solely under
@@ -49,6 +53,12 @@ Tasks:
   bench [F]    Build and run the rstui-bench hot-path benchmarks in
                release (F = scenario substring filter). NOT a ci gate —
                the fast loop stays fast. See docs/benchmarking.md.
+  perf [F] [--save|--check]
+               Repeatable perf review (ADR 0018): run the benches in
+               release and diff vs docs/perf-baseline.json. --save
+               (re)writes the baseline; --check exits non-zero on a
+               regression past RSTUI_PERF_THRESHOLD% (default 10). NOT a
+               ci gate (ADR 0005). See docs/benchmarking.md.
   merge-check  Preflight before the serialized merge-back: on a stream
                branch, clean tree, rebased on origin/main, every gate
                green. GO/NO-GO; never pushes. See docs/merging.md.
@@ -72,6 +82,10 @@ fn main() -> ExitCode {
         Some("bench") => {
             let extra: Vec<String> = std::env::args().skip(2).collect();
             bench::run(&workspace_root(), &extra)
+        }
+        Some("perf") => {
+            let extra: Vec<String> = std::env::args().skip(2).collect();
+            perf::run(&workspace_root(), &extra)
         }
         Some("merge-check") => merge_check::run(&workspace_root()),
         Some("publish-check") => publish_check::run(&workspace_root()),

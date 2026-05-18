@@ -76,6 +76,37 @@ the default so a typo never silently runs zero iterations:
 RSTUI_BENCH_ITERS=20000 cargo xtask bench buffer/diff/full
 ```
 
+## Repeatable review: `cargo xtask perf` (ADR 0018)
+
+`cargo xtask bench` prints a table you eyeball. `cargo xtask perf`
+mechanises the comparison: it runs the benches in release, then diffs
+the result against a checked-in machine baseline and prints a
+per-scenario regression report.
+
+```sh
+cargo xtask perf            # diff current vs docs/perf-baseline.json
+cargo xtask perf --save     # (re)write the baseline from this machine
+cargo xtask perf --check    # exit non-zero if anything regressed
+cargo xtask perf runtime/   # restrict to a scenario substring
+```
+
+The report column `status` is `ok` / `improved` / `REGRESSED` / `new`
+/ `GONE`; a scenario whose `min` (the cleanest cross-run signal) moved
+by more than `RSTUI_PERF_THRESHOLD` percent (default `10`) is flagged,
+and `--check` turns that into a non-zero exit so a periodic review (or
+a manual pre-merge check) can fail loudly. It is **deliberately not a
+`cargo xtask ci` gate** (ADR 0005: timing is environment-sensitive;
+gating on it makes CI flaky) — it is an on-demand instrument.
+
+`docs/perf-baseline.json` is the machine record (the exact
+`min`/`median`/`mean` ns `rstui-bench --json` emits, same format both
+ways so it round-trips); regenerate it with `--save` on a quiet
+machine after an intended perf change, and let the human narrative
+live in `docs/perf-review.md` / `docs/perf-review-2.md`. For *live*,
+in-app introspection (per-phase CPU, allocations, FPS, input→frame
+latency, a Chrome-DevTools-style overlay) see the `rstui-devtools`
+crate (ADR 0018).
+
 ## Baseline (indicative, not a gate)
 
 A reference point so a future run has something concrete to diff against —

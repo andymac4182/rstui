@@ -17,8 +17,8 @@
 //! so numbers are comparable run to run.
 
 use rstui_core::{
-    Buffer, Cell, Constraint, Layout, Position, Rect, Selection, Style, TextArea, Widget,
-    selected_text,
+    Buffer, Cell, Constraint, Event, KeyModifiers, Layout, MouseEvent, MouseEventKind, Position,
+    Rect, Selection, Style, TextArea, Widget, selected_text,
 };
 use rstui_runtime::{App, Cmd, Frame, Harness};
 use rstui_widgets::{List, ListItem, Markdown, Paragraph, Row, Table, Tree, TreeItem, Wrap};
@@ -336,6 +336,27 @@ fn runtime_frame_changed(bench: &Bench) -> Stats {
     })
 }
 
+/// `runtime/input/mouse_move` — one pointer-motion frame on a representative
+/// two-pane app: `on_event` (no modelled message) then the full
+/// `view`+`diff`+`flush` a naive loop pays *per mouse-move sample*. This is
+/// the "pause from moving the mouse over the screen" signal (ADR 0018): the
+/// RT-01 coalesce/skip is what stops a real run paying this every sample, so
+/// a regression here is exactly the freeze-while-moving class. The cursor
+/// advances each iteration so it is real motion, not a repeated no-op cell.
+fn runtime_input_mouse_move(bench: &Bench) -> Stats {
+    let mut h = Harness::new(frame_app(), FRAME_W, FRAME_H);
+    let mut x: u16 = 0;
+    bench.run(|| {
+        x = (x + 1) % FRAME_W;
+        h.handle(Event::Mouse(MouseEvent::new(
+            MouseEventKind::Moved,
+            Position::new(x, 1),
+            KeyModifiers::NONE,
+        )));
+        h.app().sel
+    })
+}
+
 /// The scenario registry: stable `name` → measuring function. `main` filters
 /// and iterates this; the names are the substring-filter and `--list`
 /// vocabulary, so keep them stable and `/`-segmented.
@@ -357,6 +378,7 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     ("widget/markdown/render", widget_markdown_render),
     ("runtime/frame/idle", runtime_frame_idle),
     ("runtime/frame/changed", runtime_frame_changed),
+    ("runtime/input/mouse_move", runtime_input_mouse_move),
 ];
 
 #[cfg(test)]

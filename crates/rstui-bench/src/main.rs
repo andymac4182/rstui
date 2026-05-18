@@ -38,6 +38,7 @@ Environment:
 
 Options:
   --list   print scenario names and exit
+  --json   emit one machine-readable JSON object (for `cargo xtask perf`)
   --help   print this message and exit
 
 This is a deterministic, dependency-free timing aid, not a statistical
@@ -67,6 +68,9 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    // Machine output for `cargo xtask perf`: exact ns, no humanize
+    // round-trip, no header/notes (so the consumer parses stdout cleanly).
+    let json = args.iter().any(|a| a == "--json");
 
     let filter = args.into_iter().find(|a| !a.starts_with('-'));
     let want = filter.as_deref();
@@ -88,6 +92,27 @@ fn main() -> ExitCode {
         warmup: env_u32("RSTUI_BENCH_WARMUP", 100),
         iters: env_u32("RSTUI_BENCH_ITERS", 1000),
     };
+
+    if json {
+        // A flat object: scenario → {min_ns, median_ns, mean_ns}. Scenario
+        // names are static `/`-segmented identifiers (no `"`/`\`/control
+        // chars), so they need no JSON escaping. Stable key order =
+        // selection order, so a textual diff of two runs is meaningful.
+        print!("{{");
+        for (i, (name, scenario)) in selected.into_iter().enumerate() {
+            let s = scenario(&bench);
+            if i > 0 {
+                print!(",");
+            }
+            print!(
+                "\"{name}\":{{\"min_ns\":{},\"median_ns\":{},\"mean_ns\":{}}}",
+                s.min_ns, s.median_ns, s.mean_ns
+            );
+        }
+        println!("}}");
+        return ExitCode::SUCCESS;
+    }
+
     let build = if cfg!(debug_assertions) {
         "debug — prefer `cargo xtask bench` for a release build"
     } else {
