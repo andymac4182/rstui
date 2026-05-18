@@ -26,6 +26,32 @@ pub const A2UI_VERSION: &str = "v0.10";
 /// wire negotiation).
 pub const JSON_RENDER_CATALOG_ID: &str = "rstui-jsonui/json-render/standard";
 
+/// The diagram DSL this client renders, stated as the contract an agent
+/// follows to *output a diagram* — delegated to the deterministic
+/// `rstui_ai::diagram::Diagram` →
+/// [`Mermaid`](rstui_widgets::Mermaid)/[`Structurizr`](rstui_widgets::Structurizr)
+/// renderers. Injecting this into a system prompt / ACP client-capabilities
+/// lets a model answer *with* a diagram instead of describing one in prose.
+pub const DIAGRAM_DSL_NOTE: &str = "To output a diagram, emit a fenced code block: \
+    ```mermaid … ``` for any Mermaid diagram type (flowchart/graph, sequenceDiagram, \
+    classDiagram, stateDiagram-v2, erDiagram, gantt, pie, gitGraph, mindmap, timeline, \
+    journey, quadrantChart, requirementDiagram, sankey-beta, xychart-beta, block-beta, \
+    packet-beta, kanban, architecture-beta, radar-beta, C4*, zenuml), or \
+    ```structurizr … ``` for a Structurizr DSL / C4 workspace. It renders as a \
+    deterministic terminal diagram; an unterminated block still renders while streaming.";
+
+/// The diagram-DSL capability descriptor — the [`DIAGRAM_DSL_NOTE`]
+/// contract plus the fenced-code tags an agent uses, as a
+/// [`Value`] the ACP layer folds into the advertised client capabilities.
+#[must_use]
+pub fn diagram_capability() -> Value {
+    json!({
+        "languages": ["mermaid", "structurizr"],
+        "fencedAs": ["```mermaid", "```structurizr"],
+        "note": DIAGRAM_DSL_NOTE,
+    })
+}
+
 /// The A2UI `a2uiClientCapabilities` object to place in client→server
 /// transport metadata (ACP session/message metadata): it tells the agent
 /// the exact catalog id(s) this terminal client can render.
@@ -63,8 +89,11 @@ pub fn render_capability_summary() -> Value {
                 "catalogId": JSON_RENDER_CATALOG_ID,
                 "format": "flat-element-map (root/elements/state) + RFC6902 patch stream",
             },
-            "note": "This client renders A2UI and json-render UI documents in a terminal; \
-                     unsupported components degrade to a visible placeholder.",
+            "diagram": diagram_capability(),
+            "note": "This client renders A2UI and json-render UI documents in a terminal, \
+                     and Mermaid/Structurizr diagram DSL emitted as a fenced code block \
+                     (see `diagram`); unsupported components degrade to a visible \
+                     placeholder.",
         }
     })
 }
@@ -80,5 +109,21 @@ mod tests {
         assert!(ids.iter().any(|id| id == A2UI_CATALOG_ID));
         let summary = render_capability_summary();
         assert_eq!(summary["rstuiJsonUi"]["a2ui"]["version"], A2UI_VERSION);
+    }
+
+    #[test]
+    fn the_diagram_dsl_is_advertised_to_the_agent() {
+        let cap = diagram_capability();
+        let langs = cap["languages"].as_array().unwrap();
+        assert!(langs.iter().any(|l| l == "mermaid"));
+        assert!(langs.iter().any(|l| l == "structurizr"));
+        assert!(cap["note"].as_str().unwrap().contains("```mermaid"));
+        // Folded into the agent-readable render summary.
+        let summary = render_capability_summary();
+        assert_eq!(summary["rstuiJsonUi"]["diagram"]["languages"][0], "mermaid");
+        assert!(
+            DIAGRAM_DSL_NOTE.contains("structurizr")
+                && DIAGRAM_DSL_NOTE.contains("Mermaid diagram type")
+        );
     }
 }

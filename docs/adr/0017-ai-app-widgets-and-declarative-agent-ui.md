@@ -61,6 +61,14 @@ integration**. No existing crate's public API changes.
   segmentation + a per-block render cache, projected through the existing
   `rstui_widgets::Markdown`/`Mermaid`. Streaming markdown is a *new
   behavior over an existing parser*, exactly the ADR 0002 §4 precedent.
+- `diagram` — the diagram DSL an AI tool *outputs*: a pure projection that
+  unwraps a fenced ```` ```mermaid ````/```` ```structurizr ```` block (or
+  `Diagram::extract`s the first one from a chat turn) and delegates to the
+  deterministic, total `rstui_widgets::Mermaid`/`Structurizr` — the same
+  "new behavior over an existing parser" precedent as `stream_markdown`.
+  Its contract is *advertised* to the agent by the
+  `rstui-jsonui::capability` `diagram` descriptor (§2), so a model answers
+  *with* a diagram instead of describing one in prose.
 - One module per AI-app widget (the ai-elements vocabulary), each a pure
   projection of caller-owned state in the ADR 0012 discipline: a
   collapsible/disclosure family (`Reasoning`, `Tool`, `Task`, `Plan`,
@@ -94,7 +102,11 @@ integration**. No existing crate's public API changes.
   twelve-step prop resolver, the eight directives, the RFC-6902 patch
   stream compiler (line-buffered, LLM-brace-tolerant), the 26 standard
   components, and the host-extensible registry.
-- `capability` — the descriptors each format advertises to an agent.
+- `capability` — the descriptors each format advertises to an agent,
+  including the **diagram DSL** descriptor (`DIAGRAM_DSL_NOTE` /
+  `diagram_capability()`): the contract a model follows to *output a
+  diagram* (a fenced ```` ```mermaid ````/```` ```structurizr ```` block,
+  rendered by `rstui-ai::diagram`), folded into `render_capability_summary`.
 - Depends on `rstui-core` + `rstui-widgets` + `rstui-ai` +
   `serde`/`serde_json`.
 

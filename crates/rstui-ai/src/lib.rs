@@ -28,6 +28,12 @@
 //!   `rstui_widgets::Markdown`/`Mermaid`. Streaming is a new behavior over
 //!   the existing parser (the ADR 0002 §4 precedent), strictly
 //!   linear-time (no backtracking) because it runs on every token.
+//! - [`diagram`]: the diagram DSL an AI tool *outputs* — a pure projection
+//!   that unwraps a fenced ```` ```mermaid ````/```` ```structurizr ````
+//!   block (or [`Diagram::extract`](diagram::Diagram::extract)s the first
+//!   one from a chat turn) and delegates to the deterministic, total
+//!   `rstui_widgets::Mermaid`/`Structurizr`. The contract is advertised to
+//!   the agent via `rstui_jsonui::capability`.
 //!
 //! The remaining modules are the ai-elements vocabulary, one widget per
 //! module: the disclosure family ([`reasoning`], [`tool`], [`task`],
@@ -55,6 +61,7 @@ pub mod commit;
 pub mod confirmation;
 pub mod context_meter;
 pub mod conversation;
+pub mod diagram;
 pub mod env_vars;
 pub mod file_tree;
 pub mod inline_citation;
