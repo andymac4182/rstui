@@ -84,6 +84,7 @@ use crate::block::Block;
 use crate::diagram_cache::DiagramCache;
 use crate::json_canvas::JsonCanvas;
 use crate::link::Link;
+use crate::markdown_cache::MarkdownCache;
 use crate::mermaid::Mermaid;
 use crate::structurizr::Structurizr;
 use rstui_core::{Alignment, Buffer, Color, Line, Modifier, Position, Rect, Span, Style, Widget};
@@ -96,7 +97,7 @@ use rstui_core::{Alignment, Buffer, Color, Line, Modifier, Position, Rect, Span,
 /// [`Style::patch`](rstui_core::Style) cascade the text model uses. Construct
 /// the tuned terminal default with [`MarkdownTheme::default`] and override only
 /// the fields you care about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MarkdownTheme {
     /// Applied to every heading level (e.g. bold). Per-level color is added on
     /// top from [`heading_colors`](Self::heading_colors).
@@ -221,6 +222,7 @@ pub struct Markdown<'a> {
     focused_link: Option<usize>,
     diagrams: bool,
     diagram_cache: Option<&'a DiagramCache>,
+    cache: Option<&'a MarkdownCache>,
 }
 
 /// Where a link's label landed on screen, returned by
@@ -249,6 +251,7 @@ impl<'a> Markdown<'a> {
             focused_link: None,
             diagrams: false,
             diagram_cache: None,
+            cache: None,
         }
     }
 
@@ -340,6 +343,31 @@ impl<'a> Markdown<'a> {
         self
     }
 
+    /// Attaches a caller-owned [`MarkdownCache`] so the **whole document**
+    /// is parsed + laid out **once per `(source, width, focused-link,
+    /// diagrams, theme)`** instead of every frame.
+    ///
+    /// `Markdown` is the heaviest widget (`widget/markdown/render` ≈ 1.5 ms,
+    /// ~18 % of a 120 fps frame, the most-rendered content widget) precisely
+    /// because immediate mode re-runs the CommonMark parser **and** the
+    /// width-aware layout every frame and discards ~94 % of it. The cache
+    /// memoises the produced lines — they are a pure function of that input
+    /// tuple — so the first frame at a key misses and computes on the
+    /// unchanged path and every later frame (including the second
+    /// [`lines()`](Self::lines) a scroll-clamp screen does) is an `O(1)`
+    /// lookup. A hit and a miss are **byte-identical** (gate-enforced); with
+    /// no cache attached the widget is exactly as before — the UI-1/MD-1
+    /// caller-owned-cache model
+    /// ([ADR 0025](https://github.com/andymac4182/rstui/blob/main/docs/adr/0025-caller-owned-line-cache.md)),
+    /// the [`markdown_cache`](crate::markdown_cache) module. The cache must
+    /// be owned by the app's model (the
+    /// [`ScrollState`](rstui_core::ScrollState) seam), not built per frame.
+    #[must_use]
+    pub fn cache(mut self, cache: &'a MarkdownCache) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
     /// Parses the source and lays it out to display rows for a content area
     /// `width` columns wide. Public so a host can measure a document (its row
     /// count) for scroll math or a surrounding scrollbar without re-rendering.
@@ -350,20 +378,41 @@ impl<'a> Markdown<'a> {
         if width == 0 {
             return Vec::new();
         }
-        let (defs, src) = collect_defs(self.source.as_ref());
-        let mut links = Vec::new();
-        let blocks = blocks_into(&src, &mut links, self.focused_link, &self.theme, &defs);
-        let mut rows = Vec::new();
-        layout_blocks(
-            &blocks,
-            width as usize,
-            &self.theme,
-            true,
-            self.diagrams,
-            self.diagram_cache,
-            &mut rows,
-        );
-        rows
+        // The unchanged parse + width-aware layout. A caller-owned
+        // `MarkdownCache` (if attached) memoises its result by the exact
+        // `(source, width, focused_link, diagrams, theme)` tuple it depends
+        // on; a hit and a miss run/return byte-identical lines.
+        let compute = || {
+            let (defs, src) = collect_defs(self.source.as_ref());
+            let mut links = Vec::new();
+            let blocks = blocks_into(&src, &mut links, self.focused_link, &self.theme, &defs);
+            let mut rows = Vec::new();
+            layout_blocks(
+                &blocks,
+                width as usize,
+                &self.theme,
+                true,
+                self.diagrams,
+                self.diagram_cache,
+                &mut rows,
+            );
+            rows
+        };
+        match self.cache {
+            Some(c) => c
+                .resolve(
+                    self.source.as_ref(),
+                    width,
+                    self.focused_link,
+                    self.diagrams,
+                    &self.theme,
+                    compute,
+                )
+                .iter()
+                .cloned()
+                .collect(),
+            None => compute(),
+        }
     }
 
     /// The document's links, in reading order — the activation registry.
@@ -3479,5 +3528,61 @@ mod tests {
                 .lines(20),
             Markdown::new(code).diagrams(true).lines(20),
         );
+    }
+
+    #[test]
+    fn a_markdown_cache_is_byte_identical_and_keys_on_every_input() {
+        // A real document — headings, emphasis, a link, a list, code, a
+        // quote — so the parse + layout is non-trivial (the ~1.5 ms path).
+        let doc = "# Title\n\nA **bold** word, *italic*, and a \
+                   [docs link](https://x) in prose that wraps.\n\n\
+                   - one\n- two\n  - nested\n\n> a block quote\n\n\
+                   ```rust\nfn main() { let x = 1; }\n```\n\nThe tail.";
+
+        // The contract: a hit and a miss are byte-identical. First `lines()`
+        // is the miss (computes on the unchanged path), the second is the
+        // hit — both equal the no-cache output exactly.
+        let uncached = Markdown::new(doc).lines(40);
+        let cache = MarkdownCache::new();
+        let miss = Markdown::new(doc).cache(&cache).lines(40);
+        let hit = Markdown::new(doc).cache(&cache).lines(40);
+        assert_eq!(miss, uncached, "cache miss == no cache");
+        assert_eq!(hit, uncached, "cache hit == no cache");
+        assert_eq!(cache.len(), 1, "parsed+laid-out once, reused");
+
+        // Render byte-identical too (the strongest check — the
+        // DiagramCache/ConversationCache discipline).
+        let area = Rect::new(0, 0, 40, 24);
+        let mut a = Buffer::empty(area);
+        let mut b = Buffer::empty(area);
+        Markdown::new(doc).render(area, &mut a);
+        Markdown::new(doc).cache(&cache).render(area, &mut b);
+        assert_eq!(a, b, "a cached render is byte-identical to an uncached one");
+
+        // Every input `lines()` reads is part of the key — a change is a
+        // miss that re-derives correctly (the real MD-1 focus/theme
+        // wrinkle), never a stale hit:
+        let focused = Markdown::new(doc).focused_link(0);
+        assert_eq!(
+            focused.clone().cache(&cache).lines(40),
+            focused.lines(40),
+            "focused_link is keyed (no stale link highlight)"
+        );
+        let th = MarkdownTheme {
+            heading_colors: [Color::Red; 6],
+            ..MarkdownTheme::default()
+        };
+        let themed = Markdown::new(doc).theme(th);
+        assert_eq!(
+            themed.clone().cache(&cache).lines(40),
+            themed.lines(40),
+            "theme is keyed"
+        );
+        // base(40) + focused(40) + themed(40) + the width below.
+        let _ = Markdown::new(doc).cache(&cache).lines(72);
+        assert_eq!(cache.len(), 4, "source/width/focus/theme all key");
+
+        // No cache attached ⇒ exactly the pre-cache behaviour.
+        assert_eq!(Markdown::new(doc).lines(40), uncached);
     }
 }

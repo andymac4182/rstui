@@ -134,6 +134,30 @@ buffer at that offset plus scrollbars — it owns nothing. For very long
 transcripts, build only the visible item range into the content buffer
 (caller-side windowing) — the pure-projection answer to virtualization.
 
+### Caller-owned caches: the answer to a per-frame *parse*
+
+Windowing handles "too many rows". The dual problem is a widget whose
+input is a *language* — `Markdown`, the `Mermaid`/`Structurizr`/JSON-Canvas
+family — where deriving the output means **running a parser + a layout
+engine over the whole source every frame** (`widget/markdown/render` ≈
+1.5 ms, ~18 % of a 120 fps frame; see
+[`docs/perf-review-3.md`](perf-review-3.md)). Immediate mode forbids a
+retained tree, but the parse is an immutable, deterministic function of its
+inputs, so the answer is the same `ScrollState` seam: a **caller-owned
+cache** in your model that the widget *reads through*.
+
+Hold a `rstui_widgets::MarkdownCache` (or `DiagramCache`) in your model
+beside the `ScrollState`; attach it with `Markdown::cache(&self.md)` /
+`.diagram_cache(&self.diagrams)`. The first frame at a given
+`(source, width, …)` computes on the unchanged code path; every later
+frame — including the second `lines()` a scroll-clamp screen does — is an
+`O(1)` lookup. A hit and a miss are **byte-identical** (gate-enforced), and
+with no cache attached the widget is exactly as before — purely additive
+([ADR 0025](adr/0025-caller-owned-line-cache.md); both wrap the one
+internal `LineCache`). This is the perf complement to windowing: window so
+you don't *build* off-screen rows; cache so you don't *re-derive* the ones
+you do.
+
 ## Mouse: clicks, drags, and reusable pointer gestures
 
 The framework delivers `Event::Mouse(MouseEvent { kind, position, .. })`;

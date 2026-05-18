@@ -247,7 +247,10 @@ fn widget_paragraph_render(bench: &Bench) -> Stats {
 /// `widget/markdown/render` — the heaviest widget: a full CommonMark
 /// parse + layout on **every** render (MD-1), the dominant cost of any
 /// frame with a Markdown pane until a caller-owned cache lands (Tier-2).
-fn widget_markdown_render(bench: &Bench) -> Stats {
+/// The shared ~120-section CommonMark document the markdown render/cached
+/// scenarios both measure (apples-to-apples: same input, with vs without
+/// the caller-owned `MarkdownCache`).
+fn markdown_doc() -> String {
     let mut src = String::new();
     for i in 0..120 {
         src.push_str(&format!(
@@ -256,9 +259,37 @@ fn widget_markdown_render(bench: &Bench) -> Stats {
              - bullet one\n- bullet two\n\n```rust\nfn main() {{ let x = {i}; }}\n```\n\n"
         ));
     }
+    src
+}
+
+fn widget_markdown_render(bench: &Bench) -> Stats {
+    let src = markdown_doc();
     let mut buf = Buffer::empty(frame());
     bench.run(|| {
         Markdown::new(src.as_str()).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/markdown/cached` — the same document rendered with a
+/// caller-owned [`MarkdownCache`](rstui_widgets::MarkdownCache) attached:
+/// the whole CommonMark parse + width-aware layout happens on the first
+/// frame (a miss) and every later frame is an `O(1)` keyed lookup + a row
+/// clone. This is the steady-state cost after R3-2 — it must collapse from
+/// the ~1.5 ms `widget/markdown/render` class to the windowed-widget class.
+fn widget_markdown_cached(bench: &Bench) -> Stats {
+    let src = markdown_doc();
+    let cache = rstui_widgets::MarkdownCache::new();
+    let mut buf = Buffer::empty(frame());
+    // Warm the cache once (the first real frame's miss) so the measured
+    // loop is the steady state every later idle frame actually pays.
+    Markdown::new(src.as_str())
+        .cache(&cache)
+        .render(frame(), &mut buf);
+    bench.run(|| {
+        Markdown::new(src.as_str())
+            .cache(&cache)
+            .render(frame(), &mut buf);
         buf.get(Position::ORIGIN).map(|c| c.symbol)
     })
 }
@@ -433,6 +464,7 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     ("widget/tree/render", widget_tree_render),
     ("widget/paragraph/render", widget_paragraph_render),
     ("widget/markdown/render", widget_markdown_render),
+    ("widget/markdown/cached", widget_markdown_cached),
     (
         "widget/markdown/diagrams_render",
         widget_markdown_diagrams_render,

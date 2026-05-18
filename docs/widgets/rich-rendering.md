@@ -35,18 +35,30 @@ measures twice a frame). Attach a caller-owned `DiagramCache` with
 rows are memoised by `(source, width)` — the first frame at a width
 misses and computes them (byte-identical), every later frame is an `O(1)`
 lookup (a Mermaid+Structurizr doc went 4.70 ms → 31 µs, restoring 60 fps).
-The `ConversationCache`/UI-1/MD-1 caller-owned-cache model
-([ADR 0012](../adr/0012-widget-composition-and-layout-model.md) §P1);
-with no cache attached the widget is exactly as before.
 
-- **Companion types:** `MarkdownTheme`, `LinkRegion`, `DiagramCache`, [`Link`](#link)
-- **State model:** pure projection of caller-owned markdown source + optional focused-link index; `DiagramCache` (if attached) is caller-owned model state, read through like a `ScrollState`.
+The **prose** parse+layout is itself the heaviest widget cost —
+`widget/markdown/render` ≈ 1.5 ms, ~18 % of a 120 fps frame, re-run every
+frame (and *twice* by a scroll-clamp screen). Attach a caller-owned
+`MarkdownCache` with `.cache(&cache)`: the lines are a pure function of
+`(source, width, focused-link, diagrams, theme)` — every input keyed
+(a source-only cache would render stale link highlighting, the real MD-1
+wrinkle), so the first frame misses and computes on the unchanged path and
+every later frame is `O(1)` (the 120-section doc went **1.49 ms → 0.10 ms**,
+~15×). Both caches are the one caller-owned-cache model
+([ADR 0025](../adr/0025-caller-owned-line-cache.md), amending
+[ADR 0012](../adr/0012-widget-composition-and-layout-model.md) §P1; one
+internal `LineCache`); with neither attached the widget is exactly as
+before, byte-identical (gate-enforced).
+
+- **Companion types:** `MarkdownTheme`, `LinkRegion`, `MarkdownCache`, `DiagramCache`, [`Link`](#link)
+- **State model:** pure projection of caller-owned markdown source + optional focused-link index; `MarkdownCache`/`DiagramCache` (if attached) are caller-owned model state, read through like a `ScrollState`.
 
 ```rust
 Markdown::new(src: &str)
 .theme(MarkdownTheme) .focused_link(Option<usize>)
 .diagrams(bool)                     // opt-in: ```mermaid/```structurizr/```canvas → inline diagram
-.diagram_cache(&DiagramCache)       // memoise embedded diagrams by (source,width) — 60fps
+.cache(&MarkdownCache)              // memoise the whole parse+layout — 1.49ms → 0.10ms
+.diagram_cache(&DiagramCache)       // memoise embedded diagrams by (source,width)
 .links() -> Vec<Link>               // for keyboard focus/activation
 .link_regions() -> Vec<LinkRegion>  // hit-test rectangles
 .link_at(pos: Position) -> Option<usize>

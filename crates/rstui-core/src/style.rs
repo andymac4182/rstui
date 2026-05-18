@@ -335,7 +335,7 @@ impl std::ops::BitOrAssign for Modifier {
 /// Colors are optional: `None` means "inherit". Modifiers are tracked as two
 /// disjoint sets so that [`Style::patch`] can both add and clear attributes
 /// without the order of composition mattering for unrelated bits.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Style {
     /// Foreground color, or `None` to inherit.
     pub fg: Option<Color>,

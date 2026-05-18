@@ -56,30 +56,19 @@
 //! assert_eq!(cache.len(), 1); // one (source,width) slot, reused 60×
 //! ```
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rstui_core::Line;
 
-/// Upper bound on memoised `(source, width)` slots. Embedded diagrams are
-/// few and widths change only on resize, so this is never approached in
-/// practice; clearing wholesale on overflow keeps the cache strictly
-/// bounded and total (it simply re-warms lazily) rather than growing
-/// without limit over a very long resized session.
-const MAX_SLOTS: usize = 128;
-
-/// `(diagram source, layout width)` → its memoised band-extracted rows.
-/// `Rc` so a cache hit is a refcount bump, not a deep copy, before the
-/// per-frame row clone into the document line vector. A named alias
-/// (clippy `type_complexity`, the `rstui-bench` `Scenario` precedent).
-type DiagramSlots = HashMap<(String, u16), Rc<[Line<'static>]>>;
+use crate::line_cache::LineCache;
 
 /// The caller-owned memo of rasterised embedded-diagram rows, keyed by the
-/// fence body and the layout width. See the [module docs](self).
+/// fence body and the layout width. A thin wrapper over the shared generic
+/// `LineCache` (perf-review-3 R3-1: one primitive, not four ad-hoc
+/// caches). See the [module docs](self).
 #[derive(Debug, Default)]
 pub struct DiagramCache {
-    slots: RefCell<DiagramSlots>,
+    inner: LineCache<(String, u16)>,
 }
 
 impl DiagramCache {
@@ -93,19 +82,19 @@ impl DiagramCache {
     /// introspection.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.slots.borrow().len()
+        self.inner.len()
     }
 
     /// Whether nothing is memoised yet.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.slots.borrow().is_empty()
+        self.inner.is_empty()
     }
 
     /// Drop every memoised slot (e.g. the document the diagrams live in was
     /// replaced wholesale). The next render re-warms lazily.
     pub fn clear(&self) {
-        self.slots.borrow_mut().clear();
+        self.inner.clear();
     }
 
     /// The rasterised rows for `source` at `width`: a memoised slot if one
@@ -113,28 +102,16 @@ impl DiagramCache {
     /// returned [`Rc`] is cloned (refcount bump) — the caller clones the
     /// individual [`Line`]s out of it into the document.
     ///
-    /// Internal: the one seam `Markdown`'s diagram rasteriser calls. `()`
-    /// the compute closure must be deterministic in `(source, width)` so a
-    /// hit and a miss are byte-identical (the gate test enforces this).
+    /// Internal: the one seam `Markdown`'s diagram rasteriser calls. The
+    /// compute closure must be deterministic in `(source, width)` so a hit
+    /// and a miss are byte-identical (the gate test enforces this).
     pub(crate) fn resolve(
         &self,
         source: &str,
         width: u16,
         compute: impl FnOnce() -> Vec<Line<'static>>,
     ) -> Rc<[Line<'static>]> {
-        if let Some(hit) = self.slots.borrow().get(&(source.to_owned(), width)) {
-            // Hit cloned under the shared borrow, then it is released.
-            return Rc::clone(hit);
-        }
-        let rows: Rc<[Line<'static>]> = Rc::from(compute());
-        let mut slots = self.slots.borrow_mut();
-        // Strictly bounded: a pathological number of distinct widths cannot
-        // grow this without limit (it re-warms after a wholesale clear).
-        if slots.len() >= MAX_SLOTS {
-            slots.clear();
-        }
-        slots.insert((source.to_owned(), width), Rc::clone(&rows));
-        rows
+        self.inner.resolve((source.to_owned(), width), compute)
     }
 }
 
@@ -150,17 +127,16 @@ mod tests {
     #[test]
     fn a_miss_computes_and_a_hit_reuses_the_same_rows() {
         let cache = DiagramCache::new();
-        let calls = RefCell::new(0);
-        let mk = || {
-            *calls.borrow_mut() += 1;
+        let mut calls = 0;
+        let first = cache.resolve("graph TD\nA-->B", 40, || {
+            calls += 1;
             vec![row("A"), row("B")]
-        };
-        let first = cache.resolve("graph TD\nA-->B", 40, mk);
+        });
         let second = cache.resolve("graph TD\nA-->B", 40, || {
-            *calls.borrow_mut() += 1;
+            calls += 1;
             vec![row("DIFFERENT")] // must NOT run on a hit
         });
-        assert_eq!(*calls.borrow(), 1, "compute ran once; the hit reused it");
+        assert_eq!(calls, 1, "compute ran once; the hit reused it");
         assert!(Rc::ptr_eq(&first, &second), "the same Rc is handed back");
         assert_eq!(second.len(), 2);
         assert_eq!(cache.len(), 1);
@@ -193,16 +169,6 @@ mod tests {
         assert!(ran, "after clear the next resolve recomputes");
     }
 
-    #[test]
-    fn overflow_clears_and_stays_bounded() {
-        let cache = DiagramCache::new();
-        for i in 0..(MAX_SLOTS + 5) {
-            let _ = cache.resolve("S", u16::try_from(i).unwrap(), || vec![row("r")]);
-        }
-        assert!(
-            cache.len() <= MAX_SLOTS,
-            "never grows past the bound (got {})",
-            cache.len()
-        );
-    }
+    // The MAX_SLOTS overflow bound is a `LineCache` property, exercised
+    // generically in `line_cache::tests::overflow_clears_and_stays_bounded`.
 }

@@ -347,11 +347,13 @@ pub mod input;
 pub mod json_canvas;
 pub mod kbd;
 pub mod keymap_view;
+mod line_cache;
 pub mod line_chart;
 pub mod link;
 pub mod list;
 pub mod log_stream;
 pub mod markdown;
+pub mod markdown_cache;
 pub mod masked_input;
 pub mod menu;
 pub mod mermaid;
@@ -417,6 +419,7 @@ pub use input::Input;
 pub use link::{Link, LinkActivation};
 pub use list::{List, ListItem};
 pub use markdown::{LinkRegion, Markdown, MarkdownTheme};
+pub use markdown_cache::MarkdownCache;
 pub use menu::{Menu, MenuItem};
 // The Mermaid AST types (`Direction`, `Node`, `Edge`, `EdgeKind`, `Shape`,
 // `MermaidGraph`) are intentionally reached via `mermaid::` rather than

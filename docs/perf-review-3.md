@@ -26,6 +26,29 @@ the answer in one place (`DiagramCache`, this session) and three others
 The work is to **generalise that seam to every heavy widget and document it
 as the pattern**, not to rewrite the engine.
 
+> **Landed on `origin/main`** (measured, gate-green, byte-identical):
+> - **R3-1 — DONE.** One internal generic `LineCache<K>` (bounded
+>   read-through memo); `DiagramCache` refactored to wrap it (public API +
+>   tests byte-identical); the pattern documented in
+>   [ADR 0025](adr/0025-caller-owned-line-cache.md) +
+>   [`docs/composition.md`](composition.md). One primitive, not four.
+> - **R3-2 — DONE.** `rstui_widgets::MarkdownCache` (wraps `LineCache`),
+>   keyed by the exact `(source, width, focused_link, diagrams, theme)`
+>   tuple (the MD-1 focus/theme wrinkle made impossible);
+>   `Markdown::cache(&c)` opt-in builder; the kitchen-sink `rich_text`
+>   screen owns one. Enabler: additive `Hash` on `rstui_core::Style` /
+>   `MarkdownTheme` (std-only, ADR 0001/0003-clean). Gate: a
+>   render-and-`lines()` byte-identical exactness test that also pins every
+>   input as part of the key. **`widget/markdown/render` 1.49 ms →
+>   `widget/markdown/cached` 0.10 ms (~15×)** — the heaviest widget is back
+>   in the windowed-widget class (~1.2 % of a 120 fps frame).
+> - **R3-5 — DONE (for R3-1/2).** `widget/markdown/cached` scenario added
+>   (the diagrams `_render`/`_cached` template); render vs cached measured
+>   apples-to-apples on one shared doc.
+> - **R3-3 / R3-4 — pending** (next slices; `from_parsed` for
+>   Structurizr/JsonCanvas/Mermaid-keyword, then the runtime
+>   `FRAME_BUDGET`). The conflict-free batch order below stands.
+
 ## The budget
 
 | target | frame budget | a `runtime/frame` (~80 µs) is | headroom |

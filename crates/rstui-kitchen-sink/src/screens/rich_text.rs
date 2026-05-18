@@ -13,8 +13,8 @@ use rstui_core::{
 use rstui_runtime::Frame;
 use rstui_widgets::mermaid::MermaidGraph;
 use rstui_widgets::{
-    Block, BorderType, DiagramCache, JsonCanvas, Kbd, Markdown, Mermaid, Paragraph, Structurizr,
-    Tabs, Wrap,
+    Block, BorderType, DiagramCache, JsonCanvas, Kbd, Markdown, MarkdownCache, Mermaid, Paragraph,
+    Structurizr, Tabs, Wrap,
 };
 
 use crate::screens::ScreenOutcome;
@@ -373,6 +373,13 @@ pub(crate) struct State {
     /// dropped this screen to ~9 fps). Model state the pure `view` only
     /// reads; lives across frames.
     diagrams: DiagramCache,
+    /// R3-2: the **prose** parse+layout of the whole handbook
+    /// (`widget/markdown/render` ≈ 1.5 ms, the heaviest widget) memoised
+    /// per `(source, width, …)`. The `view` renders `DOC` *and* re-derives
+    /// it for the `max_scroll` clamp — without this the screen re-parses
+    /// the entire CommonMark handbook twice every frame. Same caller-owned
+    /// model-state seam as `diagrams`.
+    md: MarkdownCache,
 }
 
 impl State {
@@ -383,6 +390,7 @@ impl State {
             scroll: 0,
             mermaid: Mermaid::parse(GRAPH).ok(),
             diagrams: DiagramCache::new(),
+            md: MarkdownCache::new(),
         }
     }
 
@@ -426,7 +434,7 @@ impl State {
             // including the identical view-time scroll clamp — so the
             // widget's own link hit-test lands on exactly the drawn label.
             let sc = self.scroll.min(self.max_scroll(body));
-            let md = doc_md(&self.diagrams)
+            let md = doc_md(&self.diagrams, &self.md)
                 .scroll(sc)
                 .block(Block::bordered().border_type(BorderType::Rounded));
             if let Some(idx) = md.link_at(pos, body) {
@@ -462,7 +470,7 @@ impl State {
             0 => Paragraph::new(PROSE)
                 .wrap(Wrap { trim: true })
                 .line_count(inner.width),
-            1 => doc_md(&self.diagrams).lines(inner.width).len(),
+            1 => doc_md(&self.diagrams, &self.md).lines(inner.width).len(),
             _ => return 0,
         };
         u16::try_from(rows.saturating_sub(inner.height as usize)).unwrap_or(u16::MAX)
@@ -512,7 +520,7 @@ impl State {
                 body,
             ),
             1 => frame.render_widget(
-                doc_md(&self.diagrams)
+                doc_md(&self.diagrams, &self.md)
                     .scroll(sc)
                     .style(theme.body())
                     .block(framed(theme, "Markdown · links + embedded diagrams")),
@@ -619,14 +627,20 @@ impl State {
 /// the document*, scrolled and clamped like the prose around them, instead
 /// of as verbatim code.
 ///
-/// `cache` is the screen-owned [`DiagramCache`]: the same one is threaded
-/// through all three call sites, so the embedded Mermaid + Structurizr are
-/// rasterised once per `(source, width)` and every later frame (incl. the
-/// second `lines()` the same frame does for the scroll clamp) is an `O(1)`
-/// lookup — without it this screen re-laid-out both diagrams ~4× a frame
-/// and ran at ~9 fps.
-fn doc_md(cache: &DiagramCache) -> Markdown<'_> {
-    Markdown::new(DOC).diagrams(true).diagram_cache(cache)
+/// `diagrams` / `md` are the screen-owned [`DiagramCache`] /
+/// [`MarkdownCache`]: the same pair is threaded through all three call
+/// sites, so the whole handbook is parsed + laid out **once per `(source,
+/// width)`** (R3-2 — `widget/markdown/render` is ~1.5 ms) and the embedded
+/// Mermaid + Structurizr rasterised once per `(source, width)` — every
+/// later frame, including the second `lines()` the same frame does for the
+/// scroll clamp, is an `O(1)` lookup. Without these this screen re-parsed
+/// the entire CommonMark handbook *and* re-laid-out two diagrams ~2–4× a
+/// frame.
+fn doc_md<'c>(diagrams: &'c DiagramCache, md: &'c MarkdownCache) -> Markdown<'c> {
+    Markdown::new(DOC)
+        .diagrams(true)
+        .diagram_cache(diagrams)
+        .cache(md)
 }
 
 /// A plain rounded framing block.
