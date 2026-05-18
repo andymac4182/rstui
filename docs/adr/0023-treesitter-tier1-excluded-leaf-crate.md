@@ -1,10 +1,14 @@
 # ADR 0023: tree-sitter Tier-1 as a workspace-excluded opt-in leaf crate
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0024](0024-code-widget-crate-and-treesitter-exemption.md)
 - **Date:** 2026-05-19
 - **Deciders:** rstui maintainers
 - **Refines:** [ADR 0022](0022-syntax-colour-and-symbol-engine.md) (the
   decision stands; only the *mechanism* of its Tier-1 clause is refined)
+- **Superseded by:** [ADR 0024](0024-code-widget-crate-and-treesitter-exemption.md)
+  — the excluded-leaf / out-of-gate mechanism is withdrawn; tree-sitter
+  becomes a first-class, gate-protected dependency of a new `rstui-code`
+  crate (the engine choice and ADR 0022 are otherwise unchanged).
 
 ## Context
 
