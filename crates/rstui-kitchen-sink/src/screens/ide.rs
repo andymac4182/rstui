@@ -3,12 +3,14 @@
 //! Enter splits lines), a [`List`] of problems, and a [`StatusBar`] with the
 //! live cursor position. `PgUp/PgDn` switch files.
 
+use std::cell::Cell;
+
 use rstui_core::{
     Constraint, KeyCode, Layout, Line, Position, Rect, Style, TextArea, stylize::Stylize,
 };
 use rstui_runtime::Frame;
-// ADR 0024: `Editor`/`LineNumberGutter` moved to `rstui-code`.
-use rstui_code::{Editor, LineNumberGutter};
+// ADR 0024: `Editor`/`LineNumberGutter` + the syntax engine live in `rstui-code`.
+use rstui_code::{Editor, LineNumberGutter, syntax};
 use rstui_widgets::{Block, BorderType, List, StatusBar, Tabs};
 
 use crate::screens::ScreenOutcome;
@@ -364,6 +366,12 @@ only assertion this file is making.
 pub(crate) struct State {
     files: Vec<(&'static str, TextArea)>,
     active: usize,
+    /// Caller-owned editor scroll, kept caret-visible via
+    /// [`TextArea::scroll_into_view`]. `Cell` so the pure `view` can persist
+    /// the minimal-movement offset frame-to-frame (the git-review `Geom`
+    /// precedent — ADR 0004: scroll is reducer/model state, the gutter
+    /// tracks it so the two never desync).
+    scroll: Cell<(usize, usize)>,
 }
 
 impl State {
@@ -382,11 +390,42 @@ impl State {
                 ("notes.md", open(NOTES_MD)),
             ],
             active: 0,
+            scroll: Cell::new((0, 0)),
         }
     }
 
     fn doc(&mut self) -> &mut TextArea {
         &mut self.files[self.active].1
+    }
+
+    /// The flattened per-char syntax overlay for the active buffer:
+    /// language resolved from the file name, token colours from the live
+    /// `theme` (so it follows theme switches). One [`Style`] slot per source
+    /// char and a blank slot per `'\n'` — exactly the flattened index
+    /// [`Editor::syntax`] reads — built with the dependency-free Tier-0
+    /// lexer threaded with `LexState` so multi-line strings/comments stay
+    /// coloured across rows. Pure: rebuilt fresh in `view`.
+    fn overlay(&self, theme: &Theme) -> Vec<Style> {
+        let active = &self.files[self.active];
+        let lang = syntax::Language::from_path(active.0);
+        let styles = syntax::SyntaxStyles {
+            keyword: Style::new().fg(theme.accent),
+            string: Style::new().fg(theme.accent_alt),
+            number: Style::new().fg(theme.accent_alt),
+            comment: Style::new().fg(theme.dim),
+        };
+        let mut flat: Vec<Style> = Vec::new();
+        let mut st = syntax::LexState::default();
+        let lines = active.1.lines();
+        for (i, line) in lines.iter().enumerate() {
+            let (ov, next) = syntax::line_overlay(line, lang, &styles, st);
+            st = next;
+            flat.extend(ov);
+            if i + 1 < lines.len() {
+                flat.push(Style::new()); // the '\n' between rows
+            }
+        }
+        flat
     }
 
     /// Typing edits the buffer; arrows move the caret; `PgUp/PgDn` switch
@@ -396,9 +435,11 @@ impl State {
         match code {
             KeyCode::PageUp => {
                 self.active = self.active.saturating_sub(1);
+                self.scroll.set((0, 0)); // a freshly-shown file opens at the top
             }
             KeyCode::PageDown => {
                 self.active = (self.active + 1).min(self.files.len() - 1);
+                self.scroll.set((0, 0));
             }
             KeyCode::Left => {
                 self.doc().move_left();
@@ -502,8 +543,13 @@ impl State {
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(34)]).areas(body);
 
         let (name, doc) = &self.files[self.active];
-        // Frame the pane, then put a real line-number gutter in front of the
-        // editor and render the buffer into the rect the gutter hands back.
+        // Frame the pane, then a real line-number gutter in front of the
+        // editor. The gutter column width is fixed by the largest line
+        // number (the same whether scrolled or not), so derive the text
+        // rect once, compute the caret-visible scroll against it, then
+        // render the gutter starting at the first *visible* line so the
+        // numbers track the scrolled buffer — no gutter/content desync, and
+        // the caret is never scrolled off-screen (`scroll_into_view`).
         let eblock = Block::bordered()
             .border_type(BorderType::Rounded)
             .title(Line::from(format!(" {name} ")).style(theme.accent_text()))
@@ -511,14 +557,20 @@ impl State {
             .style(theme.body());
         let ia = eblock.inner(editor_a);
         frame.render_widget(eblock, editor_a);
-        let gutter = LineNumberGutter::new(1, doc.row_count())
+        let rows = doc.row_count();
+        let text_rect = LineNumberGutter::new(1, rows).min_number_width(3).inner(ia);
+        let s = doc.scroll_into_view(self.scroll.get(), (text_rect.width, text_rect.height), 3);
+        self.scroll.set(s);
+        let gutter = LineNumberGutter::new(s.0 as u64 + 1, rows.saturating_sub(s.0))
             .style(theme.caption())
             .min_number_width(3);
-        let text_rect = gutter.inner(ia);
         frame.render_widget(gutter, ia);
+        let ov = self.overlay(theme);
         frame.render_widget(
             Editor::new(doc)
                 .focused(true)
+                .scroll(s)
+                .syntax(&ov)
                 .style(theme.body())
                 .focus_style(theme.border_focused())
                 .cursor_style(Style::new().fg(theme.base).bg(theme.accent)),
