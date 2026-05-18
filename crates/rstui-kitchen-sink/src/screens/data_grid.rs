@@ -73,6 +73,9 @@ pub(crate) struct State {
     /// Body rows the last `view` showed — so `on_scroll`/paging know the
     /// viewport length without an area (the lib.rs geom-cache idiom).
     body_rows: std::cell::Cell<usize>,
+    /// The source column of an in-flight header drag (mouse-down on a
+    /// header claims the press→drag→release gesture for a column reorder).
+    col_drag: Option<usize>,
 }
 
 impl State {
@@ -107,6 +110,7 @@ impl State {
             filtering: false,
             config_open: false,
             body_rows: std::cell::Cell::new(10),
+            col_drag: None,
         }
     }
 
@@ -379,16 +383,71 @@ impl State {
     /// Route a click: real widget geometry via [`DataTable::hit`] — header →
     /// sort, group → collapse, cell → select then activate its control
     /// (toggle a checkbox, open a dropdown, edit text).
-    pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
+    /// Resolve a pointer to a [`DataTableHit`], building the widget EXACTLY
+    /// as `view` does (incl. `.cell_select`/`.config`/`.block`) so the
+    /// hit-test matches the rendered geometry. Shared by `on_click` and the
+    /// column-drag handlers so they can never disagree.
+    fn hit_test(&self, content: Rect, pos: Position) -> Option<DataTableHit> {
         let [grid, ..] = Self::layout(content);
-        // Build it EXACTLY as `view` does (incl. `.cell_select`) so `hit`
-        // resolves clicks against the same geometry — including the open
-        // dropdown panel overlay.
-        let hit = DataTable::new(&self.columns, &self.rows, &self.visual, &self.grid)
+        DataTable::new(&self.columns, &self.rows, &self.visual, &self.grid)
             .cell_select(&self.choice)
             .config(self.config_open)
             .block(Block::bordered().border_type(BorderType::Rounded))
-            .hit(grid, pos);
+            .hit(grid, pos)
+    }
+
+    /// Mouse-down on a column **header** claims the press→drag→release
+    /// gesture (return *consumed* so the shell routes the drag/release here
+    /// instead of starting a text selection). A press anywhere else is
+    /// ignored so the normal click/edit/selection path is unchanged.
+    pub(crate) fn on_press(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
+        if let Some(DataTableHit::Header(col)) = self.hit_test(content, pos) {
+            self.col_drag = Some(col);
+            return ScreenOutcome::consumed();
+        }
+        self.col_drag = None;
+        ScreenOutcome::ignored()
+    }
+
+    /// The pointer moved while carrying a column header.
+    pub(crate) fn on_pointer_drag(&mut self, _pos: Position, _content: Rect) -> ScreenOutcome {
+        if self.col_drag.is_some() {
+            ScreenOutcome::consumed()
+        } else {
+            ScreenOutcome::ignored()
+        }
+    }
+
+    /// Release: drop the dragged column onto the header it is over (a real
+    /// reorder), or — if it never crossed to another header — treat it as
+    /// the plain header click it was (toggle that column's sort, the
+    /// pre-existing behaviour).
+    pub(crate) fn on_release(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
+        let Some(from) = self.col_drag.take() else {
+            return ScreenOutcome::ignored();
+        };
+        if let Some(DataTableHit::Header(to)) = self.hit_test(content, pos) {
+            if to != from && from < self.columns.len() {
+                let col = self.columns.remove(from);
+                self.columns.insert(to.min(self.columns.len()), col);
+                self.grid.reorder_column(from, to);
+                self.active_col = to;
+                self.reproject();
+                return ScreenOutcome::with_toast(
+                    crate::screens::ToastLevel::Info,
+                    format!("Moved column to position {}", to + 1),
+                );
+            }
+        }
+        // No cross to another header ⇒ it was a click: keep sort-on-click.
+        self.active_col = from;
+        self.grid.toggle_sort(from);
+        self.reproject();
+        ScreenOutcome::consumed()
+    }
+
+    pub(crate) fn on_click(&mut self, pos: Position, content: Rect) -> ScreenOutcome {
+        let hit = self.hit_test(content, pos);
         match hit {
             // ---- the modal group/sort config panel ----
             Some(DataTableHit::ConfigGroup(col)) => {

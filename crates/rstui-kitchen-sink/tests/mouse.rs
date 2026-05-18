@@ -566,6 +566,37 @@ fn kanban_cards_render_their_title_text() {
 }
 
 #[test]
+fn data_grid_header_drag_reorders_the_column_not_a_text_select() {
+    // Regression: dragging a column header used to start a text selection
+    // (the shell's default) because no screen claimed the press. The Data
+    // Grid now claims a header press and reorders on release.
+    let mut h = harness();
+    goto(&mut h, "Data Grid");
+    let s = h.snapshot();
+    assert!(
+        s.contains("name") && s.contains("team"),
+        "headers visible:\n{s}"
+    );
+    let (nx, ny) = cell_of(&h, "name"); // column 0 header
+    let (tx, _) = cell_of(&h, "team"); // column 2 header
+    mouse(&mut h, MouseEventKind::Down(MouseButton::Left), nx + 1, ny);
+    mouse(
+        &mut h,
+        MouseEventKind::Drag(MouseButton::Left),
+        (nx + tx) / 2,
+        ny,
+    );
+    mouse(&mut h, MouseEventKind::Drag(MouseButton::Left), tx + 1, ny);
+    mouse(&mut h, MouseEventKind::Up(MouseButton::Left), tx + 1, ny);
+    let s = h.snapshot();
+    assert!(
+        s.contains("Moved column to position"),
+        "the header drag reordered the column (not a text selection):\n{s}"
+    );
+    assert!(h.is_running());
+}
+
+#[test]
 fn kanban_card_drag_moves_it_to_the_target_column() {
     let mut h = harness();
     goto(&mut h, "Kanban Board");

@@ -542,6 +542,7 @@ impl ScreenState {
     ) -> ScreenOutcome {
         match screen {
             Screen::Board => self.board.on_press(pos, content),
+            Screen::DataGrid => self.data_grid.on_press(pos, content),
             _ => ScreenOutcome::ignored(),
         }
     }
@@ -556,6 +557,7 @@ impl ScreenState {
     ) -> ScreenOutcome {
         match screen {
             Screen::Board => self.board.on_pointer_drag(pos, content),
+            Screen::DataGrid => self.data_grid.on_pointer_drag(pos, content),
             _ => ScreenOutcome::ignored(),
         }
     }
@@ -570,6 +572,7 @@ impl ScreenState {
     ) -> ScreenOutcome {
         match screen {
             Screen::Board => self.board.on_release(pos, content),
+            Screen::DataGrid => self.data_grid.on_release(pos, content),
             _ => ScreenOutcome::ignored(),
         }
     }
