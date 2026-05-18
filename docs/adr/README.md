@@ -48,5 +48,6 @@ MADR-style shape:
 | [0016](0016-shared-memory-plugin-transport.md) | Shared-memory plugin transport (opt-in, Rust-only, scoped spin — flat sub-µs RTT) | Accepted |
 | [0017](0017-ai-app-widgets-and-declarative-agent-ui.md) | AI-app widgets and declarative agent-driven UI rendering | Accepted |
 | [0018](0018-devtools-and-perf-tooling.md) | DevTools + repeatable perf-tracking tooling (opt-in leaf crate, scoped-unsafe counting allocator, additive `FrameObserver` seam, `cargo xtask perf`) | Accepted |
-| [0019](0019-node-shared-memory-via-napi.md) | Node/Bun shared memory via a napi-rs addon — built, measured, not productionised (event-loop-bound ≈ stdio) | Accepted |
+| [0019](0019-node-shared-memory-via-napi.md) | Node/Bun shared memory via a napi-rs addon — built, measured, productionised for parity (event-loop-bound ≈ stdio, not faster) | Accepted |
 | [0020](0020-keymap-contexts.md) | Keymap contexts (modes & text input): pure-data `bind_in` + context stack + `Capture` — Vim-mode/VS Code-`when`/Textual-focus synthesis; amends ADR 0015's shell-level-only stance, fully additive | Accepted |
+| [0021](0021-reusable-plugin-framework-core.md) | Reusable plugin-framework core (`rstui-plugin-core`) vs. ACP vocabulary layer — generic `Protocol` trait, ACP API byte-stable | Accepted |

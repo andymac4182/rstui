@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::jsonrpc::Message;
+use rstui_plugin_core::Message;
 
 /// Current extension API version. A plugin may refuse a mismatch.
 pub const API_VERSION: &str = "1";
@@ -291,7 +291,7 @@ pub fn initialize_ack() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jsonrpc::Kind;
+    use rstui_plugin_core::Kind;
 
     #[test]
     fn init_is_a_jsonrpc_request_others_are_notifications() {

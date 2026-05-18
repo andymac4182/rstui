@@ -1,55 +1,52 @@
-//! The plugin-author surface: write handlers, the SDK does the rest.
+//! The ACP plugin-author surface: write handlers, the SDK does the rest.
 //!
-//! [`serve`] is the ergonomic closure form (source-compatible with the
-//! original protocol); [`Plugin`] + [`serve_plugin`] is the structured form.
-//! Both own the JSON-RPC loop: handshake (`initialize` → ack), event
-//! dispatch, and action framing over a [`Transport`].
+//! This is a **thin layer over [`rstui_plugin_core`]** (ADR 0021): the
+//! JSON-RPC loop and every transport live in the app-agnostic core; here
+//! we only bind the ACP vocabulary ([`HostEvent`]/[`PluginAction`]) via
+//! [`AcpProtocol`] and keep the ergonomic [`serve`]/[`Plugin`]/[`Host`]
+//! surface. Every signature is unchanged, so existing plugins and the
+//! client are source-compatible.
 
-use crate::jsonrpc::Kind;
+use rstui_plugin_core::{Message, Protocol, Transport};
+
 use crate::proto::{
     HostEvent, PluginAction, initialize_ack, message_to_host_event, plugin_action_to_message,
 };
-use crate::transport::{LpTransport, StdioTransport, Transport};
+
+/// The ACP vocabulary as a [`rstui_plugin_core::Protocol`]: the one place
+/// the generic loop is told how to read [`HostEvent`]s and write
+/// [`PluginAction`]s. Other applications write their own equivalent.
+#[derive(Clone, Copy, Default)]
+pub struct AcpProtocol;
+
+impl Protocol for AcpProtocol {
+    type Event = HostEvent;
+    type Action = PluginAction;
+
+    fn initialize_ack(&self) -> Option<serde_json::Value> {
+        Some(initialize_ack())
+    }
+    fn decode_event(&self, msg: &Message) -> Option<HostEvent> {
+        message_to_host_event(msg)
+    }
+    fn encode_action(&self, action: &PluginAction) -> Message {
+        plugin_action_to_message(action)
+    }
+    fn is_shutdown(&self, event: &HostEvent) -> bool {
+        matches!(event, HostEvent::Shutdown)
+    }
+}
 
 /// Runs a plugin over `transport` until end-of-stream or `Shutdown`.
 ///
 /// The handler is called once per [`HostEvent`]; anything it passes to the
-/// `emit` callback is sent back to the host as a JSON-RPC notification. The
-/// `initialize` request is answered automatically before its [`HostEvent::Init`]
-/// is delivered.
-pub fn serve_over<T: Transport, F>(mut transport: T, mut handler: F)
+/// `emit` callback is sent back as a JSON-RPC notification. The
+/// `initialize` request is answered automatically.
+pub fn serve_over<T: Transport, F>(transport: T, handler: F)
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
-    while let Ok(Some(msg)) = transport.recv() {
-        if msg.kind() == Kind::Response {
-            continue; // not addressed to a plugin
-        }
-        // Answer the JSON-RPC handshake before dispatching it.
-        if msg.kind() == Kind::Request && msg.method.as_deref() == Some("initialize") {
-            if let Some(id) = msg.id.clone() {
-                let _ = transport.send(&crate::jsonrpc::Message::response(id, initialize_ack()));
-            }
-        }
-        let Some(event) = message_to_host_event(&msg) else {
-            continue;
-        };
-        let stop = matches!(event, HostEvent::Shutdown);
-
-        let mut outbox: Vec<PluginAction> = Vec::new();
-        {
-            let mut emit = |a: PluginAction| outbox.push(a);
-            handler(event, &mut emit);
-        }
-        for action in &outbox {
-            if transport.send(&plugin_action_to_message(action)).is_err() {
-                return;
-            }
-        }
-        if stop {
-            return;
-        }
-    }
+    rstui_plugin_core::serve_over(transport, AcpProtocol, handler);
 }
 
 /// Runs a plugin over the default stdio transport (the common case).
@@ -57,7 +54,7 @@ pub fn serve<F>(handler: F)
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
-    serve_over(StdioTransport::new(), handler);
+    rstui_plugin_core::serve(AcpProtocol, handler);
 }
 
 /// Runs a plugin over stdio with **length-prefixed** framing (binary
@@ -66,98 +63,33 @@ pub fn serve_stdio_lp<F>(handler: F)
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
-    serve_over(
-        LpTransport::new(std::io::stdin(), std::io::stdout()),
-        handler,
-    );
+    rstui_plugin_core::serve_stdio_lp(AcpProtocol, handler);
 }
 
-/// Runs a plugin as a **Unix-domain-socket** server (no TCP/IP stack, no
-/// port — the lowest-overhead local socket). `lp` selects length-prefixed
-/// framing; otherwise newline JSON. One client, then exit.
+/// Runs a plugin as a **Unix-domain-socket** server. `lp` selects
+/// length-prefixed framing; otherwise newline JSON. One client, then exit.
 ///
 /// # Errors
 ///
-/// Bind/accept failures (or "unsupported" on non-Unix targets).
-#[cfg(unix)]
+/// Bind/accept failures (or never, on the non-Unix stdio fallback).
 pub fn serve_unix<F>(path: &str, lp: bool, handler: F) -> std::io::Result<()>
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
-    use std::io::BufReader;
-    use std::os::unix::net::UnixListener;
-
-    let _ = std::fs::remove_file(path); // bind fails if the path exists
-    let listener = UnixListener::bind(path)?;
-    let (stream, _) = listener.accept()?;
-    let _ = std::fs::remove_file(path); // unlink once bound (one-shot server)
-    if lp {
-        serve_over(LpTransport::new(stream.try_clone()?, stream), handler);
-    } else {
-        let read = BufReader::new(stream.try_clone()?);
-        serve_over(crate::transport::IoTransport::new(read, stream), handler);
-    }
-    Ok(())
+    rstui_plugin_core::serve_unix(path, lp, AcpProtocol, handler)
 }
 
-#[cfg(not(unix))]
-pub fn serve_unix<F>(_path: &str, _lp: bool, handler: F) -> std::io::Result<()>
-where
-    F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
-{
-    // No AF_UNIX here — fall back to stdio so the plugin still runs.
-    serve(handler);
-    Ok(())
-}
-
-/// The transport-selecting entry the reference plugins use. A
-/// `--shm <path>`, `--uds <path>`, or `--ws <port>` CLI arg (or the
-/// matching `RSTUI_PLUGIN_SHM`/`_UDS`/`_WS` env var) picks shared memory,
-/// a Unix socket, or a WebSocket; otherwise it serves over stdio. One
-/// binary, every transport — what the cross-runtime/transport profiling
-/// (and the latency-critical opt-in) needs.
+/// The transport-selecting entry the reference plugins use:
+/// `--shm`/`--uds`/`--ws` (or `RSTUI_PLUGIN_SHM`/`_UDS`/`_WS`) pick the
+/// transport, `--lp`/`RSTUI_PLUGIN_LP` the framing; otherwise stdio.
 pub fn serve_auto<F>(handler: F)
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
-    let args: Vec<String> = std::env::args().collect();
-    let arg_val = |flag: &str| -> Option<String> {
-        args.iter()
-            .position(|a| a == flag)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-    };
-    let shm: Option<String> = arg_val("--shm").or_else(|| std::env::var("RSTUI_PLUGIN_SHM").ok());
-    let uds: Option<String> = arg_val("--uds").or_else(|| std::env::var("RSTUI_PLUGIN_UDS").ok());
-    let ws: Option<u16> = arg_val("--ws").and_then(|s| s.parse().ok()).or_else(|| {
-        std::env::var("RSTUI_PLUGIN_WS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-    });
-    let lp = args.iter().any(|a| a == "--lp")
-        || std::env::var("RSTUI_PLUGIN_LP").is_ok_and(|v| v != "0" && !v.is_empty());
-
-    // Precedence: shared memory → Unix socket → websocket → stdio. `--lp`
-    // (length-prefixed binary framing) applies to the uds/stdio paths;
-    // websocket has its own RFC 6455 framing; shm frames via the ring.
-    if let Some(path) = shm {
-        let _ = serve_shm(&path, handler);
-    } else if let Some(path) = uds {
-        let _ = serve_unix(&path, lp, handler);
-    } else if let Some(port) = ws {
-        let _ = serve_ws(("127.0.0.1", port), handler);
-    } else if lp {
-        serve_stdio_lp(handler);
-    } else {
-        serve(handler);
-    }
+    rstui_plugin_core::serve_auto(AcpProtocol, handler);
 }
 
-/// Runs a plugin over a **shared-memory** channel (ADR 0016): attaches to
-/// the segment at `path` (the host created it) and dispatches over a
-/// [`ShmTransport`](crate::transport::ShmTransport). The lowest-latency
-/// local transport — flat sub-µs RTT (scoped-spin/semaphore park) — but
-/// opt-in and **Rust-plugin-only** (no `mmap` from a Node addon-free SDK).
+/// Runs a plugin over a **shared-memory** channel (ADR 0016).
 ///
 /// # Errors
 ///
@@ -166,9 +98,7 @@ pub fn serve_shm<F>(path: &str, handler: F) -> std::io::Result<()>
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
-    let chan = rstui_acp_shm::ShmChannel::open(path)?;
-    serve_over(crate::transport::ShmTransport::new(chan), handler);
-    Ok(())
+    rstui_plugin_core::serve_shm(path, AcpProtocol, handler)
 }
 
 /// [`serve_shm`] for a structured [`Plugin`].
@@ -177,20 +107,13 @@ where
 ///
 /// Segment attach failure.
 pub fn serve_plugin_shm<P: Plugin>(path: &str, mut plugin: P) -> std::io::Result<()> {
-    let chan = rstui_acp_shm::ShmChannel::open(path)?;
-    serve_over(
-        crate::transport::ShmTransport::new(chan),
-        move |event, emit| {
-            let mut host = Host { emit };
-            dispatch(&mut plugin, event, &mut host);
-        },
-    );
-    Ok(())
+    serve_shm(path, move |event, emit| {
+        let mut host = Host { emit };
+        dispatch(&mut plugin, event, &mut host);
+    })
 }
 
-/// Runs a plugin as a WebSocket server: binds `addr`, accepts one client,
-/// and dispatches over a [`WsTransport`](crate::ws::WsTransport) — the same
-/// JSON-RPC, a different transport (the goal's "stdio or websockets").
+/// Runs a plugin as a WebSocket server: binds `addr`, accepts one client.
 ///
 /// # Errors
 ///
@@ -199,9 +122,7 @@ pub fn serve_ws<F>(addr: impl std::net::ToSocketAddrs, handler: F) -> std::io::R
 where
     F: FnMut(HostEvent, &mut dyn FnMut(PluginAction)),
 {
-    let transport = crate::ws::WsTransport::accept(addr)?;
-    serve_over(transport, handler);
-    Ok(())
+    rstui_plugin_core::serve_ws(addr, AcpProtocol, handler)
 }
 
 /// [`serve_ws`] for a structured [`Plugin`].
@@ -213,12 +134,10 @@ pub fn serve_plugin_ws<P: Plugin>(
     addr: impl std::net::ToSocketAddrs,
     mut plugin: P,
 ) -> std::io::Result<()> {
-    let transport = crate::ws::WsTransport::accept(addr)?;
-    serve_over(transport, move |event, emit| {
+    serve_ws(addr, move |event, emit| {
         let mut host = Host { emit };
         dispatch(&mut plugin, event, &mut host);
-    });
-    Ok(())
+    })
 }
 
 /// An ergonomic emit handle passed to [`Plugin`] callbacks.

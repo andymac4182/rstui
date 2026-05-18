@@ -1,0 +1,35 @@
+[package]
+name = "rstui-plugin-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+# The app-agnostic plugin framework (ADR 0021): JSON-RPC 2.0 envelope,
+# every transport (stdio / length-prefixed / Unix socket / WebSocket /
+# shared memory), and a `Protocol`-generic serve loop with --shm/--uds/
+# --ws/--lp auto-selection. No application vocabulary lives here — an app
+# defines its own Event/Action + one `Protocol` impl and reuses all of
+# this. `rstui-acp-plugin-sdk` is the ACP layer built on top.
+description = "App-agnostic JSON-RPC 2.0 plugin framework: transports + Protocol-generic serve loop. Bring your own vocabulary."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+# Shared-memory transport (ADR 0016). Generic SPSC transport — the `acp`
+# in the crate name is historical (ADR 0021), it carries no ACP
+# vocabulary. All `unsafe` is contained there; this crate stays
+# `unsafe`-free (`[lints] workspace = true` ⇒ unsafe_code = forbid).
+rstui-acp-shm = { path = "../rstui-acp-shm" }
+
+[dev-dependencies]
+# Doctests in lib.rs construct `serde_json::Value` directly.
+serde_json = { version = "1", default-features = false, features = ["std"] }

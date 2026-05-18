@@ -17,16 +17,15 @@ description = "Rust SDK for rstui-acp-client plugins: JSON-RPC 2.0 over stdio/we
 workspace = true
 
 [dependencies]
-# The only deps: a JSON codec. std-only otherwise (no async/tokio): a plugin
-# is a small synchronous process. Both are MIT/Apache (deny-allowed) and
-# already in the workspace graph via the client.
+# The app-agnostic plugin framework (ADR 0021): JSON-RPC envelope, every
+# transport, and the Protocol-generic serve loop. This SDK adds only the
+# ACP vocabulary (`proto`) + ergonomics on top, and re-exports core so
+# downstream paths are unchanged.
+rstui-plugin-core = { path = "../rstui-plugin-core" }
+# `proto` uses serde derive + serde_json directly. std-only otherwise.
+# MIT/Apache (deny-allowed), already in the workspace graph.
 serde = { version = "1", default-features = false, features = [
     "std",
     "derive",
 ] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
-# Shared-memory transport (ADR 0016). All `unsafe` is contained in that
-# crate; the SDK stays `unsafe`-free. Non-optional: `libc` is already
-# universal in the graph and the opt-in is purely *runtime* (`--shm`),
-# so there is no feature matrix. publish=false sibling, no new licence.
-rstui-acp-shm = { path = "../rstui-acp-shm" }
