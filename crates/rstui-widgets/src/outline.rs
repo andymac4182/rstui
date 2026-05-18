@@ -351,15 +351,42 @@ struct BracedLang {
 
 const RUST: &BracedLang = &BracedLang {
     rules: &[
-        Rule { prefix: "mod", kind: SymbolKind::Module },
-        Rule { prefix: "struct", kind: SymbolKind::Struct },
-        Rule { prefix: "enum", kind: SymbolKind::Enum },
-        Rule { prefix: "trait", kind: SymbolKind::Trait },
-        Rule { prefix: "union", kind: SymbolKind::Struct },
-        Rule { prefix: "impl", kind: SymbolKind::Impl },
-        Rule { prefix: "fn", kind: SymbolKind::Function },
-        Rule { prefix: "const", kind: SymbolKind::Constant },
-        Rule { prefix: "static", kind: SymbolKind::Constant },
+        Rule {
+            prefix: "mod",
+            kind: SymbolKind::Module,
+        },
+        Rule {
+            prefix: "struct",
+            kind: SymbolKind::Struct,
+        },
+        Rule {
+            prefix: "enum",
+            kind: SymbolKind::Enum,
+        },
+        Rule {
+            prefix: "trait",
+            kind: SymbolKind::Trait,
+        },
+        Rule {
+            prefix: "union",
+            kind: SymbolKind::Struct,
+        },
+        Rule {
+            prefix: "impl",
+            kind: SymbolKind::Impl,
+        },
+        Rule {
+            prefix: "fn",
+            kind: SymbolKind::Function,
+        },
+        Rule {
+            prefix: "const",
+            kind: SymbolKind::Constant,
+        },
+        Rule {
+            prefix: "static",
+            kind: SymbolKind::Constant,
+        },
     ],
     // `async`/`unsafe`/`extern` may sit between `pub` and `fn`; `default` for
     // specialization. `pub(crate)`/`pub(…)` handled by the `(` strip below.
@@ -372,10 +399,22 @@ const GO: &BracedLang = &BracedLang {
     rules: &[
         // `type X struct` / `type X interface` are special-cased in the name
         // extractor; the generic `type` rule is the fallback (alias → Other).
-        Rule { prefix: "func", kind: SymbolKind::Function },
-        Rule { prefix: "type", kind: SymbolKind::Other },
-        Rule { prefix: "const", kind: SymbolKind::Constant },
-        Rule { prefix: "var", kind: SymbolKind::Constant },
+        Rule {
+            prefix: "func",
+            kind: SymbolKind::Function,
+        },
+        Rule {
+            prefix: "type",
+            kind: SymbolKind::Other,
+        },
+        Rule {
+            prefix: "const",
+            kind: SymbolKind::Constant,
+        },
+        Rule {
+            prefix: "var",
+            kind: SymbolKind::Constant,
+        },
     ],
     qualifiers: &[],
     method_parents: &[],
@@ -384,14 +423,32 @@ const GO: &BracedLang = &BracedLang {
 
 const JS: &BracedLang = &BracedLang {
     rules: &[
-        Rule { prefix: "class", kind: SymbolKind::Class },
-        Rule { prefix: "interface", kind: SymbolKind::Trait },
-        Rule { prefix: "function", kind: SymbolKind::Function },
+        Rule {
+            prefix: "class",
+            kind: SymbolKind::Class,
+        },
+        Rule {
+            prefix: "interface",
+            kind: SymbolKind::Trait,
+        },
+        Rule {
+            prefix: "function",
+            kind: SymbolKind::Function,
+        },
         // `const`/`let`/`var` only become a symbol when they bind a function
         // or arrow (decided in the extractor); otherwise skipped.
-        Rule { prefix: "const", kind: SymbolKind::Function },
-        Rule { prefix: "let", kind: SymbolKind::Function },
-        Rule { prefix: "var", kind: SymbolKind::Function },
+        Rule {
+            prefix: "const",
+            kind: SymbolKind::Function,
+        },
+        Rule {
+            prefix: "let",
+            kind: SymbolKind::Function,
+        },
+        Rule {
+            prefix: "var",
+            kind: SymbolKind::Function,
+        },
     ],
     qualifiers: &["export", "default", "async", "public", "private", "static"],
     method_parents: &[SymbolKind::Class, SymbolKind::Trait],
@@ -400,9 +457,18 @@ const JS: &BracedLang = &BracedLang {
 
 const C: &BracedLang = &BracedLang {
     rules: &[
-        Rule { prefix: "struct", kind: SymbolKind::Struct },
-        Rule { prefix: "union", kind: SymbolKind::Struct },
-        Rule { prefix: "enum", kind: SymbolKind::Enum },
+        Rule {
+            prefix: "struct",
+            kind: SymbolKind::Struct,
+        },
+        Rule {
+            prefix: "union",
+            kind: SymbolKind::Struct,
+        },
+        Rule {
+            prefix: "enum",
+            kind: SymbolKind::Enum,
+        },
     ],
     qualifiers: &["static", "inline", "extern", "const", "unsigned", "signed"],
     method_parents: &[],
@@ -496,7 +562,14 @@ fn scan_braced(lines: &[&str], lang: &BracedLang) -> Vec<Symbol> {
 
         // No definition here: still must count this line's braces/comments so
         // depth and the scope stack stay correct.
-        sweep_line_at(lineno, line, &mut scopes, &mut out, &mut in_block_comment, None);
+        sweep_line_at(
+            lineno,
+            line,
+            &mut scopes,
+            &mut out,
+            &mut in_block_comment,
+            None,
+        );
     }
 
     // EOF: anything whose body never closed (no matching `}`, or a `;`-less
@@ -583,7 +656,10 @@ fn sweep_line_at(
                     sym: Some(idx),
                     kind: out[idx].kind,
                 }),
-                None => scopes.push(OpenScope { sym: None, kind: SymbolKind::Other }),
+                None => scopes.push(OpenScope {
+                    sym: None,
+                    kind: SymbolKind::Other,
+                }),
             }
         } else if c == '}' {
             if let Some(scope) = scopes.pop() {
@@ -637,8 +713,7 @@ fn recognise(trimmed: &str, lang: &BracedLang) -> Option<(String, SymbolKind)> {
                 // Peek the next word; only treat `q` as a qualifier when the
                 // construct continues with another qualifier or a keyword.
                 let nxt = r[after..].trim_start();
-                let next_word: String =
-                    nxt.chars().take_while(|&c| is_ident(c)).collect();
+                let next_word: String = nxt.chars().take_while(|&c| is_ident(c)).collect();
                 if !(is_qual(&next_word) || is_rule_kw(&next_word)) {
                     break; // `q` introduces a binding — let the rules see it
                 }
@@ -705,9 +780,27 @@ fn recognise_bare_method(trimmed: &str) -> Option<(String, SymbolKind)> {
     let (name, end) = next_ident(s, 0)?;
     // Reject keywords that can be followed by `(` but are not methods.
     const NOT_METHOD: &[&str] = &[
-        "if", "for", "while", "switch", "catch", "return", "function",
-        "do", "else", "with", "await", "yield", "new", "delete", "typeof",
-        "void", "in", "of", "case", "throw", "constructor",
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "return",
+        "function",
+        "do",
+        "else",
+        "with",
+        "await",
+        "yield",
+        "new",
+        "delete",
+        "typeof",
+        "void",
+        "in",
+        "of",
+        "case",
+        "throw",
+        "constructor",
     ];
     // `constructor` *is* a method in JS; keep it (remove from the reject set
     // by special-casing): only the genuine control words are rejected.
@@ -898,7 +991,9 @@ fn scan_python(lines: &[&str]) -> Vec<Symbol> {
         };
         let mut kind = kind;
         if kind == SymbolKind::Function
-            && stack.last().is_some_and(|&(_, _, k)| k == SymbolKind::Class)
+            && stack
+                .last()
+                .is_some_and(|&(_, _, k)| k == SymbolKind::Class)
         {
             kind = SymbolKind::Method;
         }
@@ -950,9 +1045,7 @@ fn scan_markdown(lines: &[&str]) -> Vec<Symbol> {
         let t = line.trim_start();
 
         // Toggle a ``` / ~~~ fence (at most 3 leading spaces).
-        if (line.len() - t.len()) <= 3
-            && (t.starts_with("```") || t.starts_with("~~~"))
-        {
+        if (line.len() - t.len()) <= 3 && (t.starts_with("```") || t.starts_with("~~~")) {
             let marker = t.as_bytes()[0] as char;
             match fence {
                 None => {
@@ -984,11 +1077,7 @@ fn scan_markdown(lines: &[&str]) -> Vec<Symbol> {
             continue;
         }
         // Heading text: trim a trailing run of `#` and surrounding space.
-        let name = after
-            .trim()
-            .trim_end_matches('#')
-            .trim()
-            .to_string();
+        let name = after.trim().trim_end_matches('#').trim().to_string();
         let level = hashes as u16;
         out.push(Symbol {
             name,
@@ -1351,7 +1440,10 @@ mod m {
 
     #[test]
     fn unknown_language_and_empty_input_yield_empty_outline() {
-        assert_eq!(Outline::scan("anything {\n}\n", Language::Unknown), Outline::default());
+        assert_eq!(
+            Outline::scan("anything {\n}\n", Language::Unknown),
+            Outline::default()
+        );
         assert_eq!(Outline::scan("", Language::Rust), Outline(vec![]));
         assert_eq!(Outline::scan("", Language::Markdown), Outline(vec![]));
         assert_eq!(Outline::scan("", Language::Python), Outline(vec![]));
@@ -1398,13 +1490,56 @@ mod m {
         // A code-flavoured alphabet: keywords/punctuation that exercise the
         // brace/indent/heading paths, plus raw bytes for the "garbage" case.
         let toks: &[&str] = &[
-            "fn ", "pub ", "mod ", "struct ", "enum ", "impl ", "trait ",
-            "def ", "class ", "async ", "func ", "type ", "interface ",
-            "const ", "static ", "let ", "var ", "function ", "return ",
-            "name", "Foo", "x", "(", ")", "{", "}", "<", ">", ";", "=",
-            "=>", "//", "/*", "*/", "\"q\"", "'c'", "`t`", "#", "##",
-            "######", "@deco", "#[attr]", " for ", " where ", "  ", "\t",
-            "struct {", "interface {", "( r *T ) ", "\\",
+            "fn ",
+            "pub ",
+            "mod ",
+            "struct ",
+            "enum ",
+            "impl ",
+            "trait ",
+            "def ",
+            "class ",
+            "async ",
+            "func ",
+            "type ",
+            "interface ",
+            "const ",
+            "static ",
+            "let ",
+            "var ",
+            "function ",
+            "return ",
+            "name",
+            "Foo",
+            "x",
+            "(",
+            ")",
+            "{",
+            "}",
+            "<",
+            ">",
+            ";",
+            "=",
+            "=>",
+            "//",
+            "/*",
+            "*/",
+            "\"q\"",
+            "'c'",
+            "`t`",
+            "#",
+            "##",
+            "######",
+            "@deco",
+            "#[attr]",
+            " for ",
+            " where ",
+            "  ",
+            "\t",
+            "struct {",
+            "interface {",
+            "( r *T ) ",
+            "\\",
         ];
         let langs = [
             Language::Rust,

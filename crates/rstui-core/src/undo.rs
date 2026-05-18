@@ -449,10 +449,7 @@ mod tests {
         // discarded (linear history, not a tree).
         h.snapshot(&String::from("v1-branch"));
         assert!(!h.can_redo());
-        assert_eq!(
-            h.undo(&String::from("v1-branch")).as_deref(),
-            Some("v1"),
-        );
+        assert_eq!(h.undo(&String::from("v1-branch")).as_deref(), Some("v1"),);
     }
 
     #[test]
@@ -537,11 +534,7 @@ mod tests {
                         // can_undo must agree with what undo returns.
                         let expected = h.can_undo();
                         let got = h.undo(&doc);
-                        assert_eq!(
-                            got.is_some(),
-                            expected,
-                            "can_undo disagreed with undo",
-                        );
+                        assert_eq!(got.is_some(), expected, "can_undo disagreed with undo",);
                         if let Some(restored) = got {
                             doc = restored;
                         }
@@ -550,11 +543,7 @@ mod tests {
                         // can_redo must agree with what redo returns.
                         let expected = h.can_redo();
                         let got = h.redo(&doc);
-                        assert_eq!(
-                            got.is_some(),
-                            expected,
-                            "can_redo disagreed with redo",
-                        );
+                        assert_eq!(got.is_some(), expected, "can_redo disagreed with redo",);
                         if let Some(re) = got {
                             doc = re;
                         }

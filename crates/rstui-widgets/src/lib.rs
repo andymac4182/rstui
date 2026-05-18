@@ -419,8 +419,6 @@ pub use canvas::{Canvas, CanvasLine, Context, Marker, Painter, Points, Rectangle
 pub use card::Card;
 pub use changeset::{Changeset, DiffFile, FileStatus, HunkRef};
 pub use checkbox::Checkbox;
-pub use outline::{Outline, Symbol, SymbolKind};
-pub use syntax::{Language, LexState, SyntaxStyles};
 pub use command_palette::CommandPalette;
 pub use data_table::{
     CellField, CellSelectState, DataColumn, DataRow, DataTable, DataTableHit, DataTableState,
@@ -440,6 +438,8 @@ pub use link::{Link, LinkActivation};
 pub use list::{List, ListItem};
 pub use markdown::{LinkRegion, Markdown, MarkdownTheme};
 pub use menu::{Menu, MenuItem};
+pub use outline::{Outline, Symbol, SymbolKind};
+pub use syntax::{Language, LexState, SyntaxStyles};
 // The Mermaid AST types (`Direction`, `Node`, `Edge`, `EdgeKind`, `Shape`,
 // `MermaidGraph`) are intentionally reached via `mermaid::` rather than
 // re-exported at the crate root: `Direction`/`Node`/`Edge` are generic enough

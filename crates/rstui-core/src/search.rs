@@ -284,12 +284,7 @@ impl Query {
     /// a `col` past the line, `usize::MAX` either component), or no match at
     /// all all yield `None` (or the wrapped first match) without panicking.
     #[must_use]
-    pub fn next_from(
-        &self,
-        lines: &[String],
-        from: (usize, usize),
-        wrap: bool,
-    ) -> Option<Match> {
+    pub fn next_from(&self, lines: &[String], from: (usize, usize), wrap: bool) -> Option<Match> {
         if self.is_empty() {
             return None;
         }
@@ -330,12 +325,7 @@ impl Query {
     /// components, or no match at all all yield `None` (or the wrapped last
     /// match) without panicking.
     #[must_use]
-    pub fn prev_from(
-        &self,
-        lines: &[String],
-        from: (usize, usize),
-        wrap: bool,
-    ) -> Option<Match> {
+    pub fn prev_from(&self, lines: &[String], from: (usize, usize), wrap: bool) -> Option<Match> {
         if self.is_empty() {
             return None;
         }
@@ -471,12 +461,32 @@ mod tests {
         assert_eq!(
             q.find_all(&lines),
             vec![
-                Match { row: 0, start: 0, end: 2 },
-                Match { row: 0, start: 3, end: 5 },
-                Match { row: 0, start: 9, end: 11 },
+                Match {
+                    row: 0,
+                    start: 0,
+                    end: 2
+                },
+                Match {
+                    row: 0,
+                    start: 3,
+                    end: 5
+                },
+                Match {
+                    row: 0,
+                    start: 9,
+                    end: 11
+                },
                 // Adjacent, non-overlapping: 0..2 then 2..4, never 1..3.
-                Match { row: 2, start: 0, end: 2 },
-                Match { row: 2, start: 2, end: 4 },
+                Match {
+                    row: 2,
+                    start: 0,
+                    end: 2
+                },
+                Match {
+                    row: 2,
+                    start: 2,
+                    end: 4
+                },
             ]
         );
     }
@@ -490,11 +500,23 @@ mod tests {
             q.find_all(&lines),
             vec![
                 // "é foo ..." — 'é'(0) ' '(1) 'f'(2) ⇒ 2..5
-                Match { row: 0, start: 2, end: 5 },
+                Match {
+                    row: 0,
+                    start: 2,
+                    end: 5
+                },
                 // "... 日 foo" — through "é foo 日 " is 8 chars ⇒ 8..11
-                Match { row: 0, start: 8, end: 11 },
+                Match {
+                    row: 0,
+                    start: 8,
+                    end: 11
+                },
                 // "😀😀foo" — two emoji then "foo" ⇒ 2..5
-                Match { row: 1, start: 2, end: 5 },
+                Match {
+                    row: 1,
+                    start: 2,
+                    end: 5
+                },
             ]
         );
         // The reported char slice really is the pattern.
@@ -516,10 +538,26 @@ mod tests {
         assert_eq!(
             q.find_all(&lines),
             vec![
-                Match { row: 0, start: 0, end: 3 },
-                Match { row: 0, start: 4, end: 7 },
-                Match { row: 0, start: 8, end: 11 },
-                Match { row: 0, start: 12, end: 15 },
+                Match {
+                    row: 0,
+                    start: 0,
+                    end: 3
+                },
+                Match {
+                    row: 0,
+                    start: 4,
+                    end: 7
+                },
+                Match {
+                    row: 0,
+                    start: 8,
+                    end: 11
+                },
+                Match {
+                    row: 0,
+                    start: 12,
+                    end: 15
+                },
             ]
         );
     }
@@ -531,7 +569,11 @@ mod tests {
         let q = Query::new("Foo");
         assert_eq!(
             q.find_all(&lines),
-            vec![Match { row: 0, start: 0, end: 3 }]
+            vec![Match {
+                row: 0,
+                start: 0,
+                end: 3
+            }]
         );
         // Non-ASCII uppercase also flips smart case to sensitive.
         let lines = doc(&["éÉéÉ"]);
@@ -539,8 +581,16 @@ mod tests {
         assert_eq!(
             q.find_all(&lines),
             vec![
-                Match { row: 0, start: 1, end: 2 },
-                Match { row: 0, start: 3, end: 4 },
+                Match {
+                    row: 0,
+                    start: 1,
+                    end: 2
+                },
+                Match {
+                    row: 0,
+                    start: 3,
+                    end: 4
+                },
             ]
         );
     }
@@ -553,8 +603,16 @@ mod tests {
         assert_eq!(
             q.find_all(&lines),
             vec![
-                Match { row: 0, start: 0, end: 1 },
-                Match { row: 0, start: 2, end: 3 },
+                Match {
+                    row: 0,
+                    start: 0,
+                    end: 1
+                },
+                Match {
+                    row: 0,
+                    start: 2,
+                    end: 3
+                },
             ]
         );
         // Forced insensitive: a mixed-case pattern still folds.
@@ -571,7 +629,11 @@ mod tests {
         let q = Query::new("é").case(Case::Insensitive);
         assert_eq!(
             q.find_all(&lines),
-            vec![Match { row: 0, start: 1, end: 2 }]
+            vec![Match {
+                row: 0,
+                start: 1,
+                end: 2
+            }]
         );
     }
 
@@ -592,28 +654,48 @@ mod tests {
         // At/after on the start row is decided by char column.
         assert_eq!(
             q.next_from(&lines, (0, 0), false),
-            Some(Match { row: 0, start: 0, end: 3 })
+            Some(Match {
+                row: 0,
+                start: 0,
+                end: 3
+            })
         );
         assert_eq!(
             q.next_from(&lines, (0, 1), false),
-            Some(Match { row: 0, start: 6, end: 9 })
+            Some(Match {
+                row: 0,
+                start: 6,
+                end: 9
+            })
         );
         // Falls through to a later row.
         assert_eq!(
             q.next_from(&lines, (0, 7), false),
-            Some(Match { row: 1, start: 2, end: 5 })
+            Some(Match {
+                row: 1,
+                start: 2,
+                end: 5
+            })
         );
         // Past the last match: no wrap ⇒ None, wrap ⇒ first match overall.
         assert_eq!(q.next_from(&lines, (1, 3), false), None);
         assert_eq!(
             q.next_from(&lines, (1, 3), true),
-            Some(Match { row: 0, start: 0, end: 3 })
+            Some(Match {
+                row: 0,
+                start: 0,
+                end: 3
+            })
         );
         // Out-of-range `from` is total.
         assert_eq!(q.next_from(&lines, (999, 999), false), None);
         assert_eq!(
             q.next_from(&lines, (usize::MAX, usize::MAX), true),
-            Some(Match { row: 0, start: 0, end: 3 })
+            Some(Match {
+                row: 0,
+                start: 0,
+                end: 3
+            })
         );
     }
 
@@ -626,27 +708,47 @@ mod tests {
         assert_eq!(q.prev_from(&lines, (0, 0), false), None);
         assert_eq!(
             q.prev_from(&lines, (0, 1), false),
-            Some(Match { row: 0, start: 0, end: 3 })
+            Some(Match {
+                row: 0,
+                start: 0,
+                end: 3
+            })
         );
         assert_eq!(
             q.prev_from(&lines, (0, 6), false),
-            Some(Match { row: 0, start: 0, end: 3 })
+            Some(Match {
+                row: 0,
+                start: 0,
+                end: 3
+            })
         );
         // Looks back into earlier rows; takes the last match before `from`.
         assert_eq!(
             q.prev_from(&lines, (2, 0), false),
-            Some(Match { row: 1, start: 2, end: 5 })
+            Some(Match {
+                row: 1,
+                start: 2,
+                end: 5
+            })
         );
         // Nothing before the first match: no wrap ⇒ None, wrap ⇒ last overall.
         assert_eq!(q.prev_from(&lines, (0, 0), false), None);
         assert_eq!(
             q.prev_from(&lines, (0, 0), true),
-            Some(Match { row: 1, start: 2, end: 5 })
+            Some(Match {
+                row: 1,
+                start: 2,
+                end: 5
+            })
         );
         // Out-of-range `from` is total (clamped to the last real row).
         assert_eq!(
             q.prev_from(&lines, (999, 999), false),
-            Some(Match { row: 1, start: 2, end: 5 })
+            Some(Match {
+                row: 1,
+                start: 2,
+                end: 5
+            })
         );
     }
 
@@ -750,7 +852,11 @@ mod tests {
                 Case::Insensitive => true,
                 Case::Smart => !pat.chars().any(char::is_uppercase),
             };
-            let folded_pat = if insensitive { fold(&pat) } else { pat.chars().collect() };
+            let folded_pat = if insensitive {
+                fold(&pat)
+            } else {
+                pat.chars().collect()
+            };
 
             let all = q.find_all(&lines);
 

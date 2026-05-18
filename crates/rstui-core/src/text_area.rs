@@ -517,7 +517,7 @@ impl TextArea {
     }
 
     /// The text between `a` and `b` (the pair is normalised, so order does
-    /// not matter), rows joined by `'\n'` exactly as [`to_string`](Self::fmt).
+    /// not matter), rows joined by `'\n'` exactly as `to_string()`.
     /// Both positions are clamped into the document first, so any input is
     /// **total**. This is what a "copy/yank the selection" command reads
     /// back (the logical-selection dual of [`selected_text`](crate::selected_text)).
@@ -563,7 +563,8 @@ impl TextArea {
         // is now the single row `s.0`. Resync the cache with one splice so
         // the CM-3 invariant the totality proptest enforces still holds.
         let new_len = self.lines[s.0].chars().count();
-        self.line_lens.splice(s.0..=e.0.min(self.line_lens.len() - 1), [new_len]);
+        self.line_lens
+            .splice(s.0..=e.0.min(self.line_lens.len() - 1), [new_len]);
         self.row = s.0;
         self.col = s.1;
         self.goal_col = None;
@@ -1034,11 +1035,16 @@ mod tests {
                 // git-review scroll bug needed (the caret can never be
                 // scrolled off-screen, the view never runs past the end).
                 for (vw, vh) in [(1u16, 1u16), (3, 2), (7, 5), (40, 20)] {
-                    let (ro, co) =
-                        ta.scroll_into_view((r + 9, c + 9), (vw, vh), (vw.min(vh)) as u16);
+                    let (ro, co) = ta.scroll_into_view((r + 9, c + 9), (vw, vh), vw.min(vh));
                     let (w, h) = (vw as usize, vh as usize);
-                    assert!(ro <= r && r < ro + h, "row caret {r} escaped [{ro},{ro}+{h})");
-                    assert!(co <= c && c < co + w, "col caret {c} escaped [{co},{co}+{w})");
+                    assert!(
+                        ro <= r && r < ro + h,
+                        "row caret {r} escaped [{ro},{ro}+{h})"
+                    );
+                    assert!(
+                        co <= c && c < co + w,
+                        "col caret {c} escaped [{co},{co}+{w})"
+                    );
                     assert!(ro < ta.row_count(), "row_off {ro} past document");
                 }
             }

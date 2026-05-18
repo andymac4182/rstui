@@ -759,10 +759,7 @@ mod tests {
                                  (anchor {anchor:?}, start {start:?}, end {end:?})"
                             );
                             // The caret end is never in (exclusive).
-                            assert!(
-                                !s.contains(end),
-                                "Char caret end {end:?} must be excluded"
-                            );
+                            assert!(!s.contains(end), "Char caret end {end:?} must be excluded");
                         } else {
                             // Zero-width caret selection: contains nothing.
                             assert!(

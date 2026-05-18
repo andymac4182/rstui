@@ -533,19 +533,18 @@ fn build_file(slice: &[&str]) -> DiffFile {
         h.patch_lines.start < h.patch_lines.end
     });
 
-    let (path, old_path, status) =
-        resolve_identity(&IdentityInput {
-            old_hdr: old_hdr.as_deref(),
-            new_hdr: new_hdr.as_deref(),
-            header_path: header_path.as_deref(),
-            rename_from: rename_from.as_deref(),
-            rename_to: rename_to.as_deref(),
-            copy_from: copy_from.as_deref(),
-            copy_to: copy_to.as_deref(),
-            explicit_added,
-            explicit_deleted,
-            is_binary,
-        });
+    let (path, old_path, status) = resolve_identity(&IdentityInput {
+        old_hdr: old_hdr.as_deref(),
+        new_hdr: new_hdr.as_deref(),
+        header_path: header_path.as_deref(),
+        rename_from: rename_from.as_deref(),
+        rename_to: rename_to.as_deref(),
+        copy_from: copy_from.as_deref(),
+        copy_to: copy_to.as_deref(),
+        explicit_added,
+        explicit_deleted,
+        is_binary,
+    });
 
     DiffFile {
         path,
@@ -768,7 +767,11 @@ rename to new/name.txt
 
         // Each slice begins at its own `diff --git` header.
         assert!(cs.files[0].patch().starts_with("diff --git a/added.txt"));
-        assert!(cs.files[1].patch().starts_with("diff --git a/src/changed.rs"));
+        assert!(
+            cs.files[1]
+                .patch()
+                .starts_with("diff --git a/src/changed.rs")
+        );
         assert!(cs.files[2].patch().starts_with("diff --git a/old/name.txt"));
     }
 
@@ -1033,9 +1036,8 @@ diff --git a/x.txt b/x.txt
 
         // A file with zero hunks (a pure rename) is skipped by file_of_hunk
         // but still occupies a file slot.
-        let with_empty = format!(
-            "diff --git a/r.txt b/s.txt\nrename from r.txt\nrename to s.txt\n{THREE_FILE}"
-        );
+        let with_empty =
+            format!("diff --git a/r.txt b/s.txt\nrename from r.txt\nrename to s.txt\n{THREE_FILE}");
         let cs2 = Changeset::parse(&with_empty);
         assert_eq!(cs2.files.len(), 4);
         assert_eq!(cs2.files[0].hunks.len(), 0);
