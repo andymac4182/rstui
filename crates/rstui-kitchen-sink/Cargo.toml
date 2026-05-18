@@ -30,3 +30,7 @@ rstui-crossterm = { path = "../rstui-crossterm" }
 # Every gpui-component theme as a terminal palette; `RSTUI_THEME` skins the
 # whole app with any of them, so the kitchen sink also demos the theme system.
 rstui-theme = { path = "../rstui-theme" }
+# Opt-in in-app perf/DevTools overlay (ADR 0018), wired live through the
+# crossterm `run_app_with_observer` seam; `F12` toggles it. The kitchen
+# sink is the worked reference for hooking DevTools into a real app.
+rstui-devtools = { path = "../rstui-devtools" }

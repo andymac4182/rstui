@@ -11,7 +11,7 @@
 use std::error::Error;
 
 use rstui_core::Size;
-use rstui_crossterm::run_app;
+use rstui_crossterm::run_app_with_observer;
 use rstui_kitchen_sink::KitchenSink;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -44,6 +44,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Ok(km) = std::env::var("RSTUI_KEYMAP") {
         app = app.with_keymap(&km);
     }
-    run_app(app)?;
+    // Live DevTools (ADR 0018): the observer writes the app's caller-owned
+    // perf meter every frame; `F12` toggles the overlay that reads the
+    // same meter. The no-observer path is byte-identical, so wiring this
+    // only adds the per-iteration timing taps — nothing else changes.
+    let perf = app.perf_meter();
+    let mut observer = rstui_devtools::DevToolsAdapter::new(&perf);
+    run_app_with_observer(app, &mut observer)?;
     Ok(())
 }

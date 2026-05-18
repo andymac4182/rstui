@@ -201,6 +201,7 @@ pub(crate) fn view_overlays(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect)
         Overlay::Drawer => view_drawer(ks, frame, area),
         Overlay::ThemePicker => view_theme_picker(ks, frame, area),
         Overlay::QuitConfirm => view_quit_confirm(ks, frame, area),
+        Overlay::DevTools => view_devtools(ks, frame, area),
     }
 
     if !ks.notices().is_empty() {
@@ -401,6 +402,25 @@ fn view_theme_picker(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
 }
 
 /// The quit-confirmation dialog — a real centred [`Modal`].
+/// The opt-in DevTools performance overlay (`F12`) — a pure projection of
+/// the app's caller-owned [`rstui_devtools::PerfMeter`], framed like the
+/// other overlays. The meter is fed by the
+/// [`DevToolsAdapter`](rstui_devtools::DevToolsAdapter) the live loop
+/// installs (see `main`); here `view` only *reads* it (ADR 0018, ADR 0012
+/// §P1).
+fn view_devtools(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
+    let theme = ks.theme();
+    frame.render_widget(
+        rstui_devtools::DevTools::new(ks.perf())
+            .tab(ks.devtools_tab())
+            .block(Block::bordered().border_type(BorderType::Rounded).title(
+                Line::from(" DevTools · Tab/1–4 switch · F12/Esc close ").style(theme.heading()),
+            ))
+            .style(theme.body()),
+        area,
+    );
+}
+
 fn view_quit_confirm(ks: &KitchenSink, frame: &mut Frame<'_>, area: Rect) {
     let theme = ks.theme();
     let modal = Modal::new()

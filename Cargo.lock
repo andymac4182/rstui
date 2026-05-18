@@ -955,6 +955,7 @@ version = "0.0.1"
 dependencies = [
  "rstui-core",
  "rstui-crossterm",
+ "rstui-devtools",
  "rstui-keymap",
  "rstui-runtime",
  "rstui-theme",

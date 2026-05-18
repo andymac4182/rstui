@@ -75,7 +75,7 @@ use std::io::{self, Write};
 use std::sync::Once;
 
 use crossterm::terminal::disable_raw_mode;
-use rstui_runtime::{App, RunError, run_threaded};
+use rstui_runtime::{App, FrameObserver, RunError, run_threaded, run_threaded_with_observer};
 
 use crate::backend::CrosstermBackend;
 use crate::event_source::CrosstermEventSource;
@@ -229,6 +229,45 @@ where
     // Same reducer as the headless harness (ADR 0008) — only effect dispatch
     // differs — so the app is unchanged between `cargo test` and production.
     run_threaded(app, guard, &mut events)
+}
+
+/// [`run_app`] with an ADR-0018 [`FrameObserver`] installed: the observer
+/// is invoked once per loop iteration with by-value
+/// [`FrameMetrics`](rstui_runtime::FrameMetrics), pairing each frame's
+/// phase timings with (if the [`CountingAllocator`] is installed) its heap
+/// delta. This is how a full-screen crossterm app wires the live
+/// [`rstui-devtools`] overlay without re-implementing the lifecycle.
+///
+/// Behaviour is otherwise **byte-identical** to [`run_app`] — same default
+/// [`LifecycleOptions`], same panic/signal restore, same off-loop
+/// [`rstui_runtime::run_threaded`] reducer; the only added cost is the
+/// per-iteration `Instant` reads, paid solely while observing. The setup
+/// is intentionally duplicated from [`run_app_with`] rather than factored,
+/// so the no-observer path stays provably unchanged (ADR 0018 §3).
+///
+/// [`CountingAllocator`]: https://docs.rs/rstui-devtools
+/// [`rstui-devtools`]: https://github.com/andymac4182/rstui/tree/main/crates/rstui-devtools
+///
+/// # Errors
+///
+/// Identical to [`run_app`].
+pub fn run_app_with_observer<A: App>(
+    app: A,
+    observer: &mut dyn FrameObserver,
+) -> Result<A, CrosstermRunError>
+where
+    A::Message: Send + 'static,
+{
+    install_panic_restore_hook();
+    crate::signal::install_signal_restore_hook();
+
+    let backend = CrosstermBackend::new(io::stdout())
+        .with_color_level(CrosstermBackend::<io::Stdout>::detect_color_level());
+    let guard = TerminalGuard::with_options(backend, LifecycleOptions::default())
+        .map_err(RunError::Backend)?;
+    let mut events = CrosstermEventSource::new();
+
+    run_threaded_with_observer(app, guard, &mut events, observer)
 }
 
 /// Like [`run_app`], but drives the **async event loop**

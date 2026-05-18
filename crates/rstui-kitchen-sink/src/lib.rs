@@ -53,6 +53,13 @@ use theme::{Mode, Theme};
 /// and is remappable via a `RSTUI_KEYMAP` config like every other binding.
 const THEME_PICK: keymap::Action = keymap::Action::Custom("ks.theme");
 
+/// App action: toggle the live [`rstui_devtools::DevTools`] overlay
+/// (ADR 0018) — per-phase frame cost, allocations, FPS, input→frame
+/// latency. A keymapped [`Action::Custom`](keymap::Action::Custom)
+/// (default `F12`, the browser DevTools idiom), remappable via
+/// `RSTUI_KEYMAP` like every other binding.
+const DEVTOOLS: keymap::Action = keymap::Action::Custom("ks.devtools");
+
 /// One queued toast: its level, body, and the animation tick it was born on
 /// (so [`update`](App::update) can expire it without a wall clock).
 #[derive(Debug, Clone)]
@@ -85,6 +92,9 @@ pub(crate) enum Overlay {
     ThemePicker,
     /// The quit-confirmation [`Modal`](rstui_widgets::Modal) (`q` / `Esc`).
     QuitConfirm,
+    /// The opt-in [`rstui_devtools::DevTools`] performance overlay
+    /// (`F12`); `Tab`/`1`–`4` switch tabs, `Esc`/`F12` close.
+    DevTools,
 }
 
 /// Which half of the shell the keyboard drives. `Tab` flips it; the focused
@@ -223,6 +233,14 @@ pub struct KitchenSink {
     /// sampled once per frame in `view` and shown in the header so the app's
     /// performance is always visible.
     fps: rstui_widgets::FpsMeter,
+    /// Caller-owned per-frame perf history (the ADR-0012 §P1 meter,
+    /// ADR 0018). The live loop's [`rstui_devtools::DevToolsAdapter`]
+    /// writes it each frame; the [`Overlay::DevTools`] overlay reads it.
+    /// Behind `Rc` so the observer and `view` can share it.
+    perf: std::rc::Rc<rstui_devtools::PerfMeter>,
+    /// Which DevTools tab (0..4) the overlay shows — caller-owned state
+    /// the overlay only reads (ADR 0012 §P1).
+    devtools_tab: usize,
 }
 
 impl KitchenSink {
@@ -255,11 +273,13 @@ impl KitchenSink {
             sel_region: Cell::new(None),
             clipboard: String::new(),
             keymaps: {
-                // Add the app's one custom action (Ctrl+T → theme picker)
-                // to every built-in map, so it resolves like any binding
-                // and a user keymap file can remap `ks.theme`.
+                // Add the app's custom actions (Ctrl+T → theme picker,
+                // F12 → DevTools) to every built-in map, so they resolve
+                // like any binding and a user keymap file can remap
+                // `ks.theme` / `ks.devtools`.
                 let mut k = keymap::Keymaps::new();
                 k.bind(THEME_PICK, "ctrl+t");
+                k.bind(DEVTOOLS, "f12");
                 // A focused text screen is a `Capture::Text` context
                 // (ADR 0020): while it is active every bare key is raw
                 // input (`q` types `q`) and only these explicit clipboard
@@ -274,6 +294,8 @@ impl KitchenSink {
             drawer_sel: 0,
             rebind: None,
             fps: rstui_widgets::FpsMeter::new(),
+            perf: std::rc::Rc::new(rstui_devtools::PerfMeter::with_capacity(240)),
+            devtools_tab: 0,
         }
     }
 
@@ -509,6 +531,15 @@ impl KitchenSink {
                 self.theme_restore = Some((self.theme, self.theme_name.clone()));
                 self.overlay = Overlay::ThemePicker;
             }
+            // Toggle the live DevTools overlay (the browser `F12` idiom):
+            // pressing it again closes it.
+            DEVTOOLS => {
+                self.overlay = if self.overlay == Overlay::DevTools {
+                    Overlay::None
+                } else {
+                    Overlay::DevTools
+                };
+            }
             // Any other engine `Custom` is a no-op for this app.
             Action::Custom(_) => {}
         }
@@ -520,7 +551,10 @@ impl KitchenSink {
     /// its click — the same routing the old single `Click` message did.
     fn route_click(&mut self, pos: Position) {
         if self.overlay != Overlay::None {
-            if matches!(self.overlay, Overlay::Help | Overlay::QuitConfirm) {
+            if matches!(
+                self.overlay,
+                Overlay::Help | Overlay::QuitConfirm | Overlay::DevTools
+            ) {
                 self.overlay = Overlay::None;
             }
             return;
@@ -692,6 +726,19 @@ impl KitchenSink {
                 }
                 self.overlay = Overlay::None;
             }
+            Overlay::DevTools => match code {
+                KeyCode::Esc | KeyCode::F(12) => self.overlay = Overlay::None,
+                KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                    self.devtools_tab = (self.devtools_tab + 1) % 4;
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.devtools_tab = (self.devtools_tab + 3) % 4;
+                }
+                KeyCode::Char(c @ '1'..='4') => {
+                    self.devtools_tab = c as usize - '1' as usize;
+                }
+                _ => {}
+            },
             Overlay::None => {}
         }
         Cmd::none()
@@ -1083,6 +1130,21 @@ impl KitchenSink {
     }
     pub(crate) fn overlay(&self) -> Overlay {
         self.overlay
+    }
+    pub(crate) fn perf(&self) -> &rstui_devtools::PerfMeter {
+        &self.perf
+    }
+    pub(crate) fn devtools_tab(&self) -> usize {
+        self.devtools_tab
+    }
+    /// A handle to the app's caller-owned perf meter, for installing the
+    /// live [`rstui_devtools::DevToolsAdapter`] over
+    /// [`rstui_crossterm::run_app_with_observer`]. The returned `Rc`
+    /// shares the same meter the live DevTools overlay (`F12`) reads, so
+    /// the observer's per-frame writes show up live (ADR 0018).
+    #[must_use]
+    pub fn perf_meter(&self) -> std::rc::Rc<rstui_devtools::PerfMeter> {
+        std::rc::Rc::clone(&self.perf)
     }
     pub(crate) fn tick(&self) -> u64 {
         self.tick
