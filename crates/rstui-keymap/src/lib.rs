@@ -24,6 +24,11 @@
 //! - **Customisation merged over defaults.** A user override (Textual's
 //!   `set_keymap`, opencode's merged `keybinds`) replaces one action's keys
 //!   by id; `"none"` disables it. Only what you change differs.
+//! - **Discoverable leaders + a conflict audit.**
+//!   [`Keymaps::continuations`] lists what can follow an armed prefix —
+//!   the data a *which-key* popup renders (opencode / Helix /
+//!   which-key.nvim); [`Keymaps::conflicts`] reports a chord bound to two
+//!   actions (the audit Vim/VS Code surface).
 //! - **End-user config, serde-free.** [`Keymaps::load_overrides`] parses a
 //!   trivial `id = keys` text file (hand-rolled, the same ethos as
 //!   [`Chord::parse`] — no serde, ADR 0002) and [`Keymaps::set_active`]
@@ -889,6 +894,55 @@ impl Keymaps {
         self.pending.is_some()
     }
 
+    /// The keys that can follow the **currently-armed** leader/prefix —
+    /// `(key display, action, one-line help)` — the data a *which-key*
+    /// hint popup renders (opencode / Helix / which-key.nvim). Empty when
+    /// nothing is armed, so a view can `if !empty { popup }`
+    /// unconditionally. A pure read of the live (effective) keymap.
+    pub fn continuations(&self) -> Vec<(String, Action, &'static str)> {
+        let Some((first, _)) = self.pending else {
+            return Vec::new();
+        };
+        let km = self.effective();
+        let mut out = Vec::new();
+        for b in &km.binds {
+            for t in &b.triggers {
+                if let Trigger::Chain(a, c) = t {
+                    if *a == first {
+                        out.push((c.display(), b.action, b.action.help()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Bindings that are **ambiguous** in the active (effective) map: a
+    /// trigger bound to more than one distinct action (first-declared
+    /// wins at resolve time, so the rest are dead). The audit
+    /// opencode/Vim/VS Code surface and a typo'd config or a copy-paste
+    /// can introduce — empty for a well-formed map. Cheap; call it from a
+    /// test/guard or surface it in the keymap editor.
+    pub fn conflicts(&self) -> Vec<(String, Vec<Action>)> {
+        let km = self.effective();
+        let mut seen: Vec<(Trigger, Vec<Action>)> = Vec::new();
+        for b in &km.binds {
+            for t in &b.triggers {
+                if let Some(slot) = seen.iter_mut().find(|(tr, _)| tr == t) {
+                    if !slot.1.contains(&b.action) {
+                        slot.1.push(b.action);
+                    }
+                } else {
+                    seen.push((*t, vec![b.action]));
+                }
+            }
+        }
+        seen.into_iter()
+            .filter(|(_, acts)| acts.len() > 1)
+            .map(|(t, acts)| (t.display(km.leader), acts))
+            .collect()
+    }
+
     /// The active keymap's name.
     pub fn active_name(&self) -> &'static str {
         self.sets[self.active].name
@@ -1423,6 +1477,54 @@ mod tests {
             Dispatch::Fall,
             "switching context mid-sequence cancels the prefix"
         );
+    }
+
+    #[test]
+    fn continuations_list_what_follows_an_armed_leader() {
+        let mut k = Keymaps::new();
+        k.cycle(); // Vim
+        k.cycle(); // Leader (⟨leader⟩ = Ctrl+X)
+        assert!(
+            k.continuations().is_empty(),
+            "nothing armed ⇒ no which-key entries"
+        );
+        // Arm the leader; now the popup data is available.
+        assert_eq!(
+            k.dispatch(&ev(KeyCode::Char('x'), KeyModifiers::CONTROL), 0),
+            Dispatch::Pending
+        );
+        let cont = k.continuations();
+        assert!(
+            cont.iter().any(|&(_, a, _)| a == Action::Palette),
+            "⟨leader⟩ p → Palette is offered: {cont:?}"
+        );
+        assert!(
+            cont.iter()
+                .any(|(disp, a, _)| disp == "P" && *a == Action::Palette),
+            "the second-key display is shown ('P' for `p`): {cont:?}"
+        );
+        // Completing or cancelling the sequence clears it again.
+        let _ = k.dispatch(&ev(KeyCode::Char('p'), KeyModifiers::NONE), 1);
+        assert!(k.continuations().is_empty(), "resolved ⇒ no longer armed");
+    }
+
+    #[test]
+    fn conflicts_empty_for_shipped_maps_and_detects_a_double_bind() {
+        // Every shipped map is well-formed.
+        assert!(
+            Keymaps::new().conflicts().is_empty(),
+            "the Default map has no ambiguous trigger"
+        );
+        // A copy-paste / typo that binds one chord to two actions is
+        // reported (chord display + the colliding actions, declare order).
+        let dup = Keymap::new("oops")
+            .bound(Action::Quit, &["q"])
+            .bound(Action::Help, &["q"]);
+        let k = Keymaps::from_maps(vec![dup]);
+        let c = k.conflicts();
+        assert_eq!(c.len(), 1, "exactly one ambiguous trigger: {c:?}");
+        assert_eq!(c[0].0, "Q");
+        assert_eq!(c[0].1, vec![Action::Quit, Action::Help]);
     }
 
     #[test]

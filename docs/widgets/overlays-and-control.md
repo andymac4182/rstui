@@ -214,6 +214,35 @@ KeymapView::new(rows: &[KeymapRow])
 
 ---
 
+## WhichKey
+
+![WhichKey demo](media/which_key_demo.gif)
+
+The transient **leader-hint popup**: a small, bottom-anchored, opaque
+`key → action` panel shown while a prefix/leader chord is armed — so a
+sequence is *discoverable*, not memorised (the opencode / Helix /
+which-key.nvim affordance). Content-sized, clamped, `max_height`-capped;
+reuses `Kbd` for the caps. Engine-agnostic: a caller-owned
+`&[(key, label)]` slice drives it (no keymap-engine dependency, so
+`rstui-widgets` stays `rstui-core`-only). The kitchen sink feeds it from
+[`rstui-keymap`](../keymaps.md)'s `continuations()` while a leader is
+armed; `git-review`/`acp-client` ship no leader map so they never need
+it.
+
+- **State model:** pure projection of a caller-owned `&[(Cow, Line)]` +
+  the reducer-owned armed state.
+
+```rust
+WhichKey::new(rows: &[(Cow<str>, Line)])
+.title(impl Into<Line>) .block(Block)
+.max_height(u16) .column_gap(u16)
+.area(outer) -> Rect   // bottom-anchored, content-sized (pure)
+```
+
+**Demo:** `cargo run -p rstui-widgets --example which_key_demo`
+
+---
+
 ## Flow
 
 ![Flow demo](media/flow_demo.gif)

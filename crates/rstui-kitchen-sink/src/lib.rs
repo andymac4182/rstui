@@ -1036,6 +1036,9 @@ impl App for KitchenSink {
         self.project_selection(frame);
         chrome::view_footer(self, frame, footer);
         chrome::view_overlays(self, frame, area);
+        // The which-key leader hint, last, bottom-anchored within the body
+        // (just above the footer) so an armed prefix is discoverable.
+        chrome::view_which_key(self, frame, body);
     }
 }
 

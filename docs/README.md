@@ -23,7 +23,7 @@ fits what you are doing.
 
 - **Architecture decisions** — [`docs/adr/`](adr/README.md) (20 ADRs; the *why* behind every boundary)
 - **Composition model** — [`docs/composition.md`](composition.md) (how widgets compose into a screen; ADR 0012)
-- **Keymaps** — [`docs/keymaps.md`](keymaps.md) (customisable, per-OS, multi-keymap keybindings; ADR 0015)
+- **Keymaps** — [`docs/keymaps.md`](keymaps.md) (customisable, per-OS, multi-keymap keybindings; ADR 0015/0020) · [`keymap-review.md`](keymap-review.md) (the comparative audit vs opencode/Textual/VS Code/Vim/Helix)
 - **Code review & editing roadmap** — [`docs/code-review-and-editing.md`](code-review-and-editing.md) (vim-grade editing + hunk-grade review: capability audit and wave plan)
 - **Theming** — [`docs/theming.md`](theming.md) (every gpui-component theme, as a terminal palette)
 - **Conventions** — [`docs/conventions/`](conventions/README.md) (naming gate)

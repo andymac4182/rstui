@@ -156,6 +156,36 @@ lists the choices for a UI or config doc:
 `Keymaps::active_name()` and `status()` (name + whether a leader is armed)
 feed the footer.
 
+### Which-key: discoverable leaders
+
+A leader is only good if you can *find* what follows it.
+`Keymaps::continuations()` returns `(key display, action, help)` for the
+**currently-armed** prefix (empty when nothing is armed), and the
+reusable
+[`WhichKey`](widgets/overlays-and-control.md#whichkey) widget renders it
+as the small bottom-anchored popup opencode / Helix / which-key.nvim are
+known for. The reducer owns the armed state; the view does, every frame:
+
+```rust
+if self.keymaps.armed() {
+    let rows = self.keymaps.continuations().iter()
+        .map(|(k, _a, help)| (Cow::from(k.clone()), Line::from(*help)))
+        .collect::<Vec<_>>();
+    frame.render_widget(WhichKey::new(&rows), body); // bottom-anchored
+}
+```
+
+The kitchen sink shows it the moment `⟨leader⟩` (`Ctrl+X`) is pressed;
+`git-review`/`acp-client` ship no leader map so they never need it.
+
+### Conflict audit
+
+`Keymaps::conflicts()` reports any trigger bound to more than one action
+in the active map (first-declared wins at resolve time, so the rest are
+dead) — the audit Vim/VS Code surface and a typo'd `RSTUI_KEYMAP` or a
+copy-paste can introduce. Empty for a well-formed map; cheap enough to
+assert in a test or surface in the keymap editor.
+
 ## Per-OS layers
 
 Bindings are built at compile time with `cfg!(target_os = …)`: macOS gets

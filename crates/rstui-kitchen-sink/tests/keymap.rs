@@ -184,3 +184,33 @@ fn help_then_k_is_the_universal_gateway_into_the_keymap_editor() {
     );
     assert!(h.is_running());
 }
+
+#[test]
+fn arming_the_leader_shows_the_which_key_popup() {
+    let mut h = harness();
+    h.handle(key(KeyCode::F(2))); // Vim
+    h.handle(key(KeyCode::F(2))); // Leader (Ctrl+X prefix)
+    // The Leader map's *footer* legitimately shows "⟨leader⟩" (binding
+    // display), so the popup-only marker is an action's help() text —
+    // `Action::Drawer.help()` = "Settings drawer" (the footer uses the
+    // lowercase word "settings"), which appears only when the popup
+    // (or a closed overlay) lists it.
+    assert!(
+        !h.snapshot().contains("Settings drawer"),
+        "no which-key popup until the leader is armed"
+    );
+    h.handle(ctrl('x')); // arm the leader
+    let s = h.snapshot();
+    assert!(
+        s.contains("Settings drawer") && s.contains("Command palette"),
+        "the which-key popup lists what can follow the leader \
+         (opencode/Helix idiom):\n{s}"
+    );
+    // Completing the sequence dismisses the popup.
+    h.handle(ch('p'));
+    assert!(
+        !h.snapshot().contains("Settings drawer"),
+        "the popup is gone once the sequence resolves"
+    );
+    assert!(h.is_running());
+}
