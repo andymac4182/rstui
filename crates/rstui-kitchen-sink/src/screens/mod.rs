@@ -16,6 +16,7 @@ pub(crate) mod agent_ui;
 pub(crate) mod analytics;
 pub(crate) mod big_grid;
 pub(crate) mod board;
+pub(crate) mod calendar;
 pub(crate) mod chat;
 pub(crate) mod colour_lab;
 pub(crate) mod containers;
@@ -206,6 +207,9 @@ pub(crate) enum Screen {
     Login,
     /// A Kanban board: cards moved across columns.
     Board,
+    /// A full calendar app: month/week/day/year/agenda views, an event
+    /// editor, drag-to-reschedule, click-to-edit.
+    Calendar,
     /// A live, streaming log / terminal tail.
     Logs,
     /// An OpenTelemetry service overview: golden-signal stats, a
@@ -260,6 +264,7 @@ impl Screen {
         Screen::Settings,
         Screen::Login,
         Screen::Board,
+        Screen::Calendar,
         Screen::Logs,
         Screen::Observability,
         Screen::Metrics,
@@ -285,6 +290,7 @@ impl Screen {
                 | Screen::Login
                 | Screen::Logs
                 | Screen::DataGrid
+                | Screen::Calendar
                 | Screen::A2ui
                 | Screen::JsonRender
         )
@@ -327,6 +333,7 @@ impl Screen {
             Screen::Settings => "Settings",
             Screen::Login => "Sign In",
             Screen::Board => "Kanban Board",
+            Screen::Calendar => "Calendar",
             Screen::Logs => "Live Logs",
             Screen::Observability => "Observability",
             Screen::Metrics => "Metrics",
@@ -359,6 +366,7 @@ impl Screen {
             Screen::Settings => '⚙',
             Screen::Login => '⚿',
             Screen::Board => '▥',
+            Screen::Calendar => '◰',
             Screen::Logs => '☷',
             Screen::Observability => '◉',
             Screen::Metrics => '∿',
@@ -393,6 +401,9 @@ impl Screen {
             Screen::Settings => "Settings — categories & live preferences",
             Screen::Login => "Sign In — inputs with live validation",
             Screen::Board => "Kanban — move cards across columns",
+            Screen::Calendar => {
+                "Calendar — month/week/day/agenda/year, drag to move, click to edit"
+            }
             Screen::Logs => "Live Logs — a streaming, filtered tail",
             Screen::Observability => "Observability — OTel golden signals, charts, errors",
             Screen::Metrics => "Metrics — latency series, distribution, heatmap",
@@ -468,6 +479,7 @@ pub(crate) struct ScreenState {
     pub(crate) settings: settings_app::State,
     pub(crate) login: login::State,
     pub(crate) board: board::State,
+    pub(crate) calendar: calendar::State,
     pub(crate) logs: logs::State,
     pub(crate) observability: observability::State,
     pub(crate) metrics: metrics::State,
@@ -499,6 +511,7 @@ impl ScreenState {
             settings: settings_app::State::new(),
             login: login::State::new(),
             board: board::State::new(),
+            calendar: calendar::State::new(),
             logs: logs::State::new(),
             observability: observability::State::new(),
             metrics: metrics::State::new(),
@@ -531,6 +544,7 @@ impl ScreenState {
             Screen::Settings => self.settings.on_key(code),
             Screen::Login => self.login.on_key(code),
             Screen::Board => self.board.on_key(code),
+            Screen::Calendar => self.calendar.on_key(code),
             Screen::Logs => self.logs.on_key(code),
             Screen::Observability => self.observability.on_key(code),
             Screen::Metrics => self.metrics.on_key(code),
@@ -559,6 +573,7 @@ impl ScreenState {
             Screen::Chat => self.chat.on_click(pos, content),
             Screen::Mail => self.mail.on_click(pos, content),
             Screen::Board => self.board.on_click(pos, content),
+            Screen::Calendar => self.calendar.on_click(pos, content),
             Screen::Data => self.data.on_click(pos, content),
             Screen::Dashboard => self.dashboard.on_click(pos, content),
             Screen::Player => self.player.on_click(pos, content),
@@ -593,6 +608,7 @@ impl ScreenState {
     ) -> ScreenOutcome {
         match screen {
             Screen::Board => self.board.on_press(pos, content),
+            Screen::Calendar => self.calendar.on_press(pos, content),
             Screen::DataGrid => self.data_grid.on_press(pos, content),
             _ => ScreenOutcome::ignored(),
         }
@@ -608,6 +624,7 @@ impl ScreenState {
     ) -> ScreenOutcome {
         match screen {
             Screen::Board => self.board.on_pointer_drag(pos, content),
+            Screen::Calendar => self.calendar.on_pointer_drag(pos, content),
             Screen::DataGrid => self.data_grid.on_pointer_drag(pos, content),
             _ => ScreenOutcome::ignored(),
         }
@@ -623,6 +640,7 @@ impl ScreenState {
     ) -> ScreenOutcome {
         match screen {
             Screen::Board => self.board.on_release(pos, content),
+            Screen::Calendar => self.calendar.on_release(pos, content),
             Screen::DataGrid => self.data_grid.on_release(pos, content),
             _ => ScreenOutcome::ignored(),
         }
@@ -643,6 +661,7 @@ impl ScreenState {
             Screen::Logs => self.logs.on_scroll(up),
             Screen::Ide => self.ide.on_scroll(up),
             Screen::Traces => self.traces.on_scroll(up),
+            Screen::Calendar => self.calendar.on_scroll(up),
             Screen::A2ui => self.a2ui.on_scroll(up),
             Screen::JsonRender => self.json_render.on_scroll(up),
             _ => {}
@@ -671,6 +690,10 @@ impl ScreenState {
             Screen::JsonRender => self.json_render.selection_region(pos, content),
             Screen::Chat => chat::selection_region(pos, content),
             Screen::Containers => containers::selection_region(pos, content),
+            // The calendar is a fully interactive scheduling surface: it owns
+            // press/drag/release for event rescheduling, so a drag must never
+            // start a text selection here.
+            Screen::Calendar => None,
             // Single-surface screens: confine to the whole content (still
             // never the sidebar/header/footer), not a sub-panel.
             _ => Some(content),
@@ -688,6 +711,7 @@ impl ScreenState {
             Screen::JsonRender => self.json_render.on_paste(text),
             Screen::Logs => self.logs.on_paste(text),
             Screen::DataGrid => self.data_grid.on_paste(text),
+            Screen::Calendar => self.calendar.on_paste(text),
             _ => {}
         }
     }
@@ -755,6 +779,7 @@ impl ScreenState {
             Screen::Settings => self.settings.view(theme, tick, frame, area),
             Screen::Login => self.login.view(theme, tick, frame, area),
             Screen::Board => self.board.view(theme, tick, frame, area),
+            Screen::Calendar => self.calendar.view(theme, tick, frame, area),
             Screen::Logs => self.logs.view(theme, tick, frame, area),
             Screen::Observability => self.observability.view(theme, tick, frame, area),
             Screen::Metrics => self.metrics.view(theme, tick, frame, area),
