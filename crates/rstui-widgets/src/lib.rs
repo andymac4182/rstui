@@ -290,6 +290,39 @@
 //!   a structured, severity-coloured log viewer projecting a caller-owned
 //!   scroll `offset` exactly like [`List`].
 //!
+//! The **calendar-app** family — everything a scheduling TUI is built from,
+//! every one a pure projection of the shared caller-owned [`CalendarEvent`]
+//! model and doing **no date math** (the [`Calendar`]/[`Gantt`] discipline);
+//! the app owns moving/scheduling via the views' `*_at` hit accessors
+//! (ADR 0026, the [ADR 0012](https://github.com/andymac4182/rstui/blob/main/docs/adr/0012-widget-composition-and-layout-model.md)
+//! click-as-projection rule):
+//!
+//! - [`event`]: [`CalendarEvent`]/[`EventLayout`] — the caller-owned event
+//!   model (id/title, an integer day axis + minute-of-day, all-day, colour,
+//!   location/description) plus [`event::pack_day`], the overlap-column packer
+//!   the time grids share. A model, not a widget (the [`Link`] precedent).
+//! - [`month_view`]: [`MonthView`] — a month grid carrying event chips,
+//!   multi-day spanning bars and a "+N more" overflow; the events-bearing
+//!   sibling of date-only [`Calendar`].
+//! - [`week_view`]: [`WeekView`] — a 7-day time grid (hour ruler, all-day
+//!   band, [`event::pack_day`] overlap tiling, now-line).
+//! - [`day_view`]: [`DayView`] — the single-day timeline, the focused
+//!   one-column sibling of [`WeekView`].
+//! - [`agenda_view`]: [`AgendaView`] — a chronological day-grouped event
+//!   list, the [`List`] scroll-`offset` projection.
+//! - [`year_view`]: [`YearView`] — twelve mini-months (reusing [`Calendar`])
+//!   with busy-day accents.
+//! - [`time_picker`]: [`TimePicker`] — a closed `HH:MM` field that drops an
+//!   opaque anchored time list (the [`DatePicker`]/[`Select`] idiom).
+//! - [`event_card`]: [`EventCard`] — one event's detail body (the content a
+//!   [`Modal`]/popover frames on "click an event").
+//! - [`event_editor`]: [`EventEditor`]/[`EventEditorField`] — the create/edit
+//!   dialog as a pure **layout** projection (the [`Form`] pattern: owns no
+//!   app state, exposes each control's [`Rect`](rstui_core::Rect)).
+//! - [`date_navigator`]: [`DateNavigator`]/[`NavTarget`] — the one-row
+//!   calendar toolbar (prev/next/today/new + a Day/Week/Month/Year/Agenda
+//!   mode switch), the [`Tabs`]/[`StatusBar`] one-row projection.
+//!
 //! # Example
 //!
 //! ```
