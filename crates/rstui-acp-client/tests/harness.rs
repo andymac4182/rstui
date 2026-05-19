@@ -192,6 +192,50 @@ fn custom_command_switch_synonyms_and_env_precedence() {
     assert_eq!(cfg.agent_command, None);
 }
 
+/// Both `--flag value` and the GNU `--flag=value` form set the same fields
+/// (the latter was previously dropped → `--cmd=…` silently fell through to
+/// the registry picker). Empty values are treated as absent.
+#[test]
+fn from_args_accepts_equals_and_space_forms() {
+    // Space form (regression guard).
+    let c = Config::from_args(
+        ["--cmd", "my-acp --stdio", "--plugin", "p1"]
+            .into_iter()
+            .map(String::from),
+    );
+    assert_eq!(c.agent_command.as_deref(), Some("my-acp --stdio"));
+    assert_eq!(c.plugins, ["p1"]);
+
+    // `--flag=value` form — the bug this fixes.
+    let c = Config::from_args(
+        [
+            "--cmd=my-acp --stdio",
+            "--profile=dev",
+            "--plugin=p1",
+            "--plugin=p2",
+        ]
+        .into_iter()
+        .map(String::from),
+    );
+    assert_eq!(
+        c.agent_command.as_deref(),
+        Some("my-acp --stdio"),
+        "--cmd=value must set the command"
+    );
+    assert_eq!(c.profile.as_deref(), Some("dev"));
+    assert_eq!(c.plugins, ["p1", "p2"]);
+
+    // A value containing `=` survives (split is on the first `=` only).
+    let c = Config::from_args(["--cmd=foo --opt=bar".to_owned()]);
+    assert_eq!(c.agent_command.as_deref(), Some("foo --opt=bar"));
+
+    // Empty / whitespace value ⇒ absent (still the picker).
+    let c = Config::from_args(["--cmd=".to_owned()]);
+    assert_eq!(c.agent_command, None);
+    let c = Config::from_args(["--cmd", "  "].into_iter().map(String::from));
+    assert_eq!(c.agent_command, None);
+}
+
 /// `--profile <name>` resolves a `(command, plugins)` recipe against the
 /// profiles map (passed in, so the test never touches disk). Precedence is
 /// `--cmd` › `--profile` › env; profile plugins union with `--plugin`.

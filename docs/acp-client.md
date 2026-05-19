@@ -65,8 +65,10 @@ speak ACP to over its stdio — a local dev build, `python my_acp.py`, any
 ACP server — bypassing the registry. The crate sets `default-run`, so
 `cargo run -p rstui-acp-client -- …` is unambiguous even though it ships
 nine binaries; the `--` before the switch is required (it separates Cargo's
-args from the program's). The command is **shell-split** (single/double
-quotes and `\` escapes honored), so spaced paths and quoted args survive:
+args from the program's). Both `--cmd value` and `--cmd=value` work (same
+for `--agent`/`--command`/`--profile`/`--plugin`). The command is
+**shell-split** (single/double quotes and `\` escapes honored), so spaced
+paths and quoted args survive:
 `--cmd 'python "/p with space/s.py" --flag'`.
 
 The target **must speak ACP** (JSON-RPC 2.0) over stdio and write *nothing

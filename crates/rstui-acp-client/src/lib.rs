@@ -61,19 +61,39 @@ pub struct Config {
 
 impl Config {
     /// Parses the custom-command switch (`--agent` / `--cmd` / `--command`,
-    /// all synonyms — the last one wins), `--plugin <cmd>` (repeatable), and
-    /// `--help` from an argument iterator. Unknown flags are ignored so the
-    /// binary stays forgiving in a terminal. Pure: the `RSTUI_ACP_AGENT`
-    /// env fallback is applied separately by [`with_agent_env`](Self::with_agent_env).
+    /// all synonyms — the last one wins), `--profile <name>`, and
+    /// `--plugin <cmd>` (repeatable). Both `--flag value` and the GNU
+    /// `--flag=value` form are accepted; an empty/whitespace value is
+    /// treated as absent. Unknown flags are ignored so the binary stays
+    /// forgiving in a terminal. Pure: the `RSTUI_ACP_AGENT` env fallback is
+    /// applied separately by [`with_agent_env`](Self::with_agent_env).
     pub fn from_args<I: IntoIterator<Item = String>>(args: I) -> Self {
         let mut cfg = Config::default();
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--agent" | "--cmd" | "--command" => cfg.agent_command = it.next(),
-                "--profile" => cfg.profile = it.next(),
+            // Accept `--flag=value` (split on the first `=`) as well as
+            // `--flag value` (the value is the next arg). split_once only
+            // touches the flag token, so a value containing `=` is intact.
+            let (flag, inline) = match arg.split_once('=') {
+                Some((f, v)) => (f, Some(v.to_owned())),
+                None => (arg.as_str(), None),
+            };
+            match flag {
+                "--agent" | "--cmd" | "--command" => {
+                    cfg.agent_command = inline
+                        .or_else(|| it.next())
+                        .filter(|s| !s.trim().is_empty());
+                }
+                "--profile" => {
+                    cfg.profile = inline
+                        .or_else(|| it.next())
+                        .filter(|s| !s.trim().is_empty());
+                }
                 "--plugin" => {
-                    if let Some(p) = it.next() {
+                    if let Some(p) = inline
+                        .or_else(|| it.next())
+                        .filter(|s| !s.trim().is_empty())
+                    {
                         cfg.plugins.push(p);
                     }
                 }
