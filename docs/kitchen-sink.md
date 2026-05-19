@@ -50,6 +50,38 @@ theme + animation tick), a `Sidebar` rail, a `StatusBar` footer, and the
 overlay stack (`HelpOverlay`, `CommandPalette`, `Drawer`, quit `Modal`,
 `Toast` queue).
 
+## The Calendar experience
+
+The `EXPERIENCES` rail also carries a full scheduling app, composed from the
+whole [calendar-app family](widgets/calendar-app.md):
+
+| Screen | Widgets it shows |
+|--------|------------------|
+| Calendar | `DateNavigator` toolbar over `DayView`/`WeekView`/`MonthView`/`YearView`/`AgendaView`; `EventCard` detail modal; `EventEditor` dialog with real `Input`/`Switch`/`TimePicker`/`DatePicker`/`Select`/`Editor` controls |
+
+Reach it from the `Experiences` rail group, the command palette
+(`:calendar`), or the sidebar. It is `is_text_entry` (the editor dialog owns
+every char key), so `Ctrl/⌘+K` opens the command palette from it. The seed is
+deterministic — ~12 May-2026 events, a fixed "now" 11:30 and "today" the
+14th, no wall clock and no RNG — and the widgets do **no date math** (the
+screen does only static-table day-of-month arithmetic).
+
+Its keys:
+
+| Key(s) | Action |
+|--------|--------|
+| `d` `w` `m` `y` `a` | Switch view — Day / Week / Month / Year / Agenda |
+| `←` `→`, or `[` `]` | Page the period (Day ±1, Week ±7; clamped) |
+| `t` | Jump to today |
+| `↑` `↓` | Move the selection through the period's events (Month/Year: the day ±7) |
+| `n` | Create a new event (opens the editor) |
+| `e` | Edit the selected event |
+| `Enter` | Open the selected event's detail card |
+| `x` / `Delete` | Delete the selected event |
+| detail modal | `Esc`/`Enter` close · `e` edit · `x`/`Delete` delete |
+| editor modal | `Tab`/`↑↓` move focus · type into the focused field · `Space` toggles all-day / cycles the calendar · `←/→` nudge the focused time/date/category · `Enter` on Save commits · `Esc` cancels |
+| mouse | Press an event and drag to reschedule it (preserving its duration) · click the toolbar for a `NavTarget` · click an event opens its detail · click empty grid selects the day (Week/Day: seeds a new event there) · wheel scrolls Agenda / steps the day |
+
 ## The observability suite
 
 A third rail section — an OpenTelemetry-style metrics / traces / logs

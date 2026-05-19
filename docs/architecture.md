@@ -72,7 +72,7 @@ surface to justify it.
 | Crate | Owns | Depends on | Doc |
 |-------|------|-----------|-----|
 | `rstui-core` | Geometry, style, layout, buffer, terminal, event, focus, the `Widget` trait, text, the editing/scroll/selection models | *nothing* | [Core reference](core-reference.md) |
-| `rstui-widgets` | The ~54 concrete general widgets, one module each; tree-sitter-free | `rstui-core` | [Component library](widgets/README.md) |
+| `rstui-widgets` | The ~72 concrete general widgets, one module each; tree-sitter-free | `rstui-core` | [Component library](widgets/README.md) |
 | `rstui-code` | The code-editing widgets (`Editor`, `Diff`, `LineNumberGutter`) + the syntax/outline/changeset models + the first-class tree-sitter engine; the only crate that pulls tree-sitter (ADR 0024) | `rstui-core`, `rstui-widgets`, `tree-sitter` | [Code widgets](widgets/code.md) |
 | `rstui-runtime` | `App`/`Cmd`, the `Harness`, the live `run` loop | `rstui-core` | [Runtime](runtime.md) |
 | `rstui-crossterm` | crossterm `Backend` + `EventSource` + panic-safe lifecycle, `run_app` | `rstui-core`, `rstui-runtime`, crossterm | [Runtime](runtime.md#crossterm-the-live-terminal) |
@@ -142,6 +142,7 @@ you are changing.
 | [0022](adr/0022-syntax-colour-and-symbol-engine.md) | Syntax-colour & symbol engine: dependency-free lexer floor + optional feature-gated tree-sitter tier (one parse → highlight *and* symbols) |
 | [0023](adr/0023-treesitter-tier1-excluded-leaf-crate.md) | tree-sitter Tier-1 as a workspace-`exclude`d opt-in leaf crate — *superseded by [0024](adr/0024-code-widget-crate-and-treesitter-exemption.md)* |
 | [0024](adr/0024-code-widget-crate-and-treesitter-exemption.md) | `rstui-code` widget crate (move `Editor`/`Diff`/code modules + fold the tree-sitter engine in) with a first-class, gate-protected tree-sitter exemption — supersedes 0023, amends 0022 & 0002; only `rstui-code` consumers pull tree-sitter |
+| [0026](adr/0026-calendar-app-widget-suite.md) | Calendar-app widget suite — one shared caller-owned `CalendarEvent` model (+ `pack_day` overlap packer) and nine pure-projection views/controls (Month/Week/Day/Agenda/Year, TimePicker, EventCard, EventEditor, DateNavigator); no date math (ADR 0002 §4), the app owns move/schedule via hit accessors (ADR 0012); purely additive |
 
 This table is a curated subset; see [`docs/adr/README.md`](adr/README.md) for
 the complete ADR index, format and statuses.

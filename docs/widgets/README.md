@@ -33,6 +33,7 @@ caller-owned state it projects — this is the part that matters most), the
 | **Rich rendering** | Markdown, Link, Mermaid, Structurizr, JsonCanvas, Extmark | [rich-rendering.md](rich-rendering.md) |
 | **Code** | Editor, Diff, LineNumberGutter | [code.md](code.md) |
 | **Forms & data** | Slider, Switch, Form, MaskedInput, Sparkline, BarChart, Calendar, DatePicker, DescriptionList, Badge, Alert, Divider, DataTable | [forms-and-data.md](forms-and-data.md) |
+| **Calendar app** | MonthView, WeekView, DayView, AgendaView, YearView, TimePicker, EventCard, EventEditor, DateNavigator | [calendar-app.md](calendar-app.md) |
 | **Navigation & layout** | Menu, CommandPalette, Tooltip, Breadcrumb, SplitPane, Accordion, Card, Sidebar, Stepper, Pagination | [navigation-and-layout.md](navigation-and-layout.md) |
 | **Overlays & control** | ScrollView, Grid, Align, Popover, Drawer, Skeleton, Avatar, Kbd, HelpOverlay, KeymapView, WhichKey, Flow | [overlays-and-control.md](overlays-and-control.md) |
 | **Observability** | LineChart, Heatmap, Histogram, StatPanel, FlameGraph, TraceWaterfall, LogStream | [observability.md](observability.md) |
@@ -43,6 +44,7 @@ caller-owned state it projects — this is the part that matters most), the
 | Widget | Family | Demo example |
 |--------|--------|--------------|
 | [Accordion](navigation-and-layout.md#accordion) | nav/layout | `accordion_demo` |
+| [AgendaView](calendar-app.md#agendaview) | calendar | `agenda_view_demo` |
 | [Alert](forms-and-data.md#alert) | forms/data | `alert_demo` |
 | [Align](overlays-and-control.md#align) | overlays | `align_demo` |
 | [Avatar](overlays-and-control.md#avatar) | overlays | `avatar_demo` |
@@ -54,6 +56,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [BulletChart](charts.md#bulletchart) | charts | `bullet_chart_demo` |
 | [Button](core-set.md#button) | core | `button_demo` |
 | [Calendar](forms-and-data.md#calendar) | forms/data | `calendar_demo` |
+| [CalendarEvent](calendar-app.md#the-calendarevent-model) | calendar | `month_view_demo` |
 | [CalendarHeatmap](charts.md#calendarheatmap) | charts | `calendar_heatmap_demo` |
 | [Candlestick](charts.md#candlestick) | charts | `candlestick_demo` |
 | [Canvas](charts.md#canvas) | charts | `canvas_demo` |
@@ -61,12 +64,16 @@ caller-owned state it projects — this is the part that matters most), the
 | [Checkbox](core-set.md#checkbox) | core | `checkbox_demo` |
 | [CommandPalette](navigation-and-layout.md#commandpalette) | nav/layout | `command_palette_demo` |
 | [DataTable](forms-and-data.md#datatable) | forms/data | `data_table_demo` |
+| [DateNavigator](calendar-app.md#datenavigator) | calendar | `date_navigator_demo` |
 | [DatePicker](forms-and-data.md#datepicker) | forms/data | `date_picker_demo` |
+| [DayView](calendar-app.md#dayview) | calendar | `day_view_demo` |
 | [DescriptionList](forms-and-data.md#descriptionlist) | forms/data | `description_list_demo` |
 | [Diff](code.md#diff) | code | `diff_demo` |
 | [Divider](forms-and-data.md#divider) | forms/data | `divider_demo` |
 | [Drawer](overlays-and-control.md#drawer) | overlays | `drawer_demo` |
 | [Editor](code.md#editor) | code | `editor_demo` |
+| [EventCard](calendar-app.md#eventcard) | calendar | `event_card_demo` |
+| [EventEditor](calendar-app.md#eventeditor) | calendar | `event_editor_demo` |
 | [Extmark](rich-rendering.md#extmark) | rich | `extmark_demo` |
 | [FlameGraph](observability.md#flamegraph) | observability | `flame_graph_demo` |
 | [Flow](overlays-and-control.md#flow) | overlays | `flow_demo` |
@@ -92,6 +99,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Menu](navigation-and-layout.md#menu) | nav/layout | `menu_demo` |
 | [Mermaid](rich-rendering.md#mermaid) | rich | `mermaid_demo` |
 | [Modal](core-set.md#modal) | core | `modal_demo` |
+| [MonthView](calendar-app.md#monthview) | calendar | `month_view_demo` |
 | [Pagination](navigation-and-layout.md#pagination) | nav/layout | `pagination_demo` |
 | [Paragraph](core-set.md#paragraph) | core | `paragraph_demo` |
 | [PieChart](charts.md#piechart) | charts | `pie_chart_demo` |
@@ -118,6 +126,7 @@ caller-owned state it projects — this is the part that matters most), the
 | [Switch](forms-and-data.md#switch) | forms/data | `switch_demo` |
 | [Table](core-set.md#table) | core | `table_demo` |
 | [Tabs](core-set.md#tabs) | core | `tabs_demo` |
+| [TimePicker](calendar-app.md#timepicker) | calendar | `time_picker_demo` |
 | [Toast](core-set.md#toast) | core | `toast_demo` |
 | [Tooltip](navigation-and-layout.md#tooltip) | nav/layout | `tooltip_demo` |
 | [TraceWaterfall](observability.md#tracewaterfall) | observability | `trace_waterfall_demo` |
@@ -125,7 +134,9 @@ caller-owned state it projects — this is the part that matters most), the
 | [Treemap](charts.md#treemap) | charts | `treemap_demo` |
 | [ViolinChart](charts.md#violinchart) | charts | `violin_chart_demo` |
 | [Waterfall](charts.md#waterfall) | charts | `waterfall_demo` |
+| [WeekView](calendar-app.md#weekview) | calendar | `week_view_demo` |
 | [WhichKey](overlays-and-control.md#whichkey) | overlays | `which_key_demo` |
+| [YearView](calendar-app.md#yearview) | calendar | `year_view_demo` |
 
 ## Shared patterns
 
