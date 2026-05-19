@@ -324,9 +324,43 @@ impl<'a> DataColumn<'a> {
     }
 }
 
-/// One source row: its cells (one [`Line`] per column, the
-/// [`Row`](crate::Row) precedent) plus an optional explicit group key and a
-/// row-wide base [`Style`].
+/// How a [`DataRow`]'s cells are stored — DT-OPT-5a
+/// (`docs/datatable-optimization-roadmap.md`).
+///
+/// [`Lines`](DataCells::Lines) is the original styled path: one
+/// [`Line`] (a `Vec<Span>` + per-span [`Style`]) per cell — byte-identical
+/// to before, the only representation [`DataRow::new`] produces.
+/// [`Text`](DataCells::Text) is the lightweight plain-text path
+/// [`DataRow::text`] produces: one [`Cow<str>`](Cow) per cell, **no per-cell
+/// `Vec<Span>` allocation and no per-cell `Style`** — the constant-factor
+/// memory cut a large text grid wants (a borrowed `&'a str` cell is
+/// zero-alloc; the heaviest measured cost in `docs/perf-datatable-scale.md`
+/// is exactly the owned `Line` per cell). A `Text` cell renders identically
+/// to a `Lines` cell holding the same string unstyled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DataCells<'a> {
+    Lines(Vec<Line<'a>>),
+    Text(Vec<Cow<'a, str>>),
+}
+
+impl Default for DataCells<'_> {
+    fn default() -> Self {
+        DataCells::Lines(Vec::new())
+    }
+}
+
+impl DataCells<'_> {
+    fn len(&self) -> usize {
+        match self {
+            DataCells::Lines(v) => v.len(),
+            DataCells::Text(v) => v.len(),
+        }
+    }
+}
+
+/// One source row: its cells (a styled [`Line`] each via [`new`](Self::new),
+/// or a lightweight [`Cow<str>`](Cow) each via [`text`](Self::text)) plus an
+/// optional explicit group key and a row-wide base [`Style`].
 ///
 /// The caller owns a `Vec<DataRow>` in stable order; [`project`] never
 /// reorders this `Vec` — it returns *indices into it* ([`VisualRow`]), so a
@@ -335,7 +369,7 @@ impl<'a> DataColumn<'a> {
 /// sorts).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DataRow<'a> {
-    cells: Vec<Line<'a>>,
+    cells: DataCells<'a>,
     group: Option<Cow<'a, str>>,
     style: Style,
 }
@@ -349,7 +383,27 @@ impl<'a> DataRow<'a> {
         T: Into<Line<'a>>,
     {
         Self {
-            cells: cells.into_iter().map(Into::into).collect(),
+            cells: DataCells::Lines(cells.into_iter().map(Into::into).collect()),
+            group: None,
+            style: Style::default(),
+        }
+    }
+
+    /// A row whose cells are plain text (each convertible to a
+    /// [`Cow<str>`](Cow)), in no group, unstyled — DT-OPT-5a
+    /// (`docs/datatable-optimization-roadmap.md`). The lightweight sibling of
+    /// [`new`](Self::new): **no per-cell `Vec<Span>` allocation, no per-cell
+    /// `Style`**; a borrowed `&'a str` cell is zero-alloc. Renders identically
+    /// to a [`new`](Self::new) row of the same strings, and sorts/filters/
+    /// groups identically (those compare cell *text*). Use this for large or
+    /// unstyled grids; use [`new`](Self::new) when a cell needs spans/style.
+    pub fn text<I, T>(cells: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Cow<'a, str>>,
+    {
+        Self {
+            cells: DataCells::Text(cells.into_iter().map(Into::into).collect()),
             group: None,
             style: Style::default(),
         }
@@ -373,10 +427,33 @@ impl<'a> DataRow<'a> {
         self
     }
 
-    /// The cell [`Line`] at `column`, if the row has one.
+    /// The styled cell [`Line`] at `column`, if this is a [`new`](Self::new)
+    /// (styled) row that has one. A [`text`](Self::text) (lightweight) row
+    /// has no stored `Line`, so this is always `None` for it — read its text
+    /// with [`cell_text`](Self::cell_text), which is total for both.
     #[must_use]
     pub fn cell(&self, column: usize) -> Option<&Line<'a>> {
-        self.cells.get(column)
+        match &self.cells {
+            DataCells::Lines(v) => v.get(column),
+            DataCells::Text(_) => None,
+        }
+    }
+
+    /// The plain text of the cell at `column` (spans concatenated for a
+    /// styled row, the `Cow` itself for a lightweight one) — total for both
+    /// row kinds. This is what [`project`] sorts, filters, and groups on.
+    #[must_use]
+    pub fn cell_text(&self, column: usize) -> Option<Cow<'_, str>> {
+        match &self.cells {
+            DataCells::Lines(v) => v.get(column).map(|l| Cow::Owned(line_text(l))),
+            DataCells::Text(v) => v.get(column).map(|c| Cow::Borrowed(c.as_ref())),
+        }
+    }
+
+    /// How many cells this row has (either representation).
+    #[must_use]
+    pub fn cell_count(&self) -> usize {
+        self.cells.len()
     }
 
     /// Move this row's cell from index `from` to `to`, keeping the cell
@@ -393,8 +470,16 @@ impl<'a> DataRow<'a> {
         if from == to || from >= self.cells.len() {
             return;
         }
-        let cell = self.cells.remove(from);
-        self.cells.insert(to.min(self.cells.len()), cell);
+        match &mut self.cells {
+            DataCells::Lines(v) => {
+                let cell = v.remove(from);
+                v.insert(to.min(v.len()), cell);
+            }
+            DataCells::Text(v) => {
+                let cell = v.remove(from);
+                v.insert(to.min(v.len()), cell);
+            }
+        }
     }
 }
 
@@ -868,10 +953,11 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
     let mut kept: Vec<usize> = (0..rows.len())
         .filter(|&i| {
             needle.is_empty()
-                || rows[i]
-                    .cells
-                    .iter()
-                    .any(|c| line_text(c).to_lowercase().contains(&needle))
+                || (0..rows[i].cell_count()).any(|c| {
+                    rows[i]
+                        .cell_text(c)
+                        .is_some_and(|t| t.to_lowercase().contains(&needle))
+                })
         })
         .collect();
 
@@ -892,7 +978,9 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
             .map(|r| {
                 sort_keys
                     .iter()
-                    .map(|&(col, _)| r.cell(col).map(line_text).unwrap_or_default())
+                    .map(|&(col, _)| {
+                        r.cell_text(col).map(Cow::into_owned).unwrap_or_default()
+                    })
                     .collect()
             })
             .collect()
@@ -980,7 +1068,7 @@ fn line_text(line: &Line) -> String {
 fn group_key(row: &DataRow, col: usize) -> String {
     match &row.group {
         Some(k) => k.as_ref().to_string(),
-        None => row.cell(col).map(line_text).unwrap_or_default(),
+        None => row.cell_text(col).map(Cow::into_owned).unwrap_or_default(),
     }
 }
 
@@ -1578,7 +1666,7 @@ impl Widget for DataTable<'_> {
                         } else {
                             row_base
                         };
-                        let text = row.cell(ci).map(line_text).unwrap_or_default();
+                        let text = row.cell_text(ci).map(Cow::into_owned).unwrap_or_default();
 
                         match column.map(DataColumn::cell_field) {
                             // The cell *is* a checkbox/switch on every row —
@@ -1604,9 +1692,7 @@ impl Widget for DataTable<'_> {
                                 // a single overlay after the body so it floats
                                 // over the rows below (and `hit` resolves
                                 // clicks against that same panel geometry).
-                                if let Some(cell) = row.cell(ci) {
-                                    stamp_cell(buf, cell, rect, inner.right(), y, row_base, hl);
-                                }
+                                stamp_data_cell(buf, row, ci, rect, inner.right(), y, row_base, hl);
                                 let mx = rect
                                     .x
                                     .saturating_add(rect.width.saturating_sub(1))
@@ -1627,8 +1713,17 @@ impl Widget for DataTable<'_> {
                                         field = field.cursor_style(self.cursor_style);
                                     }
                                     field.render(cell_area, buf);
-                                } else if let Some(cell) = row.cell(ci) {
-                                    stamp_cell(buf, cell, rect, inner.right(), y, row_base, hl);
+                                } else {
+                                    stamp_data_cell(
+                                        buf,
+                                        row,
+                                        ci,
+                                        rect,
+                                        inner.right(),
+                                        y,
+                                        row_base,
+                                        hl,
+                                    );
                                 }
                             }
                         }
@@ -1742,6 +1837,42 @@ fn stamp_line(buf: &mut Buffer, line: &Line, rect: &Rect, right: u16, y: u16, ba
             }
             buf.set_cell(Position::new(x, y), ch, span_style);
             x = x.saturating_add(1);
+        }
+    }
+}
+
+/// Stamps the cell at `ci` of `row` whichever way it is stored (DT-OPT-5a):
+/// the styled [`Line`] path via [`stamp_cell`], the lightweight
+/// [`Cow<str>`](Cow) path via the plain [`stamp_str`] writer. A `Text` cell
+/// has no `Line`/cell style to cascade, so its glyph style is exactly
+/// [`stamp_cell`]'s for one unstyled span: `row_base` with the selection
+/// `highlight` patched last — byte-identical output for the same text.
+#[allow(clippy::too_many_arguments)]
+fn stamp_data_cell(
+    buf: &mut Buffer,
+    row: &DataRow,
+    ci: usize,
+    rect: &Rect,
+    right: u16,
+    y: u16,
+    row_base: Style,
+    highlight: Option<Style>,
+) {
+    match &row.cells {
+        DataCells::Lines(v) => {
+            if let Some(cell) = v.get(ci) {
+                stamp_cell(buf, cell, rect, right, y, row_base, highlight);
+            }
+        }
+        DataCells::Text(v) => {
+            if let Some(s) = v.get(ci) {
+                let style = match highlight {
+                    Some(hl) => row_base.patch(hl),
+                    None => row_base,
+                };
+                let col_right = rect.x.saturating_add(rect.width).min(right);
+                stamp_str(buf, rect.x, y, col_right, s, style);
+            }
         }
     }
 }
@@ -2745,5 +2876,71 @@ mod tests {
         r.move_cell(1, 1);
         r.move_cell(9, 0);
         assert_eq!(cells(&r), ["a", "b", "c", "d"]);
+    }
+
+    /// DT-OPT-5a: a lightweight [`DataRow::text`] row is byte-identical to a
+    /// styled [`DataRow::new`] row of the same strings — both rendered and
+    /// projected (sort / filter / group all compare cell *text*).
+    #[test]
+    fn a_text_row_is_byte_identical_to_a_new_row_of_the_same_strings() {
+        let cols = [
+            DataColumn::new("name"),
+            DataColumn::new("team"),
+            DataColumn::new("role"),
+        ];
+        let data = [
+            ["bea", "x", "lead"],
+            ["ada", "y", "dev"],
+            ["cy", "x", "dev"],
+            ["al", "y", "lead"],
+        ];
+        let lines: Vec<DataRow> = data.iter().map(|r| DataRow::new(*r)).collect();
+        let text: Vec<DataRow> = data.iter().map(|r| DataRow::text(*r)).collect();
+
+        // `cell_text` (what project sorts/filters/groups on) agrees.
+        for (l, t) in lines.iter().zip(&text) {
+            for c in 0..3 {
+                assert_eq!(l.cell_text(c), t.cell_text(c));
+            }
+            assert_eq!(l.cell_count(), t.cell_count());
+            assert!(t.cell(0).is_none(), "a text row stores no Line");
+        }
+
+        for spec in [
+            DataTableState::new(),
+            {
+                let mut s = DataTableState::new();
+                s.set_sort(Some((0, SortDirection::Ascending)));
+                s
+            },
+            {
+                let mut s = DataTableState::new();
+                s.set_filter("x");
+                s
+            },
+            {
+                let mut s = DataTableState::new();
+                s.set_group_by(Some(1));
+                s.set_sort(Some((2, SortDirection::Descending)));
+                s
+            },
+        ] {
+            assert_eq!(
+                project(&cols, &lines, &spec),
+                project(&cols, &text, &spec),
+                "projection identical for both cell representations"
+            );
+            let vl = project(&cols, &lines, &spec);
+            let vt = project(&cols, &text, &spec);
+            let render = |rows: &[DataRow], v: &[VisualRow]| {
+                let st = spec.clone();
+                grid(DataTable::new(&cols, rows, v, &st), 32, 8)
+            };
+            assert_eq!(
+                render(&lines, &vl),
+                render(&text, &vt),
+                "render identical for both cell representations"
+            );
+        }
     }
 }
