@@ -357,6 +357,17 @@ impl HitMap {
             .find(|hit| contains(hit.area, position))
             .map(|hit| hit.id.as_str())
     }
+
+    /// Every interactive node's `(id, area)` in **draw order** (the
+    /// order [`render`](UiNode::render) recorded them — parents before
+    /// children, top-to-bottom). A reducer building a keyboard focus
+    /// ring (Tab / Shift+Tab) or drawing a focus highlight reads this
+    /// instead of re-deriving the tree: a thin accessor over the
+    /// already-recorded rectangles (pure, ADR 0012 — no retained tree).
+    #[must_use]
+    pub fn entries(&self) -> &[HitRect] {
+        &self.rects
+    }
 }
 
 fn contains(area: Rect, position: Position) -> bool {
@@ -792,6 +803,48 @@ mod tests {
         assert_eq!(target, Some("ok"));
         assert_eq!(hits.at(Position::new(1, 0)), None);
         assert_eq!(node.to_plain(), "Title OK");
+    }
+
+    #[test]
+    fn entries_lists_interactive_nodes_in_draw_order() {
+        let node = UiNode::Column {
+            justify: Justify::Start,
+            align: CrossAlign::Stretch,
+            children: vec![
+                UiNode::TextField {
+                    id: "/name".to_owned(),
+                    label: "Name".to_owned(),
+                    value: String::new(),
+                    placeholder: String::new(),
+                    masked: false,
+                    focused: false,
+                },
+                UiNode::Checkbox {
+                    id: "agree".to_owned(),
+                    label: "Agree".to_owned(),
+                    checked: false,
+                    focused: false,
+                },
+                UiNode::Button {
+                    id: "go".to_owned(),
+                    label: "Go".to_owned(),
+                    primary: true,
+                    disabled: false,
+                    focused: false,
+                },
+            ],
+        };
+        let (_buf, hits) = render_to(&node, 20, 6);
+        let ids: Vec<&str> = hits.entries().iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, vec!["/name", "agree", "go"], "draw order preserved");
+        // Each recorded rect is the same one `at` resolves (no drift).
+        for entry in hits.entries() {
+            let mid = Position::new(
+                entry.area.x + entry.area.width / 2,
+                entry.area.y + entry.area.height / 2,
+            );
+            assert_eq!(hits.at(mid), Some(entry.id.as_str()));
+        }
     }
 
     #[test]
