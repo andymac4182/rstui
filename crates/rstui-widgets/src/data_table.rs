@@ -84,6 +84,7 @@
 //! a future additive over this exact shape.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use crate::block::Block;
 use crate::checkbox::Checkbox;
@@ -922,14 +923,22 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
     // Ungrouped, just the multi-key sort over the whole table.
     match state.group_by {
         Some(col) if col < columns.len() => {
-            let mut buckets: Vec<(String, Vec<usize>)> = Vec::new();
+            // DT-OPT-2: O(rows) bucketing. The former
+            // `buckets.iter_mut().find(|(k,_)| *k==key)` per kept row was
+            // O(rows × distinct groups) — quadratic on a many-group grid
+            // (`docs/datatable-optimization-roadmap.md` DT-OPT-2). A hash
+            // map makes it O(rows); members accumulate in the same kept
+            // order, and tier 1 still explicitly sorts the groups by key, so
+            // the output is byte-identical (group keys are unique, so the
+            // map's iteration order never reaches the result).
+            let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
             for s in kept {
-                let key = group_key(&rows[s], col);
-                match buckets.iter_mut().find(|(k, _)| *k == key) {
-                    Some((_, members)) => members.push(s),
-                    None => buckets.push((key, vec![s])),
-                }
+                by_key
+                    .entry(group_key(&rows[s], col))
+                    .or_default()
+                    .push(s);
             }
+            let mut buckets: Vec<(String, Vec<usize>)> = by_key.into_iter().collect();
             // Tier 1: order the groups by their key.
             buckets.sort_by(|(ka, _), (kb, _)| match state.group_direction() {
                 SortDirection::Ascending => ka.cmp(kb),
