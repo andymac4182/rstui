@@ -244,7 +244,7 @@ pub(crate) enum SidebarRow {
 impl Screen {
     /// Every screen in fixed display order. The sidebar, the hotkeys, and the
     /// command palette all index this, so they cannot disagree.
-    pub(crate) const ALL: [Screen; 26] = [
+    pub(crate) const ALL: [Screen; 27] = [
         Screen::Welcome,
         Screen::Forms,
         Screen::Navigation,
@@ -300,11 +300,11 @@ impl Screen {
     pub(crate) fn group(self) -> &'static str {
         if self.index() < 10 {
             "WIDGETS"
-        } else if self.index() < 20 {
+        } else if self.index() < 21 {
             "EXPERIENCES"
-        } else if self.index() < 23 {
-            "OBSERVABILITY"
         } else if self.index() < 24 {
+            "OBSERVABILITY"
+        } else if self.index() < 25 {
             "CHART CATALOG"
         } else {
             "AGENT UI"
