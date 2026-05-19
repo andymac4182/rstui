@@ -57,6 +57,7 @@ event::pack_day(&[&CalendarEvent]) -> Vec<EventLayout>   // { id, column, column
 event::time_label(minute: u16) -> String                 // 24h "09:00" (clamps 24:00)
 event::time_label_12h(minute: u16) -> String             // compact "9am"/"1:05pm"
 event::MINUTES_PER_DAY: u16                               // 24*60, the span clamp
+event::readable_fg(bg: Color) -> Color                    // contrast label colour for a tinted event block
 ```
 
 ---
@@ -143,6 +144,7 @@ DayView::new(day: i64)
 .all_day_style(Style) .now_style(Style) .grid_style(Style) .selected_style(Style)
 .body(area: Rect) -> Rect
 .minute_at(area: Rect, pos: Position) -> Option<u16>
+.slot_rect(area: Rect, start_min: u16, end_min: u16) -> Rect  // same-size drag-ghost slot
 .event_at(area: Rect, pos: Position) -> Option<u64>
 ```
 
