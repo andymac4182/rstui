@@ -17,7 +17,8 @@ use rstui_runtime::Frame;
 use rstui_widgets::data_table::project;
 use rstui_widgets::{
     Block, BorderType, CellField, CellSelectState, DataColumn, DataRow, DataTable, DataTableHit,
-    DataTableState, Paragraph, SortDirection, VisualRow, Wrap, cell_truthy,
+    DataTableState, Paragraph, Scrollbar, ScrollbarOrientation, SortDirection, VisualRow, Wrap,
+    cell_truthy,
 };
 
 use crate::screens::ScreenOutcome;
@@ -362,7 +363,10 @@ impl State {
                 self.grid.move_selection(1, vlen);
                 self.grid.reveal_selected(rows, vlen);
             }
-            KeyCode::Left => return ScreenOutcome::ignored(),
+            // DT-OPT-3/4: horizontal column window. ←→ scroll which columns
+            // are on screen; the bottom Scrollbar (view()) projects it.
+            KeyCode::Left => self.grid.scroll_columns_by(-1, self.columns.len(), 1),
+            KeyCode::Right => self.grid.scroll_columns_by(1, self.columns.len(), 1),
             KeyCode::PageUp => self.grid.scroll_by(-(rows as isize), vlen, rows),
             KeyCode::PageDown => self.grid.scroll_by(rows as isize, vlen, rows),
             KeyCode::Char('[') => self.active_col = self.active_col.saturating_sub(1),
@@ -569,6 +573,42 @@ impl State {
             grid_area,
         );
 
+        // DT-OPT-4: scrollbars are caller-composed pure projections of the
+        // grid's own scroll metrics (`DataTable`/`DataTableState` draw none —
+        // the `logs.rs` discipline). Vertical = projected rows vs the visible
+        // body window; horizontal = the DT-OPT-3 column window. Both overlay
+        // the rounded border edges.
+        if grid_area.width > 2 && grid_area.height > 2 {
+            frame.render_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .content_length(self.visual.len())
+                    .viewport_length(self.body_rows.get().max(1))
+                    .position(self.grid.offset())
+                    .style(theme.body())
+                    .thumb_style(theme.border_focused()),
+                Rect::new(
+                    grid_area.right().saturating_sub(1),
+                    grid_area.y.saturating_add(1),
+                    1,
+                    grid_area.height.saturating_sub(2),
+                ),
+            );
+            frame.render_widget(
+                Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+                    .content_length(self.columns.len())
+                    .viewport_length(1)
+                    .position(self.grid.col_offset())
+                    .style(theme.body())
+                    .thumb_style(theme.border_focused()),
+                Rect::new(
+                    grid_area.x.saturating_add(1),
+                    grid_area.bottom().saturating_sub(1),
+                    grid_area.width.saturating_sub(2),
+                    1,
+                ),
+            );
+        }
+
         let active = HEADERS.get(self.active_col).copied().unwrap_or("?");
         let hint = if self.config_open {
             "group/sort panel — click G | sort per column · order row · outside: close".to_string()
@@ -580,7 +620,7 @@ impl State {
             "filter — type to match · Backspace · Enter done".to_string()
         } else {
             format!(
-                "↑↓ select · [ ] col=({active}) · s sort · o group · c collapse · / filter · G panel · Space/e field"
+                "↑↓ select · ←→ cols · [ ] col=({active}) · s sort · o group · c collapse · / filter · G panel · Space/e field"
             )
         };
         frame.render_widget(Line::from(hint.fg(theme.dim)), help_area);

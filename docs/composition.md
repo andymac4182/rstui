@@ -134,6 +134,26 @@ buffer at that offset plus scrollbars — it owns nothing. For very long
 transcripts, build only the visible item range into the content buffer
 (caller-side windowing) — the pure-projection answer to virtualization.
 
+### Scrollbars are caller-composed (the `DataTable` worked reference)
+
+No widget draws its own scrollbar — a `Scrollbar` is a pure projection of
+the *same* caller-owned scroll numbers the content widget reads, rendered
+by the caller over an edge strip (the `logs.rs` discipline). `DataTable`
+virtualizes both axes — vertical rows (the projection window) and, since
+DT-OPT-3, a horizontal **column window** (`DataTableState::col_offset`;
+off-window columns hit the `cell_w == 0` early-out, which *is* the column
+virtualization) — and exposes both as metrics: `vertical()` / `offset()`
+and `horizontal()` / `col_offset()`. Compose a vertical
+`Scrollbar::new(ScrollbarOrientation::VerticalRight)` fed
+`content_length(visual.len())` / `viewport_length(body_rows)` /
+`position(state.offset())` and a `HorizontalBottom` one fed the column
+count / `position(state.col_offset())` over the bottom edge. The worked
+reference is `crates/rstui-kitchen-sink/src/screens/data_grid.rs` (←→
+scrolls the column window; both scrollbars overlay the rounded border).
+For a re-sort/scroll that re-derives the projection with unchanged
+inputs, read it through a `ProjectionCache` (`project_cached`, the same
+caller-owned-cache seam as below — DT-OPT-1).
+
 ### Caller-owned caches: the answer to a per-frame *parse*
 
 Windowing handles "too many rows". The dual problem is a widget whose
