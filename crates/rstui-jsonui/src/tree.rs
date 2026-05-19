@@ -847,7 +847,41 @@ fn render_chart(
         return;
     }
     let label_at = |s: &ChartSeries, i: usize| s.labels.get(i).cloned().unwrap_or_default();
-    let nonneg = |v: f64| if v > 0.0 { v as u64 } else { 0 };
+    // The categorical widgets take `u64`; a naive `y as u64` truncates
+    // every fractional / normalized value (0.42 → 0), so a real agent's
+    // percentage/ratio series rendered BLANK. Scale relative to the
+    // largest positive value across all series to a high-resolution
+    // integer: relative bar/slice heights stay exact for *any* magnitude
+    // or fractionality. ≤ 0 / non-finite → 0 (build_chart already
+    // diagnoses an all-non-positive categorical series, so this only
+    // drops the odd negative point).
+    let maxpos = series
+        .iter()
+        .flat_map(|s| s.points.iter())
+        .map(|&(_, y)| y)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .fold(0.0_f64, f64::max);
+    const SCALE: f64 = 1_000_000.0;
+    let scale = |v: f64| -> u64 {
+        if maxpos > 0.0 && v.is_finite() && v > 0.0 {
+            ((v / maxpos) * SCALE).round() as u64
+        } else {
+            0
+        }
+    };
+    // Widen bars to the longest category label so it isn't clipped to
+    // one glyph (a bar_width of 1 showed "Q1"/"Q2" as "Q"/"Q").
+    let bar_w = |labels: &[String]| -> u16 {
+        u16::try_from(
+            labels
+                .iter()
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(1)
+                .clamp(1, 12),
+        )
+        .unwrap_or(1)
+    };
     match kind {
         ChartKind::Bar => {
             let s0 = &series[0];
@@ -855,9 +889,10 @@ fn render_chart(
                 .points
                 .iter()
                 .enumerate()
-                .map(|(i, &(_, y))| Bar::new(nonneg(y), label_at(s0, i)))
+                .map(|(i, &(_, y))| Bar::new(scale(y), label_at(s0, i)))
                 .collect();
             BarChart::new(bars)
+                .bar_width(bar_w(&s0.labels))
                 .bar_style(Style::new().fg(s0.color))
                 .render(area, buf);
         }
@@ -869,7 +904,7 @@ fn render_chart(
             LineChart::new(&lines).render(area, buf);
         }
         ChartKind::Sparkline => {
-            let data: Vec<u64> = series[0].points.iter().map(|&(_, y)| nonneg(y)).collect();
+            let data: Vec<u64> = series[0].points.iter().map(|&(_, y)| scale(y)).collect();
             Sparkline::new(&data).render(area, buf);
         }
         ChartKind::Pie => {
@@ -881,7 +916,7 @@ fn render_chart(
                     .iter()
                     .map(|s| {
                         let v = s.points.first().map_or(0.0, |&(_, y)| y);
-                        Slice::new(nonneg(v), s.color, s.name.clone())
+                        Slice::new(scale(v), s.color, s.name.clone())
                     })
                     .collect()
             } else {
@@ -889,7 +924,7 @@ fn render_chart(
                 s0.points
                     .iter()
                     .enumerate()
-                    .map(|(i, &(_, y))| Slice::new(nonneg(y), s0.color, label_at(s0, i)))
+                    .map(|(i, &(_, y))| Slice::new(scale(y), s0.color, label_at(s0, i)))
                     .collect()
             };
             PieChart::new(slices).render(area, buf);
@@ -909,7 +944,7 @@ fn render_chart(
                 .points
                 .iter()
                 .enumerate()
-                .map(|(i, &(_, y))| HistogramBucket::new(nonneg(y), label_at(s0, i)))
+                .map(|(i, &(_, y))| HistogramBucket::new(scale(y), label_at(s0, i)))
                 .collect();
             Histogram::new(&buckets).render(area, buf);
         }
@@ -919,7 +954,7 @@ fn render_chart(
                 .map(|i| {
                     let segments: Vec<(u64, Color)> = series
                         .iter()
-                        .map(|s| (s.points.get(i).map_or(0, |&(_, y)| nonneg(y)), s.color))
+                        .map(|s| (s.points.get(i).map_or(0, |&(_, y)| scale(y)), s.color))
                         .collect();
                     StackedBar::new(label_at(&series[0], i), segments)
                 })
