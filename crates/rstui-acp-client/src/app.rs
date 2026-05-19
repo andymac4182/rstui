@@ -306,6 +306,13 @@ pub struct Entry {
     /// renderer always falls back to a fresh parse, so this is a pure
     /// speed cache and never changes output. Not part of identity/eq.
     pub md_cache: Option<Vec<Line<'static>>>,
+    /// For an interactive `Role::RichUi` entry: the id of the
+    /// caller-owned, **stateful** [`crate::acp::RichDoc`] in
+    /// `ChatApp::rich_docs`. A click mutates that owned doc so a toggled
+    /// checkbox / switched tab persists across redraws; the renderer
+    /// re-projects from it. `None` for prose / a static diagram block /
+    /// when the doc could not be built (renders from `text`).
+    pub rich: Option<u64>,
 }
 
 /// A permission request awaiting the user's choice.
@@ -693,6 +700,14 @@ pub struct ChatApp {
     /// (typing a local-stdio command to launch instead of a registry agent).
     picker_custom: Option<TextArea>,
     transcript: Vec<Entry>,
+    /// Caller-owned, **stateful** rendered docs, one per interactive
+    /// `Role::RichUi` transcript entry (keyed by `Entry::rich`). A click
+    /// mutates the owned [`crate::acp::RichDoc`] so a toggled checkbox /
+    /// switched tab persists; the renderer re-projects from it. Bounded
+    /// by the live transcript — `cap_transcript` evicts dropped ids.
+    rich_docs: BTreeMap<u64, crate::acp::RichDoc>,
+    /// Monotonic id source for `rich_docs` (never reused; wraps).
+    rich_seq: u64,
     scroll: u16,
     follow: bool,
     /// The full-screen `/transcript` pager (scroll + search) overlay state.
@@ -816,6 +831,8 @@ impl ChatApp {
             picker_selected: 0,
             picker_custom: None,
             transcript: Vec::new(),
+            rich_docs: BTreeMap::new(),
+            rich_seq: 0,
             scroll: 0,
             follow: true,
             pager: PagerState::default(),
@@ -910,6 +927,14 @@ impl ChatApp {
     #[must_use]
     pub fn transcript(&self) -> &[Entry] {
         &self.transcript
+    }
+    /// The caller-owned **stateful** rendered doc for an interactive
+    /// `Role::RichUi` entry (`Entry::rich`), if one was built. The
+    /// renderer re-projects the transcript block from this so a clicked
+    /// checkbox / switched tab stays toggled across redraws.
+    #[must_use]
+    pub fn rich_doc(&self, id: u64) -> Option<&crate::acp::RichDoc> {
+        self.rich_docs.get(&id)
     }
     /// The text `/copy` would place on the clipboard (the most recent agent
     /// answer), or `None` if the agent has not answered yet.
@@ -1338,6 +1363,7 @@ impl ChatApp {
             text: text.into(),
             open: false,
             md_cache: None,
+            rich: None,
         });
         self.follow = true;
         self.cap_transcript();
@@ -1398,6 +1424,7 @@ impl ChatApp {
             text: chunk.to_owned(),
             open: true,
             md_cache: None,
+            rich: None,
         });
         self.follow = true;
         self.cap_transcript();
@@ -1443,16 +1470,37 @@ impl ChatApp {
         // inline — any number of them, interleaved, in order.
         self.transcript.pop();
         for segment in segments {
-            let (role, text) = match segment {
-                crate::acp::MessageSegment::Prose(prose) => (Role::Agent, prose),
-                crate::acp::MessageSegment::Rich(payload) => (Role::RichUi, payload.source),
-            };
-            self.transcript.push(Entry {
-                role,
-                text,
-                open: false,
-                md_cache: None,
-            });
+            match segment {
+                crate::acp::MessageSegment::Prose(prose) => {
+                    self.transcript.push(Entry {
+                        role: Role::Agent,
+                        text: prose,
+                        open: false,
+                        md_cache: None,
+                        rich: None,
+                    });
+                }
+                crate::acp::MessageSegment::Rich(payload) => {
+                    // Build a caller-owned **stateful** doc for the
+                    // interactive formats (A2UI / json-render) so a
+                    // clicked checkbox / switched tab persists across
+                    // redraws; a static diagram block has no doc and is
+                    // rendered from `text` every frame.
+                    let rich = crate::acp::RichDoc::build(&payload).map(|doc| {
+                        let id = self.rich_seq;
+                        self.rich_seq = self.rich_seq.wrapping_add(1);
+                        self.rich_docs.insert(id, doc);
+                        id
+                    });
+                    self.transcript.push(Entry {
+                        role: Role::RichUi,
+                        text: payload.source,
+                        open: false,
+                        md_cache: None,
+                        rich,
+                    });
+                }
+            }
         }
         self.follow = true;
         self.cap_transcript();
@@ -1499,6 +1547,13 @@ impl ChatApp {
             return;
         }
         let drop = self.transcript.len() - CAP * 3 / 4;
+        // Evict the owned stateful docs of the entries being dropped so
+        // `rich_docs` is bounded by the live transcript, not the session.
+        for entry in &self.transcript[0..drop] {
+            if let Some(id) = entry.rich {
+                self.rich_docs.remove(&id);
+            }
+        }
         self.transcript.drain(0..drop);
         if self.transcript.first().map(|e| e.text.as_str()) != Some(SENTINEL) {
             self.transcript.insert(
@@ -1508,6 +1563,7 @@ impl ChatApp {
                     text: SENTINEL.to_owned(),
                     open: false,
                     md_cache: None,
+                    rich: None,
                 },
             );
         }
@@ -1576,6 +1632,7 @@ impl ChatApp {
             text: text.clone(),
             open: false,
             md_cache: None,
+            rich: None,
         });
         self.cap_transcript();
         self.streaming = true;
@@ -1814,6 +1871,7 @@ impl ChatApp {
                         text: line.clone(),
                         open: false,
                         md_cache: None,
+                        rich: None,
                     });
                     self.streaming = true;
                     if let Some(driver) = &self.driver {
@@ -3057,16 +3115,26 @@ impl App for ChatApp {
                 // (ADR 0017). `rich_hit` re-derives the exact geometry
                 // the renderer drew (pure — no stored layout).
                 if let Some((entry_idx, local)) = crate::ui::rich_hit(self, self.last_size, pos) {
-                    let source = self
+                    let resolved = self
                         .transcript
                         .get(entry_idx)
                         .filter(|entry| entry.role == Role::RichUi)
-                        .map(|entry| entry.text.clone());
-                    if let Some(source) = source {
+                        .map(|entry| (entry.rich, entry.text.clone()));
+                    if let Some((rich, source)) = resolved {
                         let timestamp = iso8601_now();
-                        if let Some(action) =
-                            crate::acp::rich_click(&source, MD_WIDTH, 40, local, &timestamp)
-                        {
+                        // Prefer the caller-owned **stateful** doc: `act`
+                        // mutates it so a toggled checkbox / switched tab
+                        // / `setState` persists, then returns whatever
+                        // still has to happen (round-trip / open URL). A
+                        // static diagram has no owned doc and falls back
+                        // to the stateless resolver.
+                        let action = match rich.and_then(|id| self.rich_docs.get_mut(&id)) {
+                            Some(doc) => doc.act(MD_WIDTH, 40, local, &timestamp),
+                            None => {
+                                crate::acp::rich_click(&source, MD_WIDTH, 40, local, &timestamp)
+                            }
+                        };
+                        if let Some(action) = action {
                             match action {
                                 crate::acp::RichAction::ToAgent(payload) => {
                                     self.send_agent_action(payload);
@@ -3075,10 +3143,9 @@ impl App for ChatApp {
                                     self.push_system(format!("↗ open: {url}"));
                                 }
                                 crate::acp::RichAction::Local(desc) => {
-                                    self.push_system(format!(
-                                        "· {desc} — local UI state is not kept \
-                                         across redraws yet"
-                                    ));
+                                    // Persisted now — the owned doc
+                                    // re-projects the new state next frame.
+                                    self.push_system(format!("· {desc}"));
                                 }
                             }
                         }
@@ -3170,15 +3237,25 @@ impl ChatApp {
             AcpEvent::AgentText(t) => self.append_agent(Role::Agent, &t),
             AcpEvent::Thought(t) => self.append_agent(Role::Thought, &t),
             AcpEvent::RichUi(payload) => {
-                // The agent replied with a declarative UI document; anchor
-                // it in stream order. The view re-projects it from `text`
-                // every frame through `rstui-jsonui` (pure projection).
+                // The agent replied with a declarative UI document via the
+                // dedicated ACP event; anchor it in stream order. A
+                // caller-owned **stateful** doc is built for the
+                // interactive formats so a clicked control persists; the
+                // view re-projects from it (or from `text` for a static
+                // diagram) every frame (pure projection).
                 self.close_open_entry();
+                let rich = crate::acp::RichDoc::build(&payload).map(|doc| {
+                    let id = self.rich_seq;
+                    self.rich_seq = self.rich_seq.wrapping_add(1);
+                    self.rich_docs.insert(id, doc);
+                    id
+                });
                 self.transcript.push(Entry {
                     role: Role::RichUi,
                     text: payload.source,
                     open: false,
                     md_cache: None,
+                    rich,
                 });
                 self.follow = true;
             }
@@ -3197,6 +3274,7 @@ impl ChatApp {
                         text: id,
                         open: false,
                         md_cache: None,
+                        rich: None,
                     });
                     self.follow = true;
                 }
@@ -3237,6 +3315,7 @@ impl ChatApp {
                         text: id,
                         open: false,
                         md_cache: None,
+                        rich: None,
                     });
                     self.follow = true;
                 }
@@ -3252,6 +3331,7 @@ impl ChatApp {
                         text: format!("plan updated — {done}/{total} done"),
                         open: false,
                         md_cache: None,
+                        rich: None,
                     });
                     self.follow = true;
                 }

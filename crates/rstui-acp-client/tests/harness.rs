@@ -1322,6 +1322,121 @@ fn clicking_a_rendered_button_round_trips_an_action_to_the_agent() {
     );
 }
 
+#[test]
+fn clicking_a_rendered_checkbox_persists_the_toggle_across_redraws() {
+    // Phase 2 — the interactive round-trip's local half: a clicked
+    // two-way control mutates a *caller-owned stateful* doc, so the new
+    // state survives the every-frame re-projection. An A2UI CheckBox
+    // bound to `/agreed` renders `[ ]`; clicking it must flip to `[x]`
+    // and STAY flipped on the next redraw (proof the toggle is kept,
+    // not lost to a fresh parse), and clicking again flips it back
+    // (proof the owned model — not the verbatim source — is mutated).
+    let mut h = chatting(140, 44);
+    h.message(Msg::Resize(Size::new(140, 44)));
+    for chunk in [
+        "Please confirm:\n\n```a2ui\n",
+        r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"c"}}"#,
+        "\n",
+        r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":["#,
+        r#"{"id":"root","component":"Column","children":["agree"]},"#,
+        r#"{"id":"agree","component":"CheckBox","label":"Agree","value":{"path":"/agreed"}}]}}"#,
+        "\n```\n\nTick the box.",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned()))); // keep Chat
+
+    let before = h.snapshot();
+    assert!(
+        before.contains("[ ] Agree") && !before.contains("[x] Agree"),
+        "the A2UI CheckBox rendered unchecked:\n{before}"
+    );
+
+    // Click the checkbox row. The snapshot's box-drawing border is a
+    // multibyte glyph, so the screen *column* is the char count before
+    // the match, not the byte offset.
+    let (cx, cy) = before
+        .lines()
+        .enumerate()
+        .find_map(|(y, line)| {
+            line.find("Agree")
+                .map(|b| (line[..b].chars().count() as u16, y as u16))
+        })
+        .expect("checkbox label is on screen");
+    h.message(Msg::RichClick(Position::new(cx, cy)));
+
+    let after = h.snapshot();
+    assert!(
+        after.contains("[x] Agree") && !after.contains("[ ] Agree"),
+        "the toggle PERSISTED across the every-frame re-projection:\n{after}"
+    );
+
+    // Click it again — the *owned* model toggles back (not a re-parse
+    // of the immutable source, which would always re-show `[ ]`).
+    let (cx2, cy2) = after
+        .lines()
+        .enumerate()
+        .find_map(|(y, line)| {
+            line.find("Agree")
+                .map(|b| (line[..b].chars().count() as u16, y as u16))
+        })
+        .expect("checkbox still on screen");
+    h.message(Msg::RichClick(Position::new(cx2, cy2)));
+    let again = h.snapshot();
+    assert!(
+        again.contains("[ ] Agree") && !again.contains("[x] Agree"),
+        "clicking again toggled the owned model back off:\n{again}"
+    );
+    assert!(h.is_running(), "the app stayed up through the interaction");
+}
+
+#[test]
+fn clicking_a_rendered_json_render_control_persists_state_across_redraws() {
+    // The same Phase-2 proof for the *other* interactive format: a
+    // json-render `ConfirmInput` whose Yes button `setState`s `/done`,
+    // with a `$cond`-bound status line. Clicking Yes must flip the
+    // status and KEEP it flipped on the next every-frame re-projection
+    // (the owned `JsonRenderDoc`'s model is mutated, not re-parsed).
+    let mut h = chatting(120, 40);
+    h.message(Msg::Resize(Size::new(120, 40))); // set last_size for rich_hit
+    let spec = r#"{"root":"col","elements":{
+        "col":{"type":"Box","children":["status","btn"]},
+        "status":{"type":"Text","props":{"text":{"$cond":{"$state":"/done"},"$then":"STATE=DONE","$else":"STATE=PENDING"}}},
+        "btn":{"type":"ConfirmInput","props":{"message":"Mark done?","yesLabel":"YesGo"},"on":{"confirm":{"action":"setState","params":{"statePath":"/done","value":true}}}}
+    },"state":{"done":false}}"#;
+    h.message(Msg::Acp(AcpEvent::RichUi(RichUiPayload {
+        format: RichUiFormat::JsonRender,
+        source: spec.to_owned(),
+    })));
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned()))); // keep Chat
+
+    let before = h.snapshot();
+    assert!(
+        before.contains("STATE=PENDING") && !before.contains("STATE=DONE"),
+        "the json-render status line started PENDING:\n{before}"
+    );
+
+    // Column = char count before the match (the border glyph is
+    // multibyte, so a byte offset would mis-target the narrow button).
+    let (bx, by) = before
+        .lines()
+        .enumerate()
+        .find_map(|(y, line)| {
+            line.find("YesGo")
+                .map(|b| (line[..b].chars().count() as u16, y as u16))
+        })
+        .expect("the Yes button is on screen");
+    h.message(Msg::RichClick(Position::new(bx + 1, by)));
+
+    let after = h.snapshot();
+    assert!(
+        after.contains("STATE=DONE") && !after.contains("STATE=PENDING"),
+        "the json-render setState PERSISTED across re-projection:\n{after}"
+    );
+    assert!(h.is_running(), "the app stayed up through the interaction");
+}
+
 // ---- Codex-parity W1-1: composer input history (↑/↓ recall) ----
 
 fn composer_text(h: &Harness<ChatApp>) -> String {

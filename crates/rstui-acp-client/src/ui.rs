@@ -656,12 +656,20 @@ fn transcript_layout(app: &ChatApp) -> (Vec<Line<'static>>, Vec<RichRegion>) {
         // while the per-frame whole-transcript re-parse is eliminated.
         if entry.role == Role::RichUi {
             // ADR 0017: re-project the agent's declarative UI document
-            // from its verbatim source every frame (pure projection — no
-            // retained tree), bounded so one document cannot dominate the
-            // transcript. Record the row span so a click maps back to a
-            // node (`rich_hit`).
+            // every frame (pure projection — no retained tree), bounded
+            // so one document cannot dominate the transcript. Record the
+            // row span so a click maps back to a node (`rich_hit`).
             let start = out.len();
-            for line in crate::acp::render_rich_ui(&entry.text, MD_WIDTH, 40) {
+            let rich_lines = match entry.rich.and_then(|id| app.rich_doc(id)) {
+                // The caller-owned **stateful** doc: re-project the
+                // *mutated* state so a clicked checkbox / switched tab /
+                // `setState` stays applied across redraws.
+                Some(doc) => doc.render_lines(MD_WIDTH, 40),
+                // No owned doc (a static diagram, or one that could not
+                // be built): re-project from the verbatim source text.
+                None => crate::acp::render_rich_ui(&entry.text, MD_WIDTH, 40),
+            };
+            for line in rich_lines {
                 out.push(line);
             }
             regions.push(RichRegion {

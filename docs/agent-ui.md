@@ -83,6 +83,20 @@ To AI apps what `rstui-widgets` is to general TUIs:
   fragment) — splitting the assembled message at turn end is what makes a
   real agent's reply actually render. Total: a reply with no block stays
   ordinary markdown.
+- Rendered blocks are **interactive**, not display-only. A mouse click
+  on a rendered control is mapped back to its node by re-deriving the
+  exact geometry the renderer drew (`acp::richui::click` /
+  `ui::rich_hit` — pure, no stored layout). Each interactive
+  `Role::RichUi` entry owns a **stateful** `acp::richui::RichDoc` (a
+  live `A2uiSurface` / `JsonRenderDoc`, keyed by `Entry::rich`): a
+  click `act`s on that owned doc, so a two-way control — a toggled
+  checkbox, a switched tab, a json-render `setState` — **mutates the
+  owned model and persists** across the every-frame re-projection,
+  while a server `event` / `openUrl` round-trips to the agent (a new
+  prompt turn) or opens the URL. The doc map is bounded by the live
+  transcript (`cap_transcript` evicts dropped ids), so this stays
+  within the pure-projection model — the owned state *is* the
+  caller-owned state the projection reads, never a retained UI tree.
 - The **`/render`** slash command makes this work with **any** agent,
   not just one that reads the `initialize` `_meta`: it sends the
   json-render authoring instructions + the component catalog (the same

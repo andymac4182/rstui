@@ -28,7 +28,7 @@
 use rstui_core::{Buffer, Line, Position, Rect, Span, Style, Widget};
 use rstui_jsonui::a2ui::{A2uiClientAction, A2uiSurface};
 use rstui_jsonui::jsonrender::{ActionEffect, JsonRenderDoc};
-use rstui_jsonui::tree::HitMap;
+use rstui_jsonui::tree::{HitMap, UiNode};
 use rstui_widgets::{JsonCanvas, Mermaid, Structurizr};
 use serde_json::{Map, Value, json};
 
@@ -270,6 +270,47 @@ pub fn segments(text: &str) -> Vec<MessageSegment> {
 /// embed-a-widget-in-a-line-view technique the streaming-markdown view
 /// uses for diagrams). Always total: a malformed document degrades to
 /// the engine's own placeholder, never a panic.
+/// Paints one projected [`UiNode`] into a scratch [`Buffer`] + its
+/// [`HitMap`]. The scratch is sized to the node's *content* height
+/// (clamped by `cap`), not `cap` itself — otherwise a bordered
+/// container expands to fill the cap and, with the transcript's
+/// sticky-bottom autoscroll, the content scrolls out of view. The one
+/// place a node is rasterised, so render and hit-test cannot drift.
+fn node_paint(node: &UiNode, width: u16, cap: u16) -> (Buffer, HitMap) {
+    let height = node.measure_height(width).clamp(1, cap.max(1));
+    let mut buffer = Buffer::empty(Rect::new(0, 0, width.max(1), height));
+    let mut hits = HitMap::new();
+    node.render(buffer.area(), &mut buffer, &mut hits);
+    (buffer, hits)
+}
+
+/// Converts a painted scratch to indented transcript [`Line`]s,
+/// trimming trailing blank rows so an over-tall scratch does not pad
+/// the transcript. The `"  "` indent is why a click's local column is
+/// `screen_x - inner.x - 2` (see `rich_hit`).
+fn buffer_to_lines(scratch: &Buffer, width: u16) -> Vec<Line<'static>> {
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for y in 0..scratch.area().height {
+        let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+        let text: String = (0..width)
+            .map(|x| {
+                scratch
+                    .get(Position::new(x, y))
+                    .map_or(' ', |cell| cell.symbol)
+            })
+            .collect();
+        spans.push(Span::styled(text.trim_end().to_owned(), Style::new()));
+        rows.push(Line::from(spans));
+    }
+    while rows
+        .last()
+        .is_some_and(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+    {
+        rows.pop();
+    }
+    rows
+}
+
 #[must_use]
 /// Paints `payload` into a scratch [`Buffer`] (the exact projection the
 /// transcript draws) and returns it with the interactive-node
@@ -290,14 +331,8 @@ fn paint(payload: &RichUiPayload, width: u16, max_height: u16) -> Option<(Buffer
                 let spec = serde_json::from_str::<Value>(&payload.source).ok()?;
                 JsonRenderDoc::from_flat_value(&spec).view()
             };
-            // Size the scratch to the document's *content* height
-            // (clamped by the caller's cap), not the cap itself —
-            // otherwise a bordered container expands to fill
-            // `max_height` and, with the transcript's sticky-bottom
-            // autoscroll, the content scrolls out of view.
-            let height = node.measure_height(width).clamp(1, cap);
-            let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
-            node.render(buffer.area(), &mut buffer, &mut hits);
+            let (buffer, node_hits) = node_paint(&node, width, cap);
+            hits = node_hits;
             buffer
         }
         // The diagram DSLs: render the *same* widget the kitchen-sink
@@ -327,34 +362,10 @@ fn paint(payload: &RichUiPayload, width: u16, max_height: u16) -> Option<(Buffer
 
 pub fn render_lines(payload: &RichUiPayload, width: u16, max_height: u16) -> Vec<Line<'static>> {
     let width = width.max(1);
-    let Some((scratch, _hits)) = paint(payload, width, max_height) else {
-        return vec![Line::raw("[invalid json-render document]")];
-    };
-
-    // Convert painted rows to owned Lines, trimming the trailing blank
-    // rows so an over-tall scratch does not pad the transcript.
-    let height = scratch.area().height;
-    let mut rows: Vec<Line<'static>> = Vec::new();
-    for y in 0..height {
-        let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
-        let mut text = String::new();
-        for x in 0..width {
-            text.push(
-                scratch
-                    .get(rstui_core::Position::new(x, y))
-                    .map_or(' ', |cell| cell.symbol),
-            );
-        }
-        spans.push(Span::styled(text.trim_end().to_owned(), Style::new()));
-        rows.push(Line::from(spans));
+    match paint(payload, width, max_height) {
+        Some((scratch, _hits)) => buffer_to_lines(&scratch, width),
+        None => vec![Line::raw("[invalid json-render document]")],
     }
-    while rows
-        .last()
-        .is_some_and(|line| line.spans.iter().all(|s| s.content.trim().is_empty()))
-    {
-        rows.pop();
-    }
-    rows
 }
 
 /// Renders a stored rich-UI document source (a `Role::RichUi` entry's
@@ -448,6 +459,112 @@ pub fn click(
         }
         // Diagrams (Mermaid/Structurizr/JSON-Canvas) are static.
         RichUiFormat::Mermaid | RichUiFormat::Structurizr | RichUiFormat::JsonCanvas => None,
+    }
+}
+
+/// A caller-owned, **stateful** rendered document (ADR 0012): the
+/// reducer keeps one per interactive `Role::RichUi` entry so a clicked
+/// checkbox / switched tab / `setState` **persists** across redraws —
+/// `view` re-projects from it, `update` mutates it on a click. Diagrams
+/// are static and are *not* stored as a `RichDoc` (rendered from text).
+/// No `Debug` — `JsonRenderDoc` is not `Debug`, and `ChatApp` isn't
+/// either, so none is required.
+pub enum RichDoc {
+    /// A live A2UI surface (its data model / selection persist).
+    A2ui(A2uiSurface),
+    /// A live json-render document (its state model persists).
+    Json(JsonRenderDoc),
+}
+
+impl RichDoc {
+    /// Builds a stateful doc for an interactive payload. `None` for a
+    /// diagram (Mermaid/Structurizr/JSON-Canvas) — those are static and
+    /// keep being rendered from their source text.
+    #[must_use]
+    pub fn build(payload: &RichUiPayload) -> Option<Self> {
+        match payload.format {
+            RichUiFormat::A2ui => {
+                let mut surface = A2uiSurface::new();
+                surface.apply_stream(&payload.source);
+                Some(Self::A2ui(surface))
+            }
+            RichUiFormat::JsonRender => serde_json::from_str::<Value>(&payload.source)
+                .ok()
+                .map(|spec| Self::Json(JsonRenderDoc::from_flat_value(&spec))),
+            RichUiFormat::Mermaid | RichUiFormat::Structurizr | RichUiFormat::JsonCanvas => None,
+        }
+    }
+
+    fn node(&self) -> UiNode {
+        match self {
+            Self::A2ui(surface) => surface.project(),
+            Self::Json(doc) => doc.view(),
+        }
+    }
+
+    /// Re-project the owned (mutated) state to transcript lines — the
+    /// renderer calls this every frame (pure projection).
+    #[must_use]
+    pub fn render_lines(&self, width: u16, max_height: u16) -> Vec<Line<'static>> {
+        let width = width.max(1);
+        let (scratch, _) = node_paint(&self.node(), width, max_height.max(1));
+        buffer_to_lines(&scratch, width)
+    }
+
+    /// Apply a click at block-local `pos`: resolve the node's action,
+    /// **mutate** the owned state for a local effect (so a toggled
+    /// checkbox / switched tab / `setState` persists and re-renders) and
+    /// return what the reducer must still do (round-trip / open URL).
+    #[must_use]
+    pub fn act(
+        &mut self,
+        width: u16,
+        max_height: u16,
+        pos: Position,
+        timestamp: &str,
+    ) -> Option<RichAction> {
+        let (_, hits) = node_paint(&self.node(), width.max(1), max_height.max(1));
+        let node_id = hits.at(pos)?.to_owned();
+        match self {
+            Self::A2ui(surface) => {
+                let surface_id = surface.surface_id().unwrap_or_default().to_owned();
+                match surface.action_for(&node_id)? {
+                    A2uiClientAction::OpenUrl(url) => Some(RichAction::OpenUrl(url)),
+                    A2uiClientAction::SetData { pointer, value } => {
+                        // Persisted — the next `project()` reflects it.
+                        surface.model_mut().set(&pointer, value);
+                        Some(RichAction::Local(format!("set {pointer}")))
+                    }
+                    event => event
+                        .to_client_json(&surface_id, timestamp)
+                        .map(|value| RichAction::ToAgent(value.to_string())),
+                }
+            }
+            Self::Json(doc) => {
+                // `dispatch` mutates the owned data model in place, so a
+                // `setState`/`pushState` persists and re-renders.
+                let mut to_agent = None;
+                let mut local = None;
+                for effect in doc.dispatch(&node_id, "press") {
+                    match effect {
+                        ActionEffect::Unhandled(action) => {
+                            to_agent = Some(
+                                json!({ "action": action.action, "params": action.params })
+                                    .to_string(),
+                            );
+                        }
+                        ActionEffect::StateChanged => {
+                            local = local.or_else(|| Some("updated".to_owned()));
+                        }
+                        ActionEffect::Log(message) => local = Some(message),
+                        ActionEffect::Exit(_) => {}
+                    }
+                }
+                to_agent
+                    .map(RichAction::ToAgent)
+                    .or(local.map(RichAction::Local))
+            }
+        }
     }
 }
 
@@ -659,5 +776,52 @@ mod tests {
 
         // Prose / non-doc never resolves.
         assert!(click("just text", 40, 12, Position::new(0, 0), "t").is_none());
+    }
+
+    fn row_of(doc: &RichDoc, needle: &str) -> Option<u16> {
+        doc.render_lines(80, 40)
+            .iter()
+            .position(|line| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                text.contains(needle)
+            })
+            .map(|y| y as u16)
+    }
+
+    #[test]
+    fn rich_doc_act_persists_a_json_render_setstate_across_reprojection() {
+        // The Phase-2 unit contract: `act` mutates the *owned* doc, so a
+        // later `render_lines` (the every-frame re-projection) shows the
+        // new state — not a re-parse of the immutable source.
+        let spec = r#"{"root":"col","elements":{
+            "col":{"type":"Box","children":["status","btn"]},
+            "status":{"type":"Text","props":{"text":{"$cond":{"$state":"/done"},"$then":"STATE=DONE","$else":"STATE=PENDING"}}},
+            "btn":{"type":"ConfirmInput","props":{"message":"Mark?","yesLabel":"YesGo"},"on":{"confirm":{"action":"setState","params":{"statePath":"/done","value":true}}}}
+        },"state":{"done":false}}"#;
+        let payload = RichUiPayload {
+            format: RichUiFormat::JsonRender,
+            source: spec.to_owned(),
+        };
+        let mut doc = RichDoc::build(&payload).expect("json-render builds a stateful doc");
+        assert!(row_of(&doc, "STATE=PENDING").is_some(), "starts PENDING");
+
+        // The Yes button is on the row that holds the message; sweep it.
+        let by = row_of(&doc, "YesGo").expect("the Yes button rendered");
+        let acted = (0..80).any(|x| doc.act(80, 40, Position::new(x, by), "t").is_some());
+        assert!(acted, "a click on the Yes button row resolved an action");
+
+        // Re-project the *same owned doc*: the state persisted.
+        assert!(
+            row_of(&doc, "STATE=DONE").is_some() && row_of(&doc, "STATE=PENDING").is_none(),
+            "the setState persisted across re-projection: {:?}",
+            doc.render_lines(80, 40)
+                .iter()
+                .map(|l| l
+                    .spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>())
+                .collect::<Vec<_>>()
+        );
     }
 }
