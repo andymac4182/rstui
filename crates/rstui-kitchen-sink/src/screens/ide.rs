@@ -3,7 +3,10 @@
 //! Enter splits lines), a [`List`] of problems, and a [`StatusBar`] with the
 //! live cursor position. `PgUp/PgDn` switch files.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use rstui_core::{
     Constraint, KeyCode, Layout, Line, Position, Rect, Style, TextArea, stylize::Stylize,
@@ -373,6 +376,27 @@ pub(crate) struct State {
     /// precedent — ADR 0004: scroll is reducer/model state, the gutter
     /// tracks it so the two never desync).
     scroll: Cell<(usize, usize)>,
+    /// Bumped on every text edit / active-file switch (never on a caret
+    /// move or scroll). Part of the [`overlay`](State::overlay) memo key so
+    /// the heavy tree-sitter parse runs once per real change, not per frame.
+    rev: u64,
+    /// The caller-owned read-through overlay memo (the `DiffSyntaxCache` /
+    /// ADR 0025 ethos): `(active, rev, theme-fp) -> Rc<overlay>`. `RefCell`
+    /// keeps the pure `view` a projection — a hit and a miss are
+    /// byte-identical, the memo only elides the reparse.
+    syntax_memo: RefCell<Option<(usize, u64, u64, Rc<Vec<Style>>)>>,
+}
+
+/// A cheap, stable hash of just the [`Theme`] colours the syntax palette
+/// uses, so a theme switch (and only that) invalidates the overlay memo.
+fn theme_fingerprint(t: &Theme) -> u64 {
+    let mut h = DefaultHasher::new();
+    format!(
+        "{:?}",
+        (t.accent, t.info, t.warn, t.accent_alt, t.ok, t.dim)
+    )
+    .hash(&mut h);
+    h.finish()
 }
 
 impl State {
@@ -392,7 +416,16 @@ impl State {
             ],
             active: 0,
             scroll: Cell::new((0, 0)),
+            rev: 0,
+            syntax_memo: RefCell::new(None),
         }
+    }
+
+    /// Mark the active buffer / file selection as changed so the next
+    /// [`overlay`](Self::overlay) is a memo miss (one tree-sitter reparse);
+    /// caret moves and scrolling deliberately do NOT call this.
+    fn touch(&mut self) {
+        self.rev = self.rev.wrapping_add(1);
     }
 
     fn doc(&mut self) -> &mut TextArea {
@@ -416,6 +449,28 @@ impl State {
     /// `syntax::line_overlay` loop. A per-frame parse is fine for this demo
     /// screen. Pure: rebuilt fresh in `view`.
     fn overlay(&self, theme: &Theme) -> Vec<Style> {
+        // Read-through memo: the tree-sitter parse in `compute_overlay`
+        // depends only on (active file, text revision, theme) — never on
+        // scroll or the caret — so reuse it across frames and recompute
+        // only on a real change. Before this, scrolling/typing re-parsed
+        // the whole file with tree-sitter every frame (the diff-viewer
+        // perf regression's sibling). A hit and a miss are byte-identical;
+        // the `RefCell` only elides the reparse, so `view` stays pure.
+        let key = (self.active, self.rev, theme_fingerprint(theme));
+        if let Some((a, r, t, rc)) = self.syntax_memo.borrow().as_ref() {
+            if (*a, *r, *t) == key {
+                return rc.as_ref().clone();
+            }
+        }
+        let ov = self.compute_overlay(theme);
+        *self.syntax_memo.borrow_mut() = Some((key.0, key.1, key.2, Rc::new(ov.clone())));
+        ov
+    }
+
+    /// The heavy overlay computation — one tree-sitter parse of the active
+    /// file (or the Tier-0 fallback). Only called by [`overlay`](Self::overlay)
+    /// on a memo miss.
+    fn compute_overlay(&self, theme: &Theme) -> Vec<Style> {
         let active = &self.files[self.active];
         // A rich themed palette — every Tier-1 semantic class mapped to a
         // theme role, so picking a theme reskins the whole editor.
@@ -472,10 +527,12 @@ impl State {
             KeyCode::PageUp => {
                 self.active = self.active.saturating_sub(1);
                 self.scroll.set((0, 0)); // a freshly-shown file opens at the top
+                self.touch();
             }
             KeyCode::PageDown => {
                 self.active = (self.active + 1).min(self.files.len() - 1);
                 self.scroll.set((0, 0));
+                self.touch();
             }
             KeyCode::Left => {
                 self.doc().move_left();
@@ -489,11 +546,18 @@ impl State {
             KeyCode::Down => {
                 self.doc().move_down();
             }
-            KeyCode::Enter => self.doc().insert_newline(),
+            KeyCode::Enter => {
+                self.doc().insert_newline();
+                self.touch();
+            }
             KeyCode::Backspace => {
                 self.doc().delete_backward();
+                self.touch();
             }
-            KeyCode::Char(c) => self.doc().insert_char(c),
+            KeyCode::Char(c) => {
+                self.doc().insert_char(c);
+                self.touch();
+            }
             _ => return ScreenOutcome::ignored(),
         }
         ScreenOutcome::consumed()
@@ -502,11 +566,16 @@ impl State {
     /// Pasted text is inserted at the caret.
     pub(crate) fn on_paste(&mut self, text: &str) {
         self.doc().insert_str(text);
+        self.touch();
     }
 
     /// Cut `sel` out of the active file buffer.
     pub(crate) fn cut(&mut self, sel: &str) -> bool {
-        crate::screens::cut_area(self.doc(), sel)
+        let changed = crate::screens::cut_area(self.doc(), sel);
+        if changed {
+            self.touch();
+        }
+        changed
     }
 
     /// A click on the file-tab strip switches files.
@@ -520,6 +589,7 @@ impl State {
         let names: Vec<&str> = self.files.iter().map(|(n, _)| *n).collect();
         if let Some(i) = crate::screens::tab_index_at(tabs, &names, 1, pos) {
             self.active = i;
+            self.touch();
             return ScreenOutcome::consumed();
         }
         ScreenOutcome::ignored()
