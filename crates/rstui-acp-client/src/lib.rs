@@ -38,6 +38,7 @@ pub mod ui;
 
 use std::io::{self, Stdout};
 
+use rstui_core::backend::Backend;
 use rstui_crossterm::{CrosstermBackend, LifecycleOptions, TerminalGuard};
 
 use crate::app::ChatApp;
@@ -225,6 +226,14 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // `ChatApp::new` directly, so they are unaffected.
     if let Ok(km) = std::env::var("RSTUI_KEYMAP") {
         app = app.with_keymap(&km);
+    }
+    // Seed the reducer with the REAL terminal size before the first
+    // frame: the runtime renders from `frame.area()` but never sends an
+    // initial `Resize`, so the pure-geometry hit-tests would otherwise
+    // run against the default 80×24 and a rendered form would be
+    // silently non-interactive on any other size.
+    if let Ok(size) = backend.size() {
+        app = app.with_initial_size(size);
     }
 
     rstui_runtime::run_async(app, backend, &mut events).await?;

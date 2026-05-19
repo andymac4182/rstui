@@ -932,6 +932,21 @@ impl ChatApp {
         self
     }
 
+    /// Seed the reducer's terminal-size model with the **real** size at
+    /// startup. The runtime renders frame 1 from `frame.area()` but
+    /// never synthesises an initial `Resize`, so without this the
+    /// pure-geometry hit-tests (`rich_hit`/`form_pane_inner`/
+    /// `form_ring`) would run against the default 80×24 until the user
+    /// happened to resize — making a rendered form silently
+    /// non-interactive on any other size. `Msg::Resize` keeps it
+    /// current thereafter. (Harness builds `ChatApp::new` directly and
+    /// drives `Msg::Resize` itself, so it is unaffected.)
+    #[must_use]
+    pub fn with_initial_size(mut self, size: Size) -> Self {
+        self.last_size = size;
+        self
+    }
+
     // ---- read-only accessors (used by the view + Harness tests) ----
 
     /// The current screen.

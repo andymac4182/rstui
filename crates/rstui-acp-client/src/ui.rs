@@ -809,8 +809,12 @@ pub(crate) enum RightSlot {
 /// ([`form_pane_inner`]) so they can never drift (ADR 0012 — no stored
 /// layout). The interactive form pane takes priority over the sidebar.
 pub(crate) fn body_split(app: &ChatApp, body: Rect) -> (Rect, RightSlot) {
-    if app.form_open() && body.width >= 96 {
-        let pane_w = (body.width * 2 / 5).clamp(40, 72);
+    // An interactive form opens its pane on any normal-width terminal
+    // (≥ 80, the common minimum). The previous 96 floor left an 80-col
+    // user with a rendered-but-uninteractable form; the pane still
+    // keeps a usable chat column beside it.
+    if app.form_open() && body.width >= 80 {
+        let pane_w = (body.width * 2 / 5).clamp(30, 72);
         let [chat, pane] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(pane_w)]).areas(body);
         return (chat, RightSlot::Form(pane));

@@ -1392,6 +1392,62 @@ fn clicking_a_rendered_checkbox_persists_the_toggle_across_redraws() {
 }
 
 #[test]
+fn real_boot_form_is_interactive_without_an_explicit_resize() {
+    // The reported bug: forms render but aren't interactive. Root
+    // cause — the runtime renders frame 1 from the real size but never
+    // sends an initial `Resize`, so the keyboard/mouse hit-tests
+    // (`form_ring`/`form_pane_inner`) ran against the default 80×24 and
+    // silently produced no focus ring. `lib.rs::run` now seeds the real
+    // size via `with_initial_size`; this reproduces that path and sends
+    // NO `Msg::Resize`, so it fails without the fix.
+    let mut h = Harness::new(
+        ChatApp::new(Config::default()).with_initial_size(Size::new(120, 40)),
+        120,
+        40,
+    );
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned())));
+    assert_eq!(h.app().screen(), Screen::Chat);
+    for chunk in [
+        "Fill it:\n\n```a2ui\n",
+        r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"c"}}"#,
+        "\n",
+        r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":["#,
+        r#"{"id":"root","component":"Column","children":["who","go"]},"#,
+        r#"{"id":"who","component":"TextField","label":"Who","value":{"path":"/who"}},"#,
+        r#"{"id":"go","component":"Button","child":"gl","action":{"event":{"name":"save"}}},"#,
+        r#"{"id":"gl","component":"Text","text":"Save"}]}}"#,
+        "\n```\n",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned())));
+
+    // NOTE: deliberately NO `Msg::Resize` — the real run path.
+    assert!(h.app().form_open(), "an interactive doc opened");
+    assert!(
+        h.snapshot().contains("Agent UI"),
+        "the pane renders at the real seeded size:\n{}",
+        h.snapshot()
+    );
+    // The regression: Tab must FOCUS and STAY focused — proof the
+    // keyboard hit-test derived a ring from the seeded size (without
+    // the fix, last_size=80×24 ⇒ no ring ⇒ form_focus flips back off).
+    key(&mut h, KeyCode::Tab);
+    assert!(
+        h.app().form_focus(),
+        "Tab focused the form without an explicit resize (geometry uses the real size)"
+    );
+    typ(&mut h, "Ada");
+    assert!(
+        h.snapshot().contains("Ada"),
+        "typing reached the bound field (interactive):\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}
+
+#[test]
 fn agent_form_opens_in_the_right_pane_and_keyboard_fills_then_submits() {
     // The goal end to end: an agent streams an A2UI form; it opens in
     // the interactive pane on the RIGHT next to chat; `Tab` focuses it;
