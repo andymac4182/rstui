@@ -657,9 +657,9 @@ impl RichDoc {
                         surface.model_mut().set(&pointer, value);
                         Some(RichAction::Local(format!("set {pointer}")))
                     }
-                    event => event
-                        .to_client_json(&surface_id, timestamp)
-                        .map(|value| RichAction::ToAgent(value.to_string())),
+                    event => event.to_client_json(&surface_id, timestamp).map(|value| {
+                        RichAction::ToAgent(wrap_submission(SubmissionFormat::A2ui, &value))
+                    }),
                 }
             }
             Self::Json(doc) => {
@@ -683,10 +683,10 @@ impl RichDoc {
                 for effect in doc.dispatch(&node_id.to_owned(), "press") {
                     match effect {
                         ActionEffect::Unhandled(action) => {
-                            to_agent = Some(
-                                json!({ "action": action.action, "params": action.params })
-                                    .to_string(),
-                            );
+                            to_agent = Some(wrap_submission(
+                                SubmissionFormat::JsonRender,
+                                &json!({ "action": action.action, "params": action.params }),
+                            ));
                         }
                         ActionEffect::StateChanged => {
                             local = local.or_else(|| Some("updated".to_owned()));
@@ -701,6 +701,44 @@ impl RichDoc {
             }
         }
     }
+}
+
+/// Which interactive format produced a submission — picks the agent-
+/// facing label/instruction for the wrapped user message.
+#[derive(Debug, Clone, Copy)]
+enum SubmissionFormat {
+    /// Google A2UI v0.10 client→server action envelope.
+    A2ui,
+    /// Vercel json-render host `{action,params}`.
+    JsonRender,
+}
+
+impl SubmissionFormat {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::A2ui => "A2UI",
+            Self::JsonRender => "json-render",
+        }
+    }
+}
+
+/// Wrap a resolved submission envelope into the **user message** the
+/// agent receives when a rendered form is submitted. A bare JSON blob
+/// in chat is opaque to an LLM; this marker + a brief instruction +
+/// the pretty-printed JSON inside a ` ```json ` fence makes the
+/// contract unambiguous (the [`json_render_prompt`](
+/// rstui_jsonui::capability::json_render_prompt) and A2UI
+/// `submissionConvention` in [`render_capability_summary`](
+/// rstui_jsonui::capability::render_capability_summary) document the
+/// same shape so a capability-aware agent recognises it).
+fn wrap_submission(format: SubmissionFormat, envelope: &Value) -> String {
+    let pretty = serde_json::to_string_pretty(envelope).unwrap_or_else(|_| envelope.to_string());
+    format!(
+        "[{label} form submission]\n\n\
+         The user submitted the rendered {label} form. Process the action below and respond.\n\n\
+         ```json\n{pretty}\n```",
+        label = format.label(),
+    )
 }
 
 /// Parses an A2UI tab-header id `"<tabsId>#tab:<index>"` into
@@ -966,6 +1004,22 @@ mod tests {
         assert!(click("just text", 40, 12, Position::new(0, 0), "t").is_none());
     }
 
+    /// Extract the spec envelope from a wrapped submission user
+    /// message (the `[<fmt> form submission]` + fenced json + prose
+    /// the agent receives — see `wrap_submission`). Tests need it to
+    /// assert the underlying envelope still matches the spec shape.
+    fn embedded_json(wrapped: &str) -> Value {
+        let open = wrapped
+            .find("```json\n")
+            .map(|i| i + "```json\n".len())
+            .expect("wrapped submission has a ```json fence");
+        let close = wrapped[open..]
+            .find("\n```")
+            .map(|n| open + n)
+            .expect("the ```json fence is closed");
+        serde_json::from_str(&wrapped[open..close]).expect("the fenced payload is JSON")
+    }
+
     fn row_of(doc: &RichDoc, needle: &str) -> Option<u16> {
         doc.render_lines(80, 40)
             .iter()
@@ -1049,7 +1103,7 @@ mod tests {
         let RichAction::ToAgent(json) = action else {
             panic!("submit must round-trip to the agent, got {action:?}");
         };
-        let v: Value = serde_json::from_str(&json).expect("envelope is JSON");
+        let v: Value = embedded_json(&json);
         assert_eq!(v["version"], "v0.10");
         assert_eq!(v["action"]["name"], "save");
         assert_eq!(v["action"]["surfaceId"], "s1");
@@ -1088,7 +1142,7 @@ mod tests {
         let RichAction::ToAgent(json) = action else {
             panic!("a host action must round-trip, got {action:?}");
         };
-        let v: Value = serde_json::from_str(&json).expect("payload is JSON");
+        let v: Value = embedded_json(&json);
         assert_eq!(v["action"], "submitForm");
         assert_eq!(
             v["params"]["who"], "Bob",
@@ -1121,7 +1175,7 @@ mod tests {
         let RichAction::ToAgent(json) = action else {
             panic!("a json-render Button host action must round-trip, got {action:?}");
         };
-        let v: Value = serde_json::from_str(&json).expect("payload is JSON");
+        let v: Value = embedded_json(&json);
         assert_eq!(v["action"], "submitForm");
         assert_eq!(
             v["params"]["q"], "hello",
@@ -1191,7 +1245,7 @@ mod tests {
         let RichAction::ToAgent(json) = doc.act_node("go", "t").expect("submit") else {
             panic!("submit must round-trip");
         };
-        let v: Value = serde_json::from_str(&json).unwrap();
+        let v: Value = embedded_json(&json);
         assert_eq!(v["params"]["agree"], true, "checkbox toggled into submit");
         assert_eq!(
             v["params"]["qty"], 10.0,
@@ -1228,11 +1282,59 @@ mod tests {
         else {
             panic!("the Button event must round-trip");
         };
-        let v: Value = serde_json::from_str(&json).unwrap();
+        let v: Value = embedded_json(&json);
         assert_eq!(
             v["action"]["context"]["n"], 9.0,
             "the stepped slider value is in the submitted A2UI context: {json}"
         );
+    }
+
+    #[test]
+    fn submitted_form_is_a_user_message_wrapped_with_the_format_marker() {
+        // A bare JSON blob on the prompt channel is opaque to an LLM.
+        // A submit's RichAction::ToAgent payload must be a real user
+        // message: a `[<fmt> form submission]` marker + instruction +
+        // a ```json fence carrying the spec envelope. apply_rich_action
+        // pushes it as a Role::User entry AND sends it via the prompt
+        // channel — the agent receives a clearly-marked user message.
+        let js = r#"{"root":"b","elements":{"b":{"type":"Button","props":{"label":"Go"},"on":{"press":{"action":"submit","params":{"q":1}}}}}}"#;
+        let RichAction::ToAgent(text) = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::JsonRender,
+            source: js.to_owned(),
+        })
+        .unwrap()
+        .act_node("b", "t")
+        .unwrap() else {
+            panic!("Button must round-trip");
+        };
+        assert!(
+            text.starts_with("[json-render form submission]"),
+            "the user message is marked: {text}"
+        );
+        assert!(text.contains("```json\n"), "the envelope is fenced JSON");
+        assert_eq!(embedded_json(&text)["action"], "submit");
+
+        let a = concat!(
+            r#"{"version":"v0.10","createSurface":{"surfaceId":"s","catalogId":"c"}}"#,
+            "\n",
+            r#"{"version":"v0.10","updateComponents":{"surfaceId":"s","components":["#,
+            r#"{"id":"root","component":"Button","child":"l","action":{"event":{"name":"go"}}},"#,
+            r#"{"id":"l","component":"Text","text":"Go"}"#,
+            r#"]}}"#,
+        );
+        let RichAction::ToAgent(text) = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::A2ui,
+            source: a.to_owned(),
+        })
+        .unwrap()
+        .act_node("root", "2026-01-01T00:00:00Z")
+        .unwrap() else {
+            panic!("A2UI Button must round-trip");
+        };
+        assert!(text.starts_with("[A2UI form submission]"), "marker: {text}");
+        let v = embedded_json(&text);
+        assert_eq!(v["version"], "v0.10");
+        assert_eq!(v["action"]["name"], "go");
     }
 
     #[test]

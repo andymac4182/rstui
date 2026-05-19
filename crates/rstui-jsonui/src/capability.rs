@@ -324,7 +324,21 @@ pub fn json_render_prompt() -> String {
          {{\"$template\":\"...{{/ptr}}...\"}}, \
          {{\"$cond\":...,\"$then\":...,\"$else\":...}}. You may stream the \
          document as RFC-6902 JSON-Patch lines (one JSON object per line) \
-         inside a ```spec fenced block. Available components: {}.",
+         inside a ```spec fenced block. Available components: {}. \
+         \n\n\
+         FORM SUBMISSION: when the user clicks a `Button` whose `on.press` \
+         names a host action (anything other than the builtins setState/\
+         pushState/removeState/log/exit, which stay local), this client \
+         sends you a USER MESSAGE shaped exactly:\n\
+         `[json-render form submission]`\\n\\n\
+         `The user submitted the rendered json-render form. Process the \
+         action below and respond.`\\n\\n\
+         ` ```json `\\n`{{\"action\":\"<name>\",\"params\":{{...resolved \
+         from state...}}}}`\\n` ``` `\n\
+         The bound input values (`$bindState`/`$state`) are already \
+         resolved into `params`. Treat that user message as the form \
+         submission and reply with a normal answer or another json-render \
+         document.",
         names.join(", ")
     )
 }
@@ -343,6 +357,21 @@ pub fn render_capability_summary() -> Value {
                 "version": A2UI_VERSION,
                 "supportedCatalogIds": [A2UI_CATALOG_ID],
                 "inlineCatalogProvided": true,
+                "submissionConvention":
+                    "When the user submits a rendered A2UI form (a Button \
+                     whose `action.event` fires), this client sends you a \
+                     USER MESSAGE shaped exactly:\n\
+                     `[A2UI form submission]`\\n\\n`The user submitted the \
+                     rendered A2UI form. Process the action below and \
+                     respond.`\\n\\n` ```json `\\n`{\"version\":\"v0.10\",\
+                     \"action\":{\"name\":\"<name>\",\"surfaceId\":\"<id>\",\
+                     \"sourceComponentId\":\"<id>\",\"timestamp\":\"<rfc3339>\",\
+                     \"context\":{...bound `{path}`s resolved from the data \
+                     model...}}}`\\n` ``` `\n\
+                     Treat that user message as the form submission and \
+                     reply with normal prose or a follow-up A2UI message \
+                     (e.g. `updateDataModel`/`updateComponents` for the \
+                     same `surfaceId`).",
             },
             "jsonRender": {
                 "catalogId": JSON_RENDER_CATALOG_ID,

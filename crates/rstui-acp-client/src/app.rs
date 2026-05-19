@@ -1746,27 +1746,6 @@ impl ChatApp {
         }
     }
 
-    /// Sends a rendered-UI action back to the agent (an A2UI client
-    /// envelope / a json-render custom action — ADR 0017). Unlike
-    /// [`send_user_prompt`](Self::send_user_prompt) it leaves a concise
-    /// `Role::System` breadcrumb instead of a giant user bubble (the
-    /// payload is machine JSON, not prose). No-op breadcrumb when no
-    /// agent is connected.
-    fn send_agent_action(&mut self, payload: String) {
-        if self.driver.is_none() {
-            self.push_system("not connected — pick an agent with /agents");
-            return;
-        }
-        self.push_system("↳ UI action sent to the agent");
-        self.streaming = true;
-        if let Some(driver) = &self.driver {
-            driver.send(DriverCmd::Prompt(payload.clone()));
-        }
-        if let Some(host) = &self.plugins {
-            host.broadcast(&HostEvent::UserPrompt { text: payload });
-        }
-    }
-
     fn run_slash(&mut self, rest: &str) -> Cmd<Msg> {
         let mut parts = rest.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or("").to_owned();
@@ -2993,7 +2972,15 @@ impl ChatApp {
     /// mouse + keyboard so both paths behave identically.
     fn apply_rich_action(&mut self, action: crate::acp::RichAction) -> Cmd<Msg> {
         match action {
-            crate::acp::RichAction::ToAgent(payload) => self.send_agent_action(payload),
+            // A submit is a real **user message** (already wrapped by
+            // RichDoc::act_node with the `[<fmt> form submission]`
+            // marker + the action JSON in a ```json fence) — push it
+            // to the transcript as a Role::User entry AND send it
+            // through the same ACP prompt channel a typed message
+            // uses. The agent then sees a clearly-marked user message
+            // it can process, and the user sees their submission in
+            // chat instead of an invisible JSON round-trip.
+            crate::acp::RichAction::ToAgent(payload) => self.send_user_prompt(payload),
             crate::acp::RichAction::OpenUrl(url) => self.push_system(format!("↗ open: {url}")),
             crate::acp::RichAction::Local(desc) => self.push_system(format!("· {desc}")),
         }
