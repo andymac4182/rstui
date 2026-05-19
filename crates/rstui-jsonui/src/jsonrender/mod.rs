@@ -493,4 +493,69 @@ mod tests {
             "a raw #hex is the fallback"
         );
     }
+
+    #[test]
+    fn json_render_charts_project_to_a_real_themed_chart_node() {
+        use crate::tree::{ChartKind, HitMap, UiNode};
+
+        // A categorical BarChart with an explicit theme token: a real
+        // `UiNode::Chart` (not ASCII text), series coloured by the token.
+        let spec = serde_json::json!({
+            "root": "b",
+            "elements": { "b": { "type": "BarChart", "props": {
+                "data": [{"label":"a","value":3},{"label":"b","value":7}],
+                "color": "chart2"
+            }}}
+        });
+        let mut doc = JsonRenderDoc::from_flat_value(&spec);
+        let mut palette = crate::color::Palette::ANSI;
+        palette.chart[1] = rstui_core::Color::Rgb(9, 9, 9); // chart2 (1-based)
+        doc.set_palette(palette);
+        let UiNode::Chart {
+            kind,
+            series,
+            height,
+            ..
+        } = doc.view()
+        else {
+            panic!(
+                "BarChart must project to a Chart node, got {:?}",
+                doc.view()
+            );
+        };
+        assert_eq!(kind, ChartKind::Bar);
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].color, rstui_core::Color::Rgb(9, 9, 9));
+        assert_eq!(series[0].points, vec![(0.0, 3.0), (1.0, 7.0)]);
+        assert_eq!(series[0].labels, vec!["a".to_owned(), "b".to_owned()]);
+
+        // It renders into a buffer (no panic) and paints something.
+        let mut buf = rstui_core::Buffer::empty(rstui_core::Rect::new(0, 0, 30, height));
+        doc.view().render(buf.area(), &mut buf, &mut HitMap::new());
+        let painted = (0..buf.area().width).any(|x| {
+            (0..buf.area().height).any(|y| {
+                buf.get(rstui_core::Position::new(x, y))
+                    .is_some_and(|c| c.symbol != ' ')
+            })
+        });
+        assert!(painted, "the bar chart drew glyphs");
+
+        // A multi-series LineChart cycles palette series colours.
+        let spec2 = serde_json::json!({
+            "root": "l",
+            "elements": { "l": { "type": "LineChart", "props": { "series": [
+                { "name": "x", "points": [[0,1],[1,2]] },
+                { "name": "y", "points": [[0,3],[1,4]] }
+            ]}}}
+        });
+        let doc2 = JsonRenderDoc::from_flat_value(&spec2);
+        let UiNode::Chart { kind, series, .. } = doc2.view() else {
+            panic!("LineChart must project to a Chart node");
+        };
+        assert_eq!(kind, ChartKind::Line);
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0].color, crate::color::Palette::ANSI.series(0));
+        assert_eq!(series[1].color, crate::color::Palette::ANSI.series(1));
+        assert_eq!(series[1].points, vec![(0.0, 3.0), (1.0, 4.0)]);
+    }
 }

@@ -30,7 +30,10 @@ use super::expr::{
     resolve_element_props,
 };
 use super::spec::Spec;
-use crate::tree::{CrossAlign, Justify, KeyValueRow, Severity, TextVariant, UiNode};
+use crate::color::{Palette, parse_token};
+use crate::tree::{
+    ChartKind, ChartSeries, CrossAlign, Justify, KeyValueRow, Severity, TextVariant, UiNode,
+};
 
 /// Whether the spec is still streaming. When `true`, a child key that is
 /// not yet in the element map renders nothing (the reference suppresses
@@ -366,18 +369,15 @@ fn map_component(
             ratio: prop_f64(props, "progress").unwrap_or(0.0).clamp(0.0, 1.0),
             label: prop_str(props, "label").map(str::to_owned),
         },
-        "Sparkline" => {
-            // No terminal sparkline widget — render block glyphs as text
-            // (the reference uses the same ▁▂▃▄▅▆▇█ ramp).
-            let label = prop_str(props, "label").map(str::to_owned);
-            let blocks = sparkline_blocks(prop_value(props, "data"));
-            let text = match label {
-                Some(name) => format!("{name} {blocks}"),
-                None => blocks,
-            };
-            one_styled(text, Style::new().fg(rstui_core::Color::Green))
-        }
-        "BarChart" => bar_chart(props),
+        "Sparkline" => chart_node(ChartKind::Sparkline, props, palette),
+        "BarChart" | "Bar" => chart_node(ChartKind::Bar, props, palette),
+        "LineChart" | "Line" => chart_node(ChartKind::Line, props, palette),
+        "AreaChart" | "Area" => chart_node(ChartKind::Area, props, palette),
+        "PieChart" | "Pie" | "DonutChart" | "Donut" => chart_node(ChartKind::Pie, props, palette),
+        "ScatterPlot" | "Scatter" => chart_node(ChartKind::Scatter, props, palette),
+        "Histogram" => chart_node(ChartKind::Histogram, props, palette),
+        "StackedBarChart" | "StackedBar" => chart_node(ChartKind::StackedBar, props, palette),
+        "Heatmap" => chart_node(ChartKind::Heatmap, props, palette),
         "Table" => table(props),
         "List" => list(props),
         "ListItem" => {
@@ -539,82 +539,114 @@ fn bound_id(
         .unwrap_or_else(|| node_id.to_owned())
 }
 
-const SPARK_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-fn sparkline_blocks(data: Option<&Value>) -> String {
+/// Parse a chart data array into `(points, labels)`. Accepts
+/// `[{label,value}|{x,y}|[x,y]|number]` — the LLM-friendly shapes; `x`
+/// defaults to the index, missing labels are empty. Total.
+fn parse_points(data: Option<&Value>) -> (Vec<(f64, f64)>, Vec<String>) {
     let Some(Value::Array(items)) = data else {
-        return String::new();
+        return (Vec::new(), Vec::new());
     };
-    let numbers: Vec<f64> = items.iter().filter_map(Value::as_f64).collect();
-    if numbers.is_empty() {
-        return String::new();
+    let mut points = Vec::with_capacity(items.len());
+    let mut labels = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let idx = i as f64;
+        let (x, y, label) = match item {
+            Value::Number(_) => (idx, item.as_f64().unwrap_or(0.0), String::new()),
+            Value::Array(pair) => (
+                pair.first().and_then(Value::as_f64).unwrap_or(idx),
+                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+                String::new(),
+            ),
+            Value::Object(map) => {
+                let y = map
+                    .get("value")
+                    .or_else(|| map.get("y"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                let x = map.get("x").and_then(Value::as_f64).unwrap_or(idx);
+                let label = map
+                    .get("label")
+                    .or_else(|| map.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                (x, y, label)
+            }
+            _ => continue,
+        };
+        points.push((x, y));
+        labels.push(label);
     }
-    let min = numbers.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = numbers.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let range = if (max - min).abs() < f64::EPSILON {
-        1.0
-    } else {
-        max - min
-    };
-    numbers
-        .iter()
-        .map(|value| {
-            let normalised = (value - min) / range;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let index = (normalised * (SPARK_BLOCKS.len() - 1) as f64).round() as usize;
-            SPARK_BLOCKS[index.min(SPARK_BLOCKS.len() - 1)]
-        })
-        .collect()
+    (points, labels)
 }
 
-fn bar_chart(props: &Value) -> UiNode {
-    let Some(Value::Array(items)) = prop_value(props, "data") else {
-        return UiNode::Placeholder("BarChart".to_owned());
-    };
-    let entries: Vec<(String, f64)> = items
-        .iter()
-        .filter_map(|entry| {
-            let object = entry.as_object()?;
-            Some((
-                object.get("label")?.as_str()?.to_owned(),
-                object.get("value")?.as_f64()?,
-            ))
-        })
-        .collect();
-    if entries.is_empty() {
-        return UiNode::Placeholder("BarChart".to_owned());
-    }
-    let max = entries
-        .iter()
-        .map(|(_, value)| *value)
-        .fold(1.0_f64, f64::max);
-    let rows = entries
-        .into_iter()
-        .map(|(label, value)| {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let filled = ((value / max) * 24.0).round() as usize;
-            UiNode::Text {
-                spans: vec![
-                    (format!("{label:<12} "), Style::new()),
-                    (
-                        "█".repeat(filled),
-                        Style::new().fg(rstui_core::Color::Green),
-                    ),
-                    (
-                        format!(" {value}"),
-                        Style::new().add_modifier(Modifier::DIM),
-                    ),
-                ],
-                variant: TextVariant::Body,
-                align: Alignment::Left,
-                wrap: false,
+/// Project a json-render chart component into a themed
+/// [`UiNode::Chart`]. Accepts either `props.series`
+/// (`[{name,color?,data|points}]`, multi-series) or `props.data`
+/// (`[{label,value}|…]`, single series; `Pie` becomes one cycled-colour
+/// series per slice). A `"color"` token / per-series colour resolves
+/// against `palette`, else the series cycles `chart_1..=chart_5`.
+fn chart_node(kind: ChartKind, props: &Value, palette: &Palette) -> UiNode {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let height = prop_f64(props, "height")
+        .map_or(10, |h| h as u16)
+        .clamp(3, 40);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let cols = prop_f64(props, "cols").map_or(0, |c| c as usize);
+    let explicit = prop_str(props, "color").and_then(parse_token);
+    let mut series: Vec<ChartSeries> = Vec::new();
+
+    if let Some(Value::Array(arr)) = prop_value(props, "series") {
+        for (i, s) in arr.iter().enumerate() {
+            let color = s
+                .get("color")
+                .and_then(Value::as_str)
+                .and_then(parse_token)
+                .or(explicit)
+                .map_or_else(|| palette.series(i), |token| palette.resolve(token));
+            let (points, labels) = parse_points(s.get("data").or_else(|| s.get("points")));
+            series.push(ChartSeries {
+                name: s
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+                color,
+                points,
+                labels,
+            });
+        }
+    } else {
+        let (points, labels) = parse_points(prop_value(props, "data"));
+        if matches!(kind, ChartKind::Pie) {
+            // One slice per datum so the palette cycles per slice.
+            for (i, (&(_, y), label)) in points.iter().zip(&labels).enumerate() {
+                series.push(ChartSeries {
+                    name: label.clone(),
+                    color: explicit
+                        .map_or_else(|| palette.series(i), |token| palette.resolve(token)),
+                    points: vec![(i as f64, y)],
+                    labels: vec![label.clone()],
+                });
             }
-        })
-        .collect();
-    UiNode::Column {
-        children: rows,
-        justify: Justify::Start,
-        align: CrossAlign::Stretch,
+        } else if !points.is_empty() {
+            series.push(ChartSeries {
+                name: prop_str(props, "label").unwrap_or("").to_owned(),
+                color: explicit.map_or_else(|| palette.series(0), |token| palette.resolve(token)),
+                points,
+                labels,
+            });
+        }
+    }
+
+    if series.is_empty() {
+        return UiNode::Placeholder(format!("{kind:?}"));
+    }
+    UiNode::Chart {
+        kind,
+        series,
+        cols,
+        height,
     }
 }
 

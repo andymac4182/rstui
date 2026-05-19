@@ -23,7 +23,9 @@ use rstui_core::{
     Style, Widget,
 };
 use rstui_widgets::{
-    Badge, BadgeLevel, Block, Borders, Button, Gauge, Markdown, Paragraph, Spinner, Wrap,
+    Badge, BadgeLevel, Bar, BarChart, Block, Borders, Button, Gauge, Heatmap, Histogram,
+    HistogramBucket, LineChart, Markdown, Paragraph, PieChart, Series, Slice, Sparkline, Spinner,
+    StackedBar, StackedBarChart, Wrap,
 };
 
 /// The format-assigned identity of a node (A2UI component `id` /
@@ -300,9 +302,64 @@ pub enum UiNode {
         /// Alt/description text.
         alt: String,
     },
+    /// A data chart (basic + common graph types) delegating to the
+    /// matching `rstui-widgets` chart; series colours are theme tokens
+    /// resolved by the projector. Owns its data so projection stays a
+    /// pure value (the widget is built transiently at render time).
+    Chart {
+        /// Which graph to draw.
+        kind: ChartKind,
+        /// One or more data series (colour already resolved against the
+        /// active palette by the projector).
+        series: Vec<ChartSeries>,
+        /// Heatmap column count (ignored by other kinds).
+        cols: usize,
+        /// Requested row height (the projector's hint;
+        /// [`measure_height`](UiNode::measure_height) returns it).
+        height: u16,
+    },
     /// An unknown / unsupported component, rendered as a visible
     /// placeholder so progressive rendering degrades instead of breaking.
     Placeholder(String),
+}
+
+/// Which graph a [`UiNode::Chart`] draws (the basic + common set, each
+/// backed 1:1 by an `rstui-widgets` chart widget).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChartKind {
+    /// Vertical bar chart (categorical).
+    Bar,
+    /// Multi-series line chart.
+    Line,
+    /// Compact single-series sparkline.
+    Sparkline,
+    /// Pie / share chart.
+    Pie,
+    /// Filled line (area) chart — rendered via the line chart.
+    Area,
+    /// XY scatter plot (one colour per series).
+    Scatter,
+    /// Histogram (bucket counts).
+    Histogram,
+    /// Stacked bar chart (one stack per category).
+    StackedBar,
+    /// 2-D intensity heatmap (`cols`-wide grid of `series[0]` values).
+    Heatmap,
+}
+
+/// One chart data series: a name, an already-resolved colour, the
+/// `(x, y)` points (categorical kinds use `y` with the matching
+/// `labels` entry; `x` is the index), and optional category labels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartSeries {
+    /// Series display name (legend / single-series label).
+    pub name: String,
+    /// Resolved series colour (a theme token resolved by the projector).
+    pub color: Color,
+    /// The data points; categorical charts read `y` (x = index).
+    pub points: Vec<(f64, f64)>,
+    /// Category / bucket labels, parallel to `points` (categorical).
+    pub labels: Vec<String>,
 }
 
 impl Default for UiNode {
@@ -603,6 +660,9 @@ impl UiNode {
                 )))
                 .render(area, buf);
             }
+            Self::Chart {
+                kind, series, cols, ..
+            } => render_chart(*kind, series, *cols, area, buf),
             Self::Placeholder(what) => {
                 let text = if what.is_empty() {
                     "[unsupported]".to_owned()
@@ -658,6 +718,7 @@ impl UiNode {
                 }
             }
             Self::Placeholder(what) => format!("[unsupported: {what}]"),
+            Self::Chart { kind, .. } => format!("[chart: {kind:?}]"),
             Self::Column { children, .. } | Self::Row { children, .. } | Self::Stack(children) => {
                 children
                     .iter()
@@ -712,6 +773,8 @@ impl UiNode {
                     .max(1)
             }
             Self::KeyValue(rows) => (rows.len().max(1)) as u32,
+            // A chart sizes to its caller-requested row height.
+            Self::Chart { height, .. } => u32::from((*height).max(1)),
             // Single-row leaves (Button, Link, Badge, Gauge, Spinner,
             // StatusLine, TextField, Checkbox, Media, Divider, Spacer,
             // Placeholder).
@@ -761,6 +824,112 @@ fn render_key_value(rows: &[KeyValueRow], area: Rect, buf: &mut Buffer) {
             Span::raw(row.value.clone()),
         ]);
         Paragraph::new(line).render(Rect::new(area.x, area.y + index as u16, area.width, 1), buf);
+    }
+}
+
+/// Renders a [`UiNode::Chart`] through the matching `rstui-widgets`
+/// chart. Total: an empty series set or a zero area is a safe no-op
+/// (the widgets are themselves total). Series colours are already
+/// resolved (theme tokens) by the projector.
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn render_chart(
+    kind: ChartKind,
+    series: &[ChartSeries],
+    cols: usize,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    if area.width == 0 || area.height == 0 || series.is_empty() {
+        return;
+    }
+    let label_at = |s: &ChartSeries, i: usize| s.labels.get(i).cloned().unwrap_or_default();
+    let nonneg = |v: f64| if v > 0.0 { v as u64 } else { 0 };
+    match kind {
+        ChartKind::Bar => {
+            let s0 = &series[0];
+            let bars: Vec<Bar> = s0
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, &(_, y))| Bar::new(nonneg(y), label_at(s0, i)))
+                .collect();
+            BarChart::new(bars)
+                .bar_style(Style::new().fg(s0.color))
+                .render(area, buf);
+        }
+        ChartKind::Line | ChartKind::Area => {
+            let lines: Vec<Series> = series
+                .iter()
+                .map(|s| Series::new(s.name.clone(), &s.points).style(Style::new().fg(s.color)))
+                .collect();
+            LineChart::new(&lines).render(area, buf);
+        }
+        ChartKind::Sparkline => {
+            let data: Vec<u64> = series[0].points.iter().map(|&(_, y)| nonneg(y)).collect();
+            Sparkline::new(&data).render(area, buf);
+        }
+        ChartKind::Pie => {
+            // One slice per series (the projector models each slice as a
+            // single-point series so it can assign a cycled palette
+            // colour); fall back to the first series' points.
+            let slices: Vec<Slice> = if series.len() > 1 {
+                series
+                    .iter()
+                    .map(|s| {
+                        let v = s.points.first().map_or(0.0, |&(_, y)| y);
+                        Slice::new(nonneg(v), s.color, s.name.clone())
+                    })
+                    .collect()
+            } else {
+                let s0 = &series[0];
+                s0.points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(_, y))| Slice::new(nonneg(y), s0.color, label_at(s0, i)))
+                    .collect()
+            };
+            PieChart::new(slices).render(area, buf);
+        }
+        ChartKind::Scatter => {
+            let pts: Vec<Vec<(f64, f64)>> = series.iter().map(|s| s.points.clone()).collect();
+            let sc: Vec<rstui_widgets::scatter_plot::Series> = series
+                .iter()
+                .zip(&pts)
+                .map(|(s, p)| rstui_widgets::scatter_plot::Series::new(p, s.color))
+                .collect();
+            rstui_widgets::ScatterPlot::new(sc).render(area, buf);
+        }
+        ChartKind::Histogram => {
+            let s0 = &series[0];
+            let buckets: Vec<HistogramBucket> = s0
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, &(_, y))| HistogramBucket::new(nonneg(y), label_at(s0, i)))
+                .collect();
+            Histogram::new(&buckets).render(area, buf);
+        }
+        ChartKind::StackedBar => {
+            let n = series.iter().map(|s| s.points.len()).max().unwrap_or(0);
+            let bars: Vec<StackedBar> = (0..n)
+                .map(|i| {
+                    let segments: Vec<(u64, Color)> = series
+                        .iter()
+                        .map(|s| (s.points.get(i).map_or(0, |&(_, y)| nonneg(y)), s.color))
+                        .collect();
+                    StackedBar::new(label_at(&series[0], i), segments)
+                })
+                .collect();
+            StackedBarChart::new(bars).render(area, buf);
+        }
+        ChartKind::Heatmap => {
+            let values: Vec<f64> = series[0].points.iter().map(|&(_, y)| y).collect();
+            Heatmap::new(&values, cols.max(1)).render(area, buf);
+        }
     }
 }
 
