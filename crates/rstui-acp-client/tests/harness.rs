@@ -1031,3 +1031,109 @@ fn agent_json_render_document_renders_in_the_transcript() {
     );
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W1-1: composer input history (↑/↓ recall) ----
+
+fn composer_text(h: &Harness<ChatApp>) -> String {
+    h.app().composer().lines().join("\n")
+}
+
+fn key(h: &mut Harness<ChatApp>, code: KeyCode) {
+    h.message(Msg::Key(KeyEvent::from_code(code)));
+}
+
+/// Submitting prompts records them; ↑ walks back through them (clamped at
+/// the oldest), ↓ walks forward and finally restores the half-typed draft —
+/// the readline / Codex-CLI contract. Persistence is intentionally inert
+/// under `cargo test` (no terminal); only the in-memory behaviour is driven.
+#[test]
+fn up_down_recall_submitted_prompts_and_restore_the_draft() {
+    let mut h = chatting(100, 30);
+
+    typ(&mut h, "first prompt");
+    key(&mut h, KeyCode::Enter);
+    typ(&mut h, "second prompt");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().composer().is_empty(), "composer clears on submit");
+    assert_eq!(
+        h.app().history().entries(),
+        ["first prompt", "second prompt"]
+    );
+
+    // A half-typed draft is preserved across the browse.
+    typ(&mut h, "draft");
+    key(&mut h, KeyCode::Up);
+    assert_eq!(composer_text(&h), "second prompt", "↑ recalls the newest");
+    assert!(h.app().history().browsing());
+    key(&mut h, KeyCode::Up);
+    assert_eq!(composer_text(&h), "first prompt", "↑ again → older");
+    key(&mut h, KeyCode::Up);
+    assert_eq!(composer_text(&h), "first prompt", "clamped at the oldest");
+
+    key(&mut h, KeyCode::Down);
+    assert_eq!(composer_text(&h), "second prompt", "↓ → newer");
+    key(&mut h, KeyCode::Down);
+    assert_eq!(
+        composer_text(&h),
+        "draft",
+        "↓ past newest restores the draft"
+    );
+    assert!(!h.app().history().browsing());
+    assert!(h.is_running());
+}
+
+/// History dedups consecutive duplicates, and any composer edit ends the
+/// browse so a fresh ↑ starts again from the newest entry.
+#[test]
+fn duplicate_submissions_dedup_and_editing_resets_the_browse() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "same");
+    key(&mut h, KeyCode::Enter);
+    typ(&mut h, "same");
+    key(&mut h, KeyCode::Enter);
+    assert_eq!(
+        h.app().history().entries(),
+        ["same"],
+        "consecutive duplicate submissions are not stored twice"
+    );
+
+    key(&mut h, KeyCode::Up);
+    assert_eq!(composer_text(&h), "same");
+    assert!(h.app().history().browsing());
+    // Editing the recalled text ends the browse.
+    typ(&mut h, "X");
+    assert!(!h.app().history().browsing(), "an edit resets the browse");
+    assert_eq!(composer_text(&h), "sameX");
+}
+
+/// On a multi-line draft, ↑/↓ first move *within* the draft and only recall
+/// history once the cursor can go no further (first / last row).
+#[test]
+fn arrows_move_within_a_multiline_draft_before_recalling_history() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "old");
+    key(&mut h, KeyCode::Enter);
+
+    // Two-row draft: "a" / "b", cursor on the last row.
+    typ(&mut h, "a");
+    h.message(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+    typ(&mut h, "b");
+    assert_eq!(composer_text(&h), "a\nb");
+
+    // First ↑ moves up inside the draft (row 1 → row 0), not history.
+    key(&mut h, KeyCode::Up);
+    assert_eq!(
+        composer_text(&h),
+        "a\nb",
+        "still the draft after the first ↑"
+    );
+    assert!(!h.app().history().browsing());
+    // Second ↑ is on the first row → now it recalls history.
+    key(&mut h, KeyCode::Up);
+    assert_eq!(
+        composer_text(&h),
+        "old",
+        "↑ on the first row recalls history"
+    );
+    assert!(h.app().history().browsing());
+}

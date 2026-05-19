@@ -15,6 +15,7 @@ use crate::acp::{
     AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, TodoEntry, TodoStatus,
     ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
 };
+use crate::history::InputHistory;
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
 use crate::registry::Registry;
 use crate::ui;
@@ -314,6 +315,9 @@ pub struct ChatApp {
     scroll: u16,
     follow: bool,
     composer: TextArea,
+    /// Submitted-prompt history, recalled with ↑/↓ on the composer and
+    /// persisted across runs (readline / Codex-CLI ergonomics).
+    history: InputHistory,
     status_line: String,
     agent_label: String,
     streaming: bool,
@@ -389,6 +393,7 @@ impl ChatApp {
             scroll: 0,
             follow: true,
             composer: TextArea::new(),
+            history: InputHistory::load(),
             status_line: "starting…".to_owned(),
             agent_label: String::new(),
             streaming: false,
@@ -483,6 +488,11 @@ impl ChatApp {
     #[must_use]
     pub fn composer(&self) -> &TextArea {
         &self.composer
+    }
+    /// The persisted submitted-prompt history (↑/↓ recall).
+    #[must_use]
+    pub fn history(&self) -> &InputHistory {
+        &self.history
     }
     /// Whether a turn is streaming.
     #[must_use]
@@ -845,6 +855,10 @@ impl ChatApp {
         }
         self.composer.clear();
         self.follow = true;
+        // Record every submission (slash commands included, like Codex) so
+        // ↑ recalls it; this also ends any in-progress history browse.
+        self.history.record(&text);
+        self.history.save();
 
         if let Some(rest) = text.strip_prefix('/') {
             return self.run_slash(rest);
@@ -1559,6 +1573,23 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Replaces the composer with the previous (`prev`) / next history entry,
+    /// readline-style: ↑ on the first row walks back, ↓ on the last row walks
+    /// forward; stepping past the newest restores the half-typed draft. A
+    /// no-op when there is nothing to recall (composer left untouched).
+    fn recall_history(&mut self, prev: bool) {
+        let current = self.composer.lines().join("\n");
+        let recalled = if prev {
+            self.history.older(&current)
+        } else {
+            self.history.newer()
+        };
+        if let Some(text) = recalled {
+            self.composer.set_value(text);
+            self.composer.move_doc_end();
+        }
+    }
+
     fn chat_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -1606,13 +1637,16 @@ impl ChatApp {
                 }
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.history.reset();
                 self.composer.insert_newline();
             }
             KeyCode::Enter => return self.submit_composer(),
             KeyCode::Backspace => {
+                self.history.reset();
                 self.composer.delete_backward();
             }
             KeyCode::Delete => {
+                self.history.reset();
                 self.composer.delete_forward();
             }
             KeyCode::Left => {
@@ -1621,11 +1655,23 @@ impl ChatApp {
             KeyCode::Right => {
                 self.composer.move_right();
             }
+            // ↑/↓ recall history when the cursor can go no further in that
+            // direction (first / last composer row), else move within the
+            // draft — the readline / Codex-CLI rule.
             KeyCode::Up => {
-                self.composer.move_up();
+                if self.composer.cursor().0 == 0 {
+                    self.recall_history(true);
+                } else {
+                    self.composer.move_up();
+                }
             }
             KeyCode::Down => {
-                self.composer.move_down();
+                let last_row = self.composer.row_count().saturating_sub(1);
+                if self.composer.cursor().0 >= last_row {
+                    self.recall_history(false);
+                } else {
+                    self.composer.move_down();
+                }
             }
             KeyCode::Home => self.composer.move_home(),
             KeyCode::End => self.composer.move_end(),
@@ -1636,7 +1682,10 @@ impl ChatApp {
             KeyCode::PageDown => {
                 self.scroll = self.scroll.saturating_add(self.page_rows());
             }
-            KeyCode::Char(c) => self.composer.insert_char(c),
+            KeyCode::Char(c) => {
+                self.history.reset();
+                self.composer.insert_char(c);
+            }
             _ => {}
         }
         // Any edit that reached the composer re-filters the popup (and
@@ -1725,6 +1774,7 @@ impl App for ChatApp {
             Msg::Key(key) => self.on_key(key),
             Msg::Paste(text) => {
                 if self.screen == Screen::Chat || self.screen == Screen::Connecting {
+                    self.history.reset();
                     self.composer.insert_str(&text);
                     self.refresh_completion();
                 }

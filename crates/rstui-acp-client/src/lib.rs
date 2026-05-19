@@ -16,12 +16,14 @@
 //! - [`plugin`] — the deny-by-default plugin extension layer (powerline
 //!   footer, slash commands, ask-user overlay): a separate-process protocol
 //!   reusing ADR 0007's posture, complementary to `rstui-plugin-host`.
+//! - [`history`] — the persisted composer input history (↑/↓ prompt recall).
 //! - [`input`] — the async terminal [`AsyncEventSource`](rstui_runtime::AsyncEventSource).
 //!
 //! [`run`] composes them into the live full-screen client.
 
 pub mod acp;
 pub mod app;
+pub mod history;
 pub mod input;
 pub mod plugin;
 pub mod registry;

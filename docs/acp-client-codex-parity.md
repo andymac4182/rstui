@@ -1,0 +1,114 @@
+# ACP client ⇄ Codex CLI feature parity
+
+A review of [OpenAI Codex CLI](https://github.com/openai/codex) against
+`rstui-acp-client`, and the prioritized plan for closing the gap.
+
+## Framing: what is in scope
+
+Codex is an **agent _and_ its bespoke CLI**. `rstui-acp-client` is a
+**generic [ACP](https://agentclientprotocol.com) client** that talks to *any*
+agent (Claude Code, Codex, Gemini, …). So feature parity is not "reimplement
+Codex" — it is "give the client every ergonomic Codex's TUI has that improves
+working with *any* agent", wired through ACP where the protocol already carries
+the data.
+
+The `sacp` v11 / `agent-client-protocol-schema` v0.11 surface already supports
+the data behind most of Codex's headline features:
+
+| ACP capability | Codex feature it backs |
+|---|---|
+| `SessionModelState` + `session/set_model` | `/model` (model + reasoning effort) |
+| `SessionModeState` + `session/set_mode` | `/plan`, approval/permission modes |
+| `Usage` / `UsageUpdate` notifications | `/status` token usage |
+| `session/load` + `SessionResumeCapabilities` | `/resume`, `/fork` |
+| `authenticate` + `AuthCapabilities` | sign-in (ChatGPT / API key) |
+| `AvailableCommandsUpdate` | agent-advertised slash commands *(already wired)* |
+| `Plan` / `PlanEntry` | todo sidebar *(already wired)* |
+
+### Explicitly out of scope (agent-side, not a generic client's job)
+
+MCP server management, sandbox/execpolicy/guardian, memories, skills, hooks,
+profiles, realtime voice, cloud tasks, the desktop app, `codex exec|apply|
+doctor` subcommands, pets. These belong to the *agent* (Codex) and reach the
+client only as ACP permission requests, session modes, or advertised commands —
+which the client already renders. A Vim composer is also out: ADR 0015 keeps
+the keymap shell-level and the composer raw, deliberately.
+
+## Gap table
+
+Legend — **Have**: already in `rstui-acp-client`. **Gap**: to add. **N/A**:
+out of scope per above.
+
+| Codex feature | Client today | Plan |
+|---|---|---|
+| Slash autocomplete, agent-advertised commands | Have (`app.rs` completion) | — |
+| Todo / plan sidebar | Have (`Plan` wired) | — |
+| Per-request permission modal | Have (`PendingPermission`) | — |
+| Theme picker, keymap panel | Have (`rstui-theme`/`-keymap`) | — |
+| Plugin extension surface | Have (8 reference plugins) | — |
+| ~~Input history (↑/↓ recall, persisted)~~ | **Done** (iter 6) | W1-1 ✅ |
+| **`/copy` last response to clipboard** | **Gap** | W1-2 |
+| **Terminal title** (OSC 0/2: agent · status) | **Gap** | W1-3 |
+| **Bell on turn completion** | **Gap** | W1-4 |
+| **`/init`, `/review` canned prompts** | **Gap** | W1-5 |
+| **Full-screen transcript pager** (Codex `/transcript`) | **Gap** (inline scroll only) | W1-6 |
+| **`/status`** session + token usage | **Gap** | W2-1 |
+| **`/model`** picker (model + reasoning effort) | **Gap** | W2-2 |
+| **`/mode`** session-mode switch (covers `/plan`, approval modes) | **Gap** | W2-3 |
+| **`/resume`** list & load prior sessions | **Gap** | W2-4 |
+| **`@`-file mentions** with fuzzy completion | **Gap** | W2-5 |
+| **Sign-in** when the agent requires auth | **Gap** | W2-6 |
+| External `$EDITOR` compose | **Gap** | W3-1 |
+| `/diff` working-tree diff viewer | **Gap** | W3-2 |
+| Image paste / attachment | **Gap** | W3-3 |
+| MCP server mgmt, sandbox, memories, skills, hooks, voice, cloud | N/A | — |
+
+## Delivery plan (one slice at a time)
+
+Each row is one coherent, gate-green (`cargo xtask ci`), Harness-tested,
+docs-updated slice, merged back under the serialized lock
+(`docs/merging.md`). Ordered by value ÷ risk.
+
+**Wave 1 — pure client-side (no protocol change, low risk):**
+
+1. **W1-1 Input history** ✅ *(landed, iter 6)* — submitted prompts recalled
+   with ↑/↓ (readline rule: only when the cursor can go no further within the
+   draft); the half-typed draft restored on the way back; deduped + persisted
+   to `~/.config/rstui/acp-client.history` (`src/history.rs`, mirrors the
+   theme-persistence seam; `RSTUI_ACP_HISTORY` overrides; inert under
+   `cargo test`).
+2. **W1-2 `/copy`** — copy the last agent answer as markdown to the system
+   clipboard via the existing OSC 52 path.
+3. **W1-3 Terminal title** — emit OSC 2 (`agent · status`) so the tab/window
+   reflects session state; restored on exit.
+4. **W1-4 Bell** — terminal bell on `TurnEnded` (configurable off), so a
+   backgrounded terminal signals "your turn".
+5. **W1-5 `/init` + `/review`** — two built-ins that send Codex's canonical
+   "write an AGENTS.md" / "review my changes" prompts to whatever agent is
+   connected.
+6. **W1-6 Transcript pager** — a full-screen scrollable transcript overlay
+   (Codex's `/transcript`) with search, reusing the existing scroll model.
+
+**Wave 2 — ACP-wired:**
+
+7. **W2-1 `/status`** — fold `Usage`/`UsageUpdate` into state; a status
+   overlay showing agent, model, cwd, mode, and token usage.
+8. **W2-2 `/model`** — capture `SessionModelState`; a picker that issues
+   `session/set_model`.
+9. **W2-3 `/mode`** — capture `SessionModeState`; a picker that issues
+   `session/set_mode` (this is how Codex's plan/approval modes reach a
+   generic client).
+10. **W2-4 `/resume`** — list resumable sessions and `session/load` one,
+    gated on `SessionResumeCapabilities`.
+11. **W2-5 `@`-mentions** — fuzzy file completion in the composer; selected
+    paths sent as ACP resource-link content blocks.
+12. **W2-6 Sign-in** — when `initialize`/prompt reports auth required, run the
+    `authenticate` method per `AuthCapabilities`.
+
+**Wave 3 — heavier / lower priority:**
+
+13. **W3-1** external `$EDITOR` compose. **W3-2** `/diff` viewer. **W3-3**
+    image paste.
+
+Progress is tracked in the session task list; this document is the spec the
+slices implement against.

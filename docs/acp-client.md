@@ -71,6 +71,7 @@ The client was built in iterations, each a merged slice on `main`:
 | 3 | Rich, customizable tool calls — tool-call blocks with formatted output, status badges, expandable details |
 | 4 | Plugins in the TUI — the reference plugins, the plugin SDK, the in-client plugin host, the permission UX |
 | 5 | Agent-driven UI — the `initialize` `_meta` advertises the renderable catalog (A2UI inline catalog + json-render catalog/prompt); an agent-sent A2UI / json-render document is detected and rendered in the transcript via `rstui-jsonui` ([ADR 0017](adr/0017-ai-app-widgets-and-declarative-agent-ui.md), [Agent UI](agent-ui.md)) |
+| 6 | [Codex-CLI parity](acp-client-codex-parity.md) — W1-1 composer **input history**: ↑/↓ recall submitted prompts (readline rule: only when the cursor can go no further within the draft), the half-typed draft restored on the way back, deduped + persisted to `~/.config/rstui/acp-client.history` (`RSTUI_ACP_HISTORY` overrides) |
 
 ## The plugin layer
 
