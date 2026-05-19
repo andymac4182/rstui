@@ -17,6 +17,7 @@
 //!   footer, slash commands, ask-user overlay): a separate-process protocol
 //!   reusing ADR 0007's posture, complementary to `rstui-plugin-host`.
 //! - [`history`] — the persisted composer input history (↑/↓ prompt recall).
+//! - [`profiles`] — named agent `(command, plugins)` recipes (`--profile`).
 //! - [`sessions`] — the persisted resumable-session index (`/resume`).
 //! - [`input`] — the async terminal [`AsyncEventSource`](rstui_runtime::AsyncEventSource).
 //!
@@ -28,6 +29,7 @@ pub(crate) mod clipboard;
 pub mod history;
 pub mod input;
 pub mod plugin;
+pub mod profiles;
 pub mod registry;
 pub mod sessions;
 pub mod theme;
@@ -52,6 +54,9 @@ pub struct Config {
     pub agent_command: Option<String>,
     /// Plugin launch commands to attach (`--plugin <cmd>`, repeatable).
     pub plugins: Vec<String>,
+    /// A named agent profile to apply (`--profile <name>`), resolved against
+    /// the profiles file by [`with_profile`](Self::with_profile).
+    pub profile: Option<String>,
 }
 
 impl Config {
@@ -66,6 +71,7 @@ impl Config {
         while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--agent" | "--cmd" | "--command" => cfg.agent_command = it.next(),
+                "--profile" => cfg.profile = it.next(),
                 "--plugin" => {
                     if let Some(p) = it.next() {
                         cfg.plugins.push(p);
@@ -75,6 +81,32 @@ impl Config {
             }
         }
         cfg
+    }
+
+    /// Applies the `--profile <name>` recipe against `profiles` (typically
+    /// [`crate::profiles::load`]): the profile's `command`
+    /// fills `agent_command` *only if no explicit switch set it* (so
+    /// `--cmd` always wins), and its `plugin =` lines are merged into
+    /// `plugins` (union, explicit `--plugin` kept). An unset or unknown
+    /// profile is a no-op. Pure (the map is passed in) so it is unit-tested
+    /// without disk; precedence is switch › profile › env › picker.
+    #[must_use]
+    pub fn with_profile(
+        mut self,
+        profiles: &std::collections::BTreeMap<String, crate::profiles::AgentProfile>,
+    ) -> Self {
+        let Some(p) = self.profile.as_deref().and_then(|n| profiles.get(n)) else {
+            return self;
+        };
+        if self.agent_command.is_none() && !p.command.trim().is_empty() {
+            self.agent_command = Some(p.command.clone());
+        }
+        for plugin in &p.plugins {
+            if !self.plugins.contains(plugin) {
+                self.plugins.push(plugin.clone());
+            }
+        }
+        self
     }
 
     /// Folds the `RSTUI_ACP_AGENT` env fallback in: an explicit switch wins,
@@ -159,11 +191,13 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         LifecycleOptions::default(),
     )?;
     let mut events = TerminalEvents::new();
-    // `RSTUI_ACP_AGENT=<cmd>` supplies the custom local-stdio command when
-    // no `--agent`/`--cmd`/`--command` switch was given (flag still wins).
-    // Resolved here, not in `Config::from_args`, so headless `Harness`
-    // tests building `ChatApp::new` directly stay env-independent.
-    let config = config.with_agent_env(std::env::var("RSTUI_ACP_AGENT").ok());
+    // Resolve the agent command outside `Config::from_args` (kept pure) so
+    // headless `Harness` tests building `ChatApp::new` stay env/disk
+    // independent. Precedence: explicit switch › `--profile` recipe ›
+    // `RSTUI_ACP_AGENT` › the picker.
+    let config = config
+        .with_profile(&crate::profiles::load())
+        .with_agent_env(std::env::var("RSTUI_ACP_AGENT").ok());
     let mut app = ChatApp::new(config);
     // `RSTUI_KEYMAP=<map name|/path/to/keymap>` remaps the global commands
     // without a rebuild or the in-app panel — the same typo-safe seam as

@@ -192,6 +192,52 @@ fn custom_command_switch_synonyms_and_env_precedence() {
     assert_eq!(cfg.agent_command, None);
 }
 
+/// `--profile <name>` resolves a `(command, plugins)` recipe against the
+/// profiles map (passed in, so the test never touches disk). Precedence is
+/// `--cmd` › `--profile` › env; profile plugins union with `--plugin`.
+#[test]
+fn profile_switch_resolves_command_and_plugins_with_precedence() {
+    use rstui_acp_client::profiles::parse_profiles;
+
+    let profiles = parse_profiles(
+        "[dev]\ncommand = ./my-acp --stdio\nplugin = rstui-acp-plugin-git\nplugin = ./extra\n",
+    );
+
+    // --profile alone supplies command + plugins.
+    let cfg = Config::from_args(["--profile", "dev"].into_iter().map(String::from))
+        .with_profile(&profiles);
+    assert_eq!(cfg.agent_command.as_deref(), Some("./my-acp --stdio"));
+    assert_eq!(cfg.plugins, ["rstui-acp-plugin-git", "./extra"]);
+
+    // An explicit --cmd beats the profile's command; plugins still merge
+    // (union — the explicit --plugin is kept, profile ones appended once).
+    let cfg = Config::from_args(
+        [
+            "--cmd",
+            "explicit-acp",
+            "--profile",
+            "dev",
+            "--plugin",
+            "./extra",
+        ]
+        .into_iter()
+        .map(String::from),
+    )
+    .with_profile(&profiles);
+    assert_eq!(cfg.agent_command.as_deref(), Some("explicit-acp"));
+    assert_eq!(cfg.plugins, ["./extra", "rstui-acp-plugin-git"]);
+
+    // Profile beats the env var; an unknown profile is an inert no-op.
+    let cfg = Config::from_args(["--profile", "dev"].into_iter().map(String::from))
+        .with_profile(&profiles)
+        .with_agent_env(Some("ENV".to_owned()));
+    assert_eq!(cfg.agent_command.as_deref(), Some("./my-acp --stdio"));
+    let cfg = Config::from_args(["--profile", "nope"].into_iter().map(String::from))
+        .with_profile(&profiles);
+    assert_eq!(cfg.agent_command, None);
+    assert!(cfg.plugins.is_empty());
+}
+
 #[test]
 fn registry_parse_resolves_an_npx_agent_command() {
     let json = r#"{

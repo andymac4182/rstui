@@ -53,6 +53,7 @@ messages over channels** — exactly the [ADR 0011](adr/0011-async-event-loop.md
 ```sh
 cargo run -p rstui-acp-client                 # picks an agent from the registry
 cargo run -p rstui-acp-client -- --cmd "python my_acp.py"   # custom local-stdio ACP command
+cargo run -p rstui-acp-client -- --profile mydev            # a named recipe (command + plugins)
 RSTUI_ACP_AGENT="./my-acp" cargo run -p rstui-acp-client     # …or via the env var
 cargo run -p rstui-acp-client -- --help       # CLI options
 cargo test -p rstui-acp-client                # the reducer + screens, headless
@@ -61,11 +62,27 @@ cargo test -p rstui-acp-client                # the reducer + screens, headless
 **Custom ACP command.** `--cmd <cmd>` (synonyms: `--agent`, `--command`) or
 the `RSTUI_ACP_AGENT` env var name an arbitrary executable to launch and
 speak ACP to over its stdio — a local dev build, `python my_acp.py`, any
-ACP server — bypassing the registry. Precedence: switch › env › the picker
-(which also offers a **"Custom command…"** entry). The crate sets
-`default-run`, so `cargo run -p rstui-acp-client -- …` is unambiguous even
-though it ships nine binaries; the `--` before the switch is required (it
-separates Cargo's args from the program's).
+ACP server — bypassing the registry. The crate sets `default-run`, so
+`cargo run -p rstui-acp-client -- …` is unambiguous even though it ships
+nine binaries; the `--` before the switch is required (it separates Cargo's
+args from the program's).
+
+**Agent profiles.** For a repeatable setup, put named recipes in
+`~/.config/rstui/acp-client.agents` (`RSTUI_ACP_AGENTS_FILE` overrides) — a
+minimal, dependency-free INI:
+
+```ini
+[mydev]
+command = ./target/debug/my-acp --stdio
+plugin  = rstui-acp-plugin-git
+plugin  = ./plugins/notes
+```
+
+`--profile mydev` then launches that command with those plugins. A
+profile's `command` only fills in when no explicit `--cmd` was given, and
+its `plugin =` lines merge with any `--plugin`. Full precedence:
+**`--cmd` › `--profile` › `RSTUI_ACP_AGENT` › the picker** (which also
+offers a **"Custom command…"** entry).
 
 `Config` is resolved from CLI/env *before* the terminal is taken over; `run`
 then composes `TerminalGuard` + `CrosstermBackend` + the async terminal events
