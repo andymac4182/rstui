@@ -598,6 +598,9 @@ pub struct ChatApp {
     screen: Screen,
     registry: Registry,
     picker_selected: usize,
+    /// `Some` while the picker's inline "custom ACP command" input is open
+    /// (typing a local-stdio command to launch instead of a registry agent).
+    picker_custom: Option<TextArea>,
     transcript: Vec<Entry>,
     scroll: u16,
     follow: bool,
@@ -718,6 +721,7 @@ impl ChatApp {
             screen: Screen::Picker,
             registry: Registry::default(),
             picker_selected: 0,
+            picker_custom: None,
             transcript: Vec::new(),
             scroll: 0,
             follow: true,
@@ -828,6 +832,11 @@ impl ChatApp {
     #[must_use]
     pub fn picker_selected(&self) -> usize {
         self.picker_selected
+    }
+    /// The picker's inline custom-command input, while open (`c` opens it).
+    #[must_use]
+    pub fn picker_custom(&self) -> Option<&TextArea> {
+        self.picker_custom.as_ref()
     }
     /// The connection status line.
     #[must_use]
@@ -2456,6 +2465,28 @@ impl ChatApp {
     }
 
     fn picker_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        // Inline "custom ACP command" input mode owns all keys while open
+        // (so `q`/letters type, not quit/navigate). Works even with an
+        // empty/loading registry — that is the whole point.
+        if let Some(input) = self.picker_custom.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.picker_custom = None,
+                KeyCode::Enter => {
+                    let cmd = input.lines().join(" ").trim().to_owned();
+                    self.picker_custom = None;
+                    if !cmd.is_empty() {
+                        return self.connect(cmd);
+                    }
+                }
+                KeyCode::Backspace => {
+                    input.delete_backward();
+                }
+                KeyCode::Char(c) => input.insert_char(c),
+                _ => {}
+            }
+            return Cmd::none();
+        }
+
         let len = self.registry.agents.len();
         match key.code {
             KeyCode::Up => {
@@ -2475,6 +2506,12 @@ impl ChatApp {
                         None => self.toast("no launch command for this platform"),
                     }
                 }
+                Cmd::none()
+            }
+            // The "Custom command…" affordance: open the inline input for an
+            // arbitrary local-stdio ACP command without restarting.
+            KeyCode::Char('c') => {
+                self.picker_custom = Some(TextArea::new());
                 Cmd::none()
             }
             KeyCode::Char('q') | KeyCode::Esc => self.begin_quit(),

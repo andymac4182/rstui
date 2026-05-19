@@ -202,15 +202,52 @@ fn draw_segment(frame: &mut Frame<'_>, area: Rect, x: u16, seg: &FooterSegment) 
 
 fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     let reg = app.registry();
-    let block = Block::bordered().title(" Agents — ACP registry ");
+    let block = Block::bordered().title(" Agents — Enter launch · c custom command · q quit ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // A one-line affordance for the custom-command path, then the body.
+    let [hint, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+
+    // Inline custom-command input (works even while the registry loads —
+    // that independence is the point of the feature).
+    if let Some(ta) = app.picker_custom() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " ✎ custom ACP command — type, Enter to launch, Esc to cancel",
+                app.theme().accent_text(),
+            )),
+            hint,
+        );
+        let typed = ta.lines().join(" ");
+        let shown = if typed.is_empty() {
+            Line::styled(
+                "  e.g.  npx -y @zed-industries/claude-code-acp@latest",
+                Style::new().fg(Color::DarkGray),
+            )
+        } else {
+            Line::from(format!("  {typed}▏"))
+        };
+        let iblock = Block::bordered().title(" command ");
+        let iinner = iblock.inner(body);
+        frame.render_widget(iblock, body);
+        frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), iinner);
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            " ✎ press  c  to run a custom ACP command (any local-stdio server)",
+            Style::new().fg(Color::DarkGray),
+        )),
+        hint,
+    );
+
     if reg.agents.is_empty() {
         frame.render_widget(
-            Paragraph::new("Loading the ACP registry…\n\nIf this stays empty, network/curl is unavailable; the built-in agents will appear shortly.")
+            Paragraph::new("Loading the ACP registry…\n\nIf this stays empty, network/curl is unavailable; the built-in agents will appear shortly.\n\nYou can press  c  now to run a custom ACP command instead.")
                 .wrap(Wrap { trim: false }),
-            inner,
+            body,
         );
         return;
     }
@@ -236,8 +273,8 @@ fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         .highlight_symbol("▸ ")
         .highlight_style(app.theme().selection())
         .selected(Some(app.picker_selected()))
-        .offset(picker_offset(app.picker_selected(), inner.height));
-    frame.render_widget(list, inner);
+        .offset(picker_offset(app.picker_selected(), body.height));
+    frame.render_widget(list, body);
 }
 
 fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {

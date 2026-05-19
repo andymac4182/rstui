@@ -1852,3 +1852,71 @@ fn slash_diff_opens_a_scrollable_overlay() {
     assert!(h.app().diff().is_none(), "Esc closes the diff overlay");
     assert!(h.is_running());
 }
+
+// ---- CC-2: in-app "Custom command…" picker entry ----
+
+/// From the registry picker, `c` opens an inline custom-command input;
+/// typing then Enter connects over local stdio (no restart, no flag). The
+/// driver is the async side (inert headless, ADR 0011) but the screen
+/// transition + resolved command are observable.
+#[test]
+fn picker_custom_command_entry_launches_without_a_flag() {
+    let mut h = booted(100, 30);
+    h.message(Msg::RegistryLoaded(Box::new(Registry::offline_fallback())));
+    assert_eq!(h.app().screen(), Screen::Picker);
+    assert!(h.app().picker_custom().is_none());
+
+    // `c` opens the inline input; the affordance is drawn.
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Char('c'))));
+    assert!(h.app().picker_custom().is_some(), "c opens custom input");
+    assert!(
+        h.snapshot().contains("custom ACP command"),
+        "the custom-command affordance is visible"
+    );
+
+    // Typing builds the command; `q` types, it does not quit.
+    for c in "my-acp --stdio".chars() {
+        h.message(Msg::Key(KeyEvent::from_code(KeyCode::Char(c))));
+    }
+    assert_eq!(
+        h.app().picker_custom().unwrap().lines().join(" "),
+        "my-acp --stdio"
+    );
+    assert!(h.is_running(), "typing in the custom input never quits");
+
+    // Esc cancels back to the list (still the picker, no connect).
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Esc)));
+    assert!(h.app().picker_custom().is_none());
+    assert_eq!(h.app().screen(), Screen::Picker);
+
+    // Re-open, type, Enter → connect over local stdio (screen leaves the
+    // picker; the resolved command is what we asked for).
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Char('c'))));
+    for c in "the-acp".chars() {
+        h.message(Msg::Key(KeyEvent::from_code(KeyCode::Char(c))));
+    }
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(h.app().picker_custom().is_none(), "Enter closes the input");
+    // `connect()` set the launch command to exactly what was typed. (The
+    // headless driver immediately disconnects with no tokio — ADR 0011 —
+    // and the reducer returns to the picker; `agent_command` is the
+    // deterministic fact proving the custom command was the one launched.)
+    assert_eq!(
+        h.app().agent_command(),
+        "the-acp",
+        "the typed command is the one launched"
+    );
+    assert!(h.is_running());
+
+    // Enter on an empty custom input is a no-op (stays on the picker).
+    let mut h2 = booted(100, 30);
+    h2.message(Msg::RegistryLoaded(Box::new(Registry::offline_fallback())));
+    h2.message(Msg::Key(KeyEvent::from_code(KeyCode::Char('c'))));
+    h2.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    assert!(h2.app().picker_custom().is_none());
+    assert_eq!(
+        h2.app().screen(),
+        Screen::Picker,
+        "empty input does not connect"
+    );
+}
