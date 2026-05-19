@@ -49,7 +49,7 @@ out of scope per above.
 | ~~Input history (↑/↓ recall, persisted)~~ | **Done** (iter 6) | W1-1 ✅ |
 | ~~`/copy` last response to clipboard~~ | **Done** (iter 6) | W1-2 ✅ |
 | ~~Terminal title (OSC 2: agent · status)~~ | **Done** (iter 6) | W1-3 ✅ |
-| **Bell on turn completion** | **Gap** | W1-4 |
+| ~~Bell on turn completion~~ | **Done** (iter 6) | W1-4 ✅ |
 | **`/init`, `/review` canned prompts** | **Gap** | W1-5 |
 | **Full-screen transcript pager** (Codex `/transcript`) | **Gap** (inline scroll only) | W1-6 |
 | **`/status`** session + token usage | **Gap** | W2-1 |
@@ -85,8 +85,9 @@ docs-updated slice, merged back under the serialized lock
    session (`src/title.rs`: pure `session_title` + sanitize, unit-tested;
    terminal-gated emit; cleared on exit; `● … approval needed` attention
    cue). Emitted only on change, from the single `update` interception.
-4. **W1-4 Bell** — terminal bell on `TurnEnded` (configurable off), so a
-   backgrounded terminal signals "your turn".
+4. **W1-4 Bell** ✅ *(landed, iter 6)* — BEL on `TurnEnded` (the "your turn"
+   cue), `/bell` toggles per session, `RSTUI_ACP_BELL=0|false|no|off` sets
+   the startup default; terminal-gated emit reusing `src/title.rs`.
 5. **W1-5 `/init` + `/review`** — two built-ins that send Codex's canonical
    "write an AGENTS.md" / "review my changes" prompts to whatever agent is
    connected.

@@ -55,6 +55,27 @@ fn caps(keys: &str) -> Vec<String> {
     keys.split(" / ").map(str::to_owned).collect()
 }
 
+/// Pure parse of the bell preference: on unless the value is explicitly a
+/// falsy token (`0`/`false`/`no`/`off`, case-insensitive). Split from the
+/// env read so it is unit-testable without the process-global env var.
+#[must_use]
+fn bell_from_env(val: Option<&str>) -> bool {
+    match val {
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        None => true,
+    }
+}
+
+/// The startup bell preference — `RSTUI_ACP_BELL` (the same typo-safe
+/// env-override convention as `RSTUI_THEME` / `RSTUI_ACP_HISTORY`).
+#[must_use]
+fn bell_default() -> bool {
+    bell_from_env(std::env::var("RSTUI_ACP_BELL").ok().as_deref())
+}
+
 /// Which top-level screen is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -272,6 +293,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("log", "Toggle the diagnostic log"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("copy", "Copy the last agent answer to the clipboard"),
+    ("bell", "Toggle the turn-completion bell"),
     ("cancel", "Interrupt the streaming turn"),
     ("quit", "Exit the client"),
 ];
@@ -324,6 +346,10 @@ pub struct ChatApp {
     /// The last terminal title emitted via OSC 2; the next refresh only
     /// emits when the derived title differs (no per-frame escape spam).
     last_title: String,
+    /// Ring the terminal bell when a turn ends (the "your turn" cue).
+    /// Defaults on; `RSTUI_ACP_BELL=0|false|no|off` starts it off; `/bell`
+    /// toggles it for the session.
+    bell_enabled: bool,
     streaming: bool,
     spinner: usize,
     driver: Option<DriverHandle>,
@@ -401,6 +427,7 @@ impl ChatApp {
             status_line: "starting…".to_owned(),
             agent_label: String::new(),
             last_title: String::new(),
+            bell_enabled: bell_default(),
             streaming: false,
             spinner: 0,
             driver: None,
@@ -495,6 +522,12 @@ impl ChatApp {
     #[must_use]
     pub fn terminal_title(&self) -> &str {
         &self.last_title
+    }
+    /// Whether the turn-completion bell is armed (`/bell` toggles it,
+    /// `RSTUI_ACP_BELL` sets the startup default).
+    #[must_use]
+    pub fn bell_enabled(&self) -> bool {
+        self.bell_enabled
     }
     /// The live render-rate label (`"NNN fps"`, or `"--- fps"` before the
     /// first usable sample / under the synchronous test harness).
@@ -1003,6 +1036,15 @@ impl ChatApp {
                     }
                     None => self.push_system("nothing to copy yet (no agent response)"),
                 }
+                Cmd::none()
+            }
+            "bell" => {
+                self.bell_enabled = !self.bell_enabled;
+                self.push_system(if self.bell_enabled {
+                    "turn-completion bell: on"
+                } else {
+                    "turn-completion bell: off"
+                });
                 Cmd::none()
             }
             "cancel" => {
@@ -2027,6 +2069,11 @@ impl ChatApp {
                 self.close_open_entry();
                 self.streaming = false;
                 self.status_line = format!("turn ended: {reason}");
+                if self.bell_enabled {
+                    // "Your turn" — audible only if the user's terminal
+                    // rings BEL; terminal-gated, so silent under tests.
+                    crate::title::bell();
+                }
                 if let Some(host) = &self.plugins {
                     host.broadcast(&HostEvent::TurnEnded {
                         stop_reason: reason,
@@ -2184,5 +2231,21 @@ mod md_cache_tests {
             saw_cached_agent,
             "test must exercise at least one cached non-last agent entry"
         );
+    }
+}
+
+#[cfg(test)]
+mod bell_env_tests {
+    use super::bell_from_env;
+
+    #[test]
+    fn bell_is_on_by_default_and_off_only_for_explicit_falsy_values() {
+        assert!(bell_from_env(None), "unset → on");
+        assert!(bell_from_env(Some("")), "empty is not a falsy token → on");
+        assert!(bell_from_env(Some("1")));
+        assert!(bell_from_env(Some("anything")));
+        for off in ["0", "false", "no", "off", "OFF", " Off "] {
+            assert!(!bell_from_env(Some(off)), "{off:?} → off");
+        }
     }
 }

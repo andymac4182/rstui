@@ -1,6 +1,6 @@
-//! Terminal **window/tab title** via **OSC 2** — the title reflects the
-//! session (agent + state) so a backgrounded tab says what it is doing,
-//! exactly like the Codex CLI.
+//! Terminal **session feedback** — the **window/tab title** via **OSC 2**
+//! (reflects agent + state so a backgrounded tab says what it is doing) and
+//! the **bell** (BEL on turn completion), exactly like the Codex CLI.
 //!
 //! Same posture as [`crate::clipboard`]: dependency-free, written to
 //! `/dev/tty` (preferred, so it never interleaves with the alternate-screen
@@ -87,6 +87,14 @@ pub(crate) fn set(title: &str) -> bool {
 /// its own (leaving a stale "working…" tab would be the rude default).
 pub(crate) fn clear() -> bool {
     emit("\x1b]2;\x07")
+}
+
+/// Rings the terminal bell (BEL) — the "your turn" cue when a turn finishes
+/// while you are looking elsewhere. Best-effort and terminal-gated (silent
+/// under `cargo test`); whether it is *audible* is the user's terminal
+/// setting, exactly as with Codex.
+pub(crate) fn bell() -> bool {
+    emit("\x07")
 }
 
 #[cfg(test)]

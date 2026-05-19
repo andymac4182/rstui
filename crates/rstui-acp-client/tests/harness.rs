@@ -1211,3 +1211,36 @@ fn terminal_title_follows_the_session_state() {
     );
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W1-4: turn-completion bell ----
+
+/// `/bell` toggles the turn-completion bell for the session, and a turn
+/// ending with the bell armed is handled cleanly (the BEL emit itself is
+/// inert under `cargo test` — no terminal).
+#[test]
+fn slash_bell_toggles_and_turn_end_is_handled() {
+    let mut h = chatting(100, 30);
+    // Default on (no RSTUI_ACP_BELL in the test env).
+    assert!(h.app().bell_enabled(), "bell defaults on");
+
+    typ(&mut h, "/bell");
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().bell_enabled(), "/bell turned it off");
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("bell: off")
+    );
+
+    typ(&mut h, "/bell");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().bell_enabled(), "/bell turned it back on");
+
+    // A turn ending with the bell armed must not panic / quit.
+    h.message(Msg::Acp(AcpEvent::TurnEnded("end_turn".to_owned())));
+    assert!(!h.app().is_streaming());
+    assert!(h.is_running());
+}
