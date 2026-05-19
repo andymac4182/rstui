@@ -14,6 +14,7 @@
 pub(crate) mod a2ui_demo;
 pub(crate) mod agent_ui;
 pub(crate) mod analytics;
+pub(crate) mod big_grid;
 pub(crate) mod board;
 pub(crate) mod chat;
 pub(crate) mod colour_lab;
@@ -183,6 +184,10 @@ pub(crate) enum Screen {
     /// The comprehensive `DataTable`: sort, filter, group, fast scroll,
     /// mouse hit-testing, and in-cell editing.
     DataGrid,
+    /// A 1,000,000 × 100 `DataTable` you can scroll — rows generated on
+    /// demand via `RowSource`, never materialized (the data-table
+    /// optimisation showcase).
+    BigGrid,
     /// A chat / messenger client: channels, a bubble thread, a composer.
     Chat,
     /// A three-pane email client.
@@ -235,7 +240,7 @@ pub(crate) enum SidebarRow {
 impl Screen {
     /// Every screen in fixed display order. The sidebar, the hotkeys, and the
     /// command palette all index this, so they cannot disagree.
-    pub(crate) const ALL: [Screen; 25] = [
+    pub(crate) const ALL: [Screen; 26] = [
         Screen::Welcome,
         Screen::Forms,
         Screen::Navigation,
@@ -245,6 +250,7 @@ impl Screen {
         Screen::RichText,
         Screen::Colour,
         Screen::DataGrid,
+        Screen::BigGrid,
         Screen::Chat,
         Screen::Mail,
         Screen::Files,
@@ -286,13 +292,13 @@ impl Screen {
 
     /// Which sidebar section this screen belongs to.
     pub(crate) fn group(self) -> &'static str {
-        if self.index() < 9 {
+        if self.index() < 10 {
             "WIDGETS"
-        } else if self.index() < 19 {
+        } else if self.index() < 20 {
             "EXPERIENCES"
-        } else if self.index() < 22 {
-            "OBSERVABILITY"
         } else if self.index() < 23 {
+            "OBSERVABILITY"
+        } else if self.index() < 24 {
             "CHART CATALOG"
         } else {
             "AGENT UI"
@@ -311,6 +317,7 @@ impl Screen {
             Screen::RichText => "Rich Text",
             Screen::Colour => "Colour Lab",
             Screen::DataGrid => "Data Grid",
+            Screen::BigGrid => "Big Grid",
             Screen::Chat => "Chat",
             Screen::Mail => "Mail",
             Screen::Files => "Files",
@@ -342,6 +349,7 @@ impl Screen {
             Screen::RichText => '¶',
             Screen::Colour => '✸',
             Screen::DataGrid => '⊞',
+            Screen::BigGrid => '⊡',
             Screen::Chat => '✉',
             Screen::Mail => '@',
             Screen::Files => '▣',
@@ -373,6 +381,9 @@ impl Screen {
             Screen::RichText => "Rich Text — Markdown · Mermaid · Structurizr · Canvas · spans",
             Screen::Colour => "Colour Lab — ANSI · 256 · truecolor",
             Screen::DataGrid => "Data Grid — sort · filter · group · scroll · edit",
+            Screen::BigGrid => {
+                "Big Grid — 1,000,000 × 100 via RowSource (generated, never materialized)"
+            }
             Screen::Chat => "Chat — channels, threads, a live composer",
             Screen::Mail => "Mail — a three-pane email client",
             Screen::Files => "Files — explorer with tree, list & preview",
@@ -447,6 +458,7 @@ pub(crate) struct ScreenState {
     pub(crate) rich_text: rich_text::State,
     pub(crate) colour: colour_lab::State,
     pub(crate) data_grid: data_grid::State,
+    pub(crate) big_grid: big_grid::State,
     pub(crate) chat: chat::State,
     pub(crate) mail: mail::State,
     pub(crate) files: files_app::State,
@@ -477,6 +489,7 @@ impl ScreenState {
             rich_text: rich_text::State::new(),
             colour: colour_lab::State::new(),
             data_grid: data_grid::State::new(),
+            big_grid: big_grid::State::new(),
             chat: chat::State::new(),
             mail: mail::State::new(),
             files: files_app::State::new(),
@@ -508,6 +521,7 @@ impl ScreenState {
             Screen::RichText => self.rich_text.on_key(code),
             Screen::Colour => self.colour.on_key(code),
             Screen::DataGrid => self.data_grid.on_key(code),
+            Screen::BigGrid => self.big_grid.on_key(code),
             Screen::Chat => self.chat.on_key(code),
             Screen::Mail => self.mail.on_key(code),
             Screen::Files => self.files.on_key(code),
@@ -557,6 +571,7 @@ impl ScreenState {
             Screen::Traces => self.traces.on_click(pos, content),
             Screen::Analytics => self.analytics.on_click(pos, content),
             Screen::Containers
+            | Screen::BigGrid
             | Screen::Logs
             | Screen::Metrics
             | Screen::A2ui
@@ -618,6 +633,7 @@ impl ScreenState {
         match screen {
             Screen::Navigation => self.navigation.on_scroll(up),
             Screen::DataGrid => self.data_grid.on_scroll(up),
+            Screen::BigGrid => self.big_grid.on_scroll(up),
             Screen::Containers => self.containers.on_scroll(up),
             Screen::RichText => self.rich_text.on_scroll(up),
             Screen::Data => self.data.on_scroll(up),
@@ -729,6 +745,7 @@ impl ScreenState {
             Screen::RichText => self.rich_text.view(theme, frame, area),
             Screen::Colour => self.colour.view(theme, frame, area),
             Screen::DataGrid => self.data_grid.view(theme, frame, area),
+            Screen::BigGrid => self.big_grid.view(theme, frame, area),
             Screen::Chat => self.chat.view(theme, tick, frame, area),
             Screen::Mail => self.mail.view(theme, tick, frame, area),
             Screen::Files => self.files.view(theme, tick, frame, area),
