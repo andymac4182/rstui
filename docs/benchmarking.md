@@ -108,7 +108,10 @@ has ~100× headroom; the per-widget content-cache seam is the lever), with
 focused capacity studies alongside —
 [`docs/perf-datatable-scale.md`](perf-datatable-scale.md) (how big a
 `DataTable` goes: 1M rows render flat, ~110 B/cell is the real ceiling, sort
-is the interactivity wall). For
+is the interactivity wall) and its companion
+[`docs/datatable-optimization-roadmap.md`](datatable-optimization-roadmap.md)
+(the prioritized lighter-weight / more-rows-&-columns plan + the
+scrollbar/virtualization answers). For
 *live*,
 in-app introspection (per-phase CPU, allocations, FPS, input→frame
 latency, a Chrome-DevTools-style overlay) see

@@ -157,7 +157,12 @@ sort (sort indices by a precomputed `&[String]` / borrowed key, or memoize
 `line_text`) turns O(N log N) *allocations* into O(N) — a single-digit-second
 1M-row sort becomes sub-second. This report **proposes** it (consistent with
 how the perf-review docs propose, then land separately); it is not
-implemented here, to keep this change a measurement + guards only.
+implemented here, to keep this change a measurement + guards only. It is
+DT-OPT-1 in the full optimization plan —
+[`docs/datatable-optimization-roadmap.md`](datatable-optimization-roadmap.md)
+(the prioritized roadmap: key cache, O(rows) grouping, horizontal
+scroll/column window, scrollbar wiring, lighter cells + a non-materializing
+row source — and the definitive scrollbar/virtualization answers).
 
 ## Reproduce
 
