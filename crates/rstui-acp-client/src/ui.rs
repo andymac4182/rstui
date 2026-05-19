@@ -7,7 +7,7 @@
 //! writes for opaque overlays), so the whole UI is a deterministic function
 //! of state.
 
-use rstui_core::{Color, Constraint, Layout, Line, Position, Rect, Span, Style};
+use rstui_core::{Color, Constraint, Layout, Line, Modifier, Position, Rect, Size, Span, Style};
 use rstui_runtime::Frame;
 use rstui_widgets::{Block, KeymapView, List, ListItem, Markdown, Paragraph, Wrap};
 
@@ -280,16 +280,16 @@ fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
-    // Dock the todo sidebar on the right when there is room for it.
-    // `transcript_main_rect` is the shared, pure split so the click
-    // hit-test (`rich_hit`) and this renderer agree exactly.
-    if app.sidebar_visible() && area.width >= 60 {
-        let sidebar_w = (area.width / 4).clamp(24, 40);
-        let [_m, side] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Length(sidebar_w)]).areas(area);
-        render_sidebar(app, frame, side);
+    // The interactive form pane (priority) or the read-only todo
+    // sidebar docks on the right. `body_split` is the shared, pure
+    // split so the click hit-tests (`rich_hit`, `form_pane_inner`) and
+    // this renderer agree exactly (ADR 0012 — no stored layout).
+    let (main, right) = body_split(app, area);
+    match right {
+        RightSlot::Form(pane) => render_form_pane(app, frame, pane),
+        RightSlot::Sidebar(side) => render_sidebar(app, frame, side),
+        RightSlot::None => {}
     }
-    let main = transcript_main_rect(app, area);
     let [transcript_area, composer_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
 
@@ -527,6 +527,80 @@ fn render_sidebar(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
+/// The interactive right pane: the **active** A2UI/json-render doc
+/// rendered live at the pane's own size, with its [`HitMap`]-derived
+/// focus ring. The doc is a pure projection of the caller-owned
+/// `RichDoc` (re-derived every frame, ADR 0012); a click or a keyboard
+/// activation mutates that owned state and round-trips the spec
+/// envelope to the agent. `Tab` moves focus here from the composer and
+/// cycles controls; `Esc` returns to the composer.
+fn render_form_pane(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let focused = app.form_focus();
+    let hint = if focused {
+        " Tab/⇧Tab move · Enter activate · Esc chat "
+    } else {
+        " Tab to fill in "
+    };
+    let block = Block::bordered()
+        .title(format!(" ▸ Agent UI ·{hint}"))
+        .border_style(if focused {
+            t.accent_text()
+        } else {
+            t.dim_text()
+        })
+        .style(t.base());
+    let inner = block.inner(area);
+    clear(frame, area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let Some(doc) = app.active_rich_doc() else {
+        return;
+    };
+
+    // Pure projection at the pane's own size, with the interactive
+    // hit map (pane-local coords).
+    let (scratch, hits) = doc.render_pane(inner.width, inner.height);
+    let buf = frame.buffer_mut();
+    for y in 0..inner.height.min(scratch.area().height) {
+        for x in 0..inner.width.min(scratch.area().width) {
+            if let (Some(src), Some(dst)) = (
+                scratch.get(Position::new(x, y)),
+                buf.get_mut(Position::new(inner.x + x, inner.y + y)),
+            ) {
+                *dst = src.clone();
+            }
+        }
+    }
+
+    // The focus ring is the recorded interactive rects in draw order;
+    // highlight the focused one (clamped, so a re-projection that
+    // changed the control count can never desync the cursor).
+    let ring = hits.entries();
+    if focused && !ring.is_empty() {
+        let idx = app.form_node().min(ring.len() - 1);
+        let r = ring[idx].area;
+        let abs = Rect::new(
+            inner.x + r.x,
+            inner.y + r.y,
+            r.width.min(inner.width.saturating_sub(r.x)),
+            r.height.min(inner.height.saturating_sub(r.y)),
+        );
+        buf.set_style(abs, Style::new().add_modifier(Modifier::REVERSED));
+        // Park the caret at the end of an editable field so typing has
+        // a visible insertion point.
+        if doc.is_text_field(&ring[idx].id) {
+            let len = doc
+                .field_text(&ring[idx].id)
+                .map_or(0, |v| v.chars().count() as u16);
+            let cx = (abs.x + len).min(abs.x + abs.width.saturating_sub(1));
+            frame.set_cursor_position(Position::new(cx, abs.y));
+        }
+    }
+}
+
 /// The `/plugins` overlay: a plugin-manager panel — each loaded plugin with
 /// the slash commands it registered and any status keys it set.
 fn render_plugins_overlay(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
@@ -715,13 +789,60 @@ fn transcript_layout(app: &ChatApp) -> (Vec<Line<'static>>, Vec<RichRegion>) {
 /// sidebar when it is docked) — the *pure* half of [`render_chat`]'s
 /// split, shared so the click hit-test and the renderer agree exactly.
 fn transcript_main_rect(app: &ChatApp, body: Rect) -> Rect {
+    body_split(app, body).0
+}
+
+/// The body's right-hand slot: the interactive **form pane** (priority,
+/// when a form is open and the terminal is wide enough to keep a usable
+/// chat column), else the read-only **todo sidebar**, else nothing.
+pub(crate) enum RightSlot {
+    /// No right column — chat uses the whole body.
+    None,
+    /// The live A2UI/json-render interactive pane.
+    Form(Rect),
+    /// The docked todo/plugin sidebar.
+    Sidebar(Rect),
+}
+
+/// The single pure body split shared by [`render_chat`], the inline
+/// transcript click hit-test ([`rich_hit`]) and the form-pane geometry
+/// ([`form_pane_inner`]) so they can never drift (ADR 0012 — no stored
+/// layout). The interactive form pane takes priority over the sidebar.
+pub(crate) fn body_split(app: &ChatApp, body: Rect) -> (Rect, RightSlot) {
+    if app.form_open() && body.width >= 96 {
+        let pane_w = (body.width * 2 / 5).clamp(40, 72);
+        let [chat, pane] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(pane_w)]).areas(body);
+        return (chat, RightSlot::Form(pane));
+    }
     if app.sidebar_visible() && body.width >= 60 {
         let sidebar_w = (body.width / 4).clamp(24, 40);
-        let [main, _side] =
+        let [chat, side] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(sidebar_w)]).areas(body);
-        main
-    } else {
-        body
+        return (chat, RightSlot::Sidebar(side));
+    }
+    (body, RightSlot::None)
+}
+
+/// The bordered **inner** rect of the interactive form pane for a frame
+/// of `size`, or `None` when no pane is shown. Pure re-derivation (the
+/// header/body/footer split → [`body_split`] → the pane block's inner),
+/// so the reducer maps a click / draws focus exactly where the renderer
+/// painted the doc — the `rich_hit` discipline.
+pub(crate) fn form_pane_inner(app: &ChatApp, size: Size) -> Option<Rect> {
+    let area = Rect::new(0, 0, size.width, size.height);
+    if area.width < 4 || area.height < 4 {
+        return None;
+    }
+    let [_header, body, _footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    match body_split(app, body).1 {
+        RightSlot::Form(pane) => Some(Block::bordered().inner(pane)),
+        _ => None,
     }
 }
 

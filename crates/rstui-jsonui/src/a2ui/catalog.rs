@@ -450,6 +450,12 @@ fn project_tabs(id: &str, tabs: Option<&Value>, scope: &str, walk: &mut Walk<'_>
     }
     let active = walk.selection.tab(id).min(entries.len() - 1);
     // A header row of tab titles, then the selected tab's child below.
+    // Each title is an interactive `Button` carrying the sub-id
+    // `"<tabsId>#tab:<index>"` so a click / keyboard activation can
+    // switch the reducer-owned active tab (the A2UI selection model —
+    // the reducer maps that id to `selection_mut().active_tab`). The
+    // active tab is `primary`; the `[*]`/`[ ]` marker is kept in the
+    // label so the plain-text projection is unchanged.
     let titles: Vec<UiNode> = entries
         .iter()
         .enumerate()
@@ -459,11 +465,12 @@ fn project_tabs(id: &str, tabs: Option<&Value>, scope: &str, walk: &mut Walk<'_>
                 .map(|raw| resolve_text(raw, walk.model, scope))
                 .unwrap_or_default();
             let marker = if index == active { "[*]" } else { "[ ]" };
-            UiNode::Text {
-                spans: vec![(format!("{marker} {title}"), rstui_core::Style::new())],
-                variant: TextVariant::Body,
-                align: rstui_core::Alignment::Left,
-                wrap: false,
+            UiNode::Button {
+                id: format!("{id}#tab:{index}"),
+                label: format!("{marker} {title}"),
+                primary: index == active,
+                disabled: false,
+                focused: false,
             }
         })
         .collect();

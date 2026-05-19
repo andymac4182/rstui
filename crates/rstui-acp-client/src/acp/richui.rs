@@ -495,7 +495,11 @@ impl RichDoc {
         }
     }
 
-    fn node(&self) -> UiNode {
+    /// The projected node (pure — re-derived from the owned, possibly
+    /// mutated, state every call). Public so the interactive right pane
+    /// can render it at the pane's own size and own the [`HitMap`].
+    #[must_use]
+    pub fn node(&self) -> UiNode {
         match self {
             Self::A2ui(surface) => surface.project(),
             Self::Json(doc) => doc.view(),
@@ -511,10 +515,60 @@ impl RichDoc {
         buffer_to_lines(&scratch, width)
     }
 
-    /// Apply a click at block-local `pos`: resolve the node's action,
-    /// **mutate** the owned state for a local effect (so a toggled
-    /// checkbox / switched tab / `setState` persists and re-renders) and
-    /// return what the reducer must still do (round-trip / open URL).
+    /// Render the doc into a `width`×`height` scratch [`Buffer`] at a
+    /// pane-local origin, returning it with the interactive [`HitMap`].
+    /// The interactive right pane blits the buffer into the frame and
+    /// keeps the hit map for its focus ring / clicks (pure projection,
+    /// pane-local coords — the caller offsets by the pane rect, exactly
+    /// the `rich_hit` discipline; no retained tree, ADR 0012).
+    #[must_use]
+    pub fn render_pane(&self, width: u16, height: u16) -> (Buffer, HitMap) {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width.max(1), height.max(1)));
+        let mut hits = HitMap::new();
+        self.node().render(buffer.area(), &mut buffer, &mut hits);
+        (buffer, hits)
+    }
+
+    /// The current text of an editable field (`TextField`) by its
+    /// projected node id, or `None` if that id is not a text field —
+    /// the reducer reads this to append/erase a typed character.
+    #[must_use]
+    pub fn field_text(&self, node_id: &str) -> Option<String> {
+        find_field(&self.node(), node_id).map(str::to_owned)
+    }
+
+    /// `true` when `node_id` is an editable text field (so the reducer
+    /// routes a typed character into it instead of treating it as an
+    /// activation key).
+    #[must_use]
+    pub fn is_text_field(&self, node_id: &str) -> bool {
+        find_field(&self.node(), node_id).is_some()
+    }
+
+    /// Two-way write-back: store `text` as the field's bound value so the
+    /// next projection shows it **and** a later submit's resolved
+    /// `context`/params include it (the spec round-trip). A2UI resolves
+    /// the component's `{path}` binding via
+    /// [`A2uiSurface::text_binding`]; json-render's projected field id is
+    /// itself the `$bindState` write-back pointer. Total: an unbound
+    /// field is a no-op.
+    pub fn set_field_text(&mut self, node_id: &str, text: &str) {
+        match self {
+            Self::A2ui(surface) => {
+                if let Some(pointer) = surface.text_binding(node_id) {
+                    surface
+                        .model_mut()
+                        .set(&pointer, Value::String(text.to_owned()));
+                }
+            }
+            Self::Json(doc) => {
+                doc.write_binding(node_id, Value::String(text.to_owned()));
+            }
+        }
+    }
+
+    /// Apply a click at pane-local `pos` (render at `width`×`height`,
+    /// resolve the hit node, then [`act_node`](Self::act_node)).
     #[must_use]
     pub fn act(
         &mut self,
@@ -525,10 +579,31 @@ impl RichDoc {
     ) -> Option<RichAction> {
         let (_, hits) = node_paint(&self.node(), width.max(1), max_height.max(1));
         let node_id = hits.at(pos)?.to_owned();
+        self.act_node(&node_id, timestamp)
+    }
+
+    /// Activate an interactive node **by id** (a keyboard Enter/Space, or
+    /// a resolved click): **mutate** the owned state for a local effect
+    /// (a toggled checkbox / switched tab / `setState` persists and
+    /// re-renders) and return what the reducer must still do (round-trip
+    /// the spec envelope to the agent / open a URL). Total — an unknown
+    /// or non-actionable id is `None`.
+    #[must_use]
+    pub fn act_node(&mut self, node_id: &str, timestamp: &str) -> Option<RichAction> {
         match self {
             Self::A2ui(surface) => {
+                // A2UI `Tabs` header: `"<tabsId>#tab:<index>"` switches
+                // the reducer-owned active tab (selection state, not the
+                // data model) — the spec's tab model.
+                if let Some((base, index)) = parse_tab_id(node_id) {
+                    surface
+                        .selection_mut()
+                        .active_tab
+                        .insert(base.to_owned(), index);
+                    return Some(RichAction::Local(format!("tab {index}")));
+                }
                 let surface_id = surface.surface_id().unwrap_or_default().to_owned();
-                match surface.action_for(&node_id)? {
+                match surface.action_for(node_id)? {
                     A2uiClientAction::OpenUrl(url) => Some(RichAction::OpenUrl(url)),
                     A2uiClientAction::SetData { pointer, value } => {
                         // Persisted — the next `project()` reflects it.
@@ -545,7 +620,7 @@ impl RichDoc {
                 // `setState`/`pushState` persists and re-renders.
                 let mut to_agent = None;
                 let mut local = None;
-                for effect in doc.dispatch(&node_id, "press") {
+                for effect in doc.dispatch(&node_id.to_owned(), "press") {
                     match effect {
                         ActionEffect::Unhandled(action) => {
                             to_agent = Some(
@@ -565,6 +640,28 @@ impl RichDoc {
                     .or(local.map(RichAction::Local))
             }
         }
+    }
+}
+
+/// Parses an A2UI tab-header id `"<tabsId>#tab:<index>"` into
+/// `(tabsId, index)`. `None` for any other id (total).
+fn parse_tab_id(node_id: &str) -> Option<(&str, usize)> {
+    let (base, rest) = node_id.split_once("#tab:")?;
+    Some((base, rest.parse::<usize>().ok()?))
+}
+
+/// Depth-first search for an editable `TextField` with `id`, returning
+/// its current value. Total over the projected tree (the pure model —
+/// no retained tree); used to route typed text to the focused field.
+fn find_field<'tree>(node: &'tree UiNode, id: &str) -> Option<&'tree str> {
+    match node {
+        UiNode::TextField { id: fid, value, .. } if fid == id => Some(value.as_str()),
+        UiNode::Column { children, .. } | UiNode::Row { children, .. } => {
+            children.iter().find_map(|child| find_field(child, id))
+        }
+        UiNode::Stack(children) => children.iter().find_map(|child| find_field(child, id)),
+        UiNode::Card { child, .. } | UiNode::Scroll { child, .. } => find_field(child, id),
+        _ => None,
     }
 }
 
@@ -822,6 +919,121 @@ mod tests {
                     .map(|s| s.content.to_string())
                     .collect::<String>())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a2ui_form_two_way_submit_builds_the_exact_spec_envelope() {
+        // The hook contract: type into a bound A2UI TextField, press the
+        // submit Button, and the agent receives the **spec** client→
+        // server action envelope with the typed value resolved into the
+        // event `context` (`{path}` → model value).
+        let a2ui = concat!(
+            r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"c"}}"#,
+            "\n",
+            r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":["#,
+            r#"{"id":"root","component":"Column","children":["name","submit"]},"#,
+            r#"{"id":"name","component":"TextField","label":"Name","value":{"path":"/who"}},"#,
+            r#"{"id":"submit","component":"Button","child":"sl","action":{"event":{"name":"save","context":{"who":{"path":"/who"}}}}},"#,
+            r#"{"id":"sl","component":"Text","text":"Save"}"#,
+            r#"]}}"#,
+        );
+        let mut doc = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::A2ui,
+            source: a2ui.to_owned(),
+        })
+        .expect("A2UI builds");
+
+        assert!(doc.is_text_field("name"), "the bound TextField is editable");
+        doc.set_field_text("name", "Ada");
+        assert_eq!(
+            doc.field_text("name").as_deref(),
+            Some("Ada"),
+            "two-way echo"
+        );
+
+        let action = doc
+            .act_node("submit", "2026-05-19T00:00:00Z")
+            .expect("submit resolves");
+        let RichAction::ToAgent(json) = action else {
+            panic!("submit must round-trip to the agent, got {action:?}");
+        };
+        let v: Value = serde_json::from_str(&json).expect("envelope is JSON");
+        assert_eq!(v["version"], "v0.10");
+        assert_eq!(v["action"]["name"], "save");
+        assert_eq!(v["action"]["surfaceId"], "s1");
+        assert_eq!(v["action"]["sourceComponentId"], "submit");
+        assert_eq!(
+            v["action"]["context"]["who"], "Ada",
+            "the typed value is resolved into the event context (spec two-way): {json}"
+        );
+    }
+
+    #[test]
+    fn json_render_form_two_way_submit_sends_resolved_params() {
+        // The same contract for json-render: a `$bindState` TextInput +
+        // a host action whose params resolve the typed state, so the
+        // agent receives `{action, params:{... typed ...}}`.
+        let spec = r#"{"root":"form","elements":{
+            "form":{"type":"Box","children":["who","go"]},
+            "who":{"type":"TextInput","props":{"label":"Who","value":{"$bindState":"/who"}}},
+            "go":{"type":"ConfirmInput","props":{"message":"Send?","yesLabel":"Send"},"on":{"confirm":{"action":"submitForm","params":{"who":{"$state":"/who"}}}}}
+        },"state":{"who":""}}"#;
+        let mut doc = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::JsonRender,
+            source: spec.to_owned(),
+        })
+        .expect("json-render builds");
+
+        // The projected TextField id is the `$bindState` write-back
+        // pointer ("/who"); typing writes it back through the model.
+        assert!(doc.is_text_field("/who"), "the bound TextInput is editable");
+        doc.set_field_text("/who", "Bob");
+        assert_eq!(doc.field_text("/who").as_deref(), Some("Bob"));
+
+        let action = doc
+            .act_node("go#confirm", "t")
+            .expect("the Send button resolves");
+        let RichAction::ToAgent(json) = action else {
+            panic!("a host action must round-trip, got {action:?}");
+        };
+        let v: Value = serde_json::from_str(&json).expect("payload is JSON");
+        assert_eq!(v["action"], "submitForm");
+        assert_eq!(
+            v["params"]["who"], "Bob",
+            "the typed state is resolved into the action params: {json}"
+        );
+    }
+
+    #[test]
+    fn a2ui_tabs_switch_via_act_node_persists() {
+        // A2UI `Tabs` headers are now interactive (`<id>#tab:<n>`):
+        // activating one switches the reducer-owned active tab and the
+        // re-projection shows that tab's child.
+        let a2ui = concat!(
+            r#"{"version":"v0.10","createSurface":{"surfaceId":"s","catalogId":"c"}}"#,
+            "\n",
+            r#"{"version":"v0.10","updateComponents":{"surfaceId":"s","components":["#,
+            r#"{"id":"root","component":"Tabs","tabs":[{"title":"One","child":"a"},{"title":"Two","child":"b"}]},"#,
+            r#"{"id":"a","component":"Text","text":"FIRST"},"#,
+            r#"{"id":"b","component":"Text","text":"SECOND"}"#,
+            r#"]}}"#,
+        );
+        let mut doc = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::A2ui,
+            source: a2ui.to_owned(),
+        })
+        .expect("A2UI builds");
+        assert!(row_of(&doc, "FIRST").is_some(), "tab 0 child shows first");
+
+        let acted = doc.act_node("root#tab:1", "t");
+        assert!(
+            matches!(acted, Some(RichAction::Local(_))),
+            "activating a tab header is a local selection change: {acted:?}"
+        );
+        assert!(
+            row_of(&doc, "SECOND").is_some() && row_of(&doc, "FIRST").is_none(),
+            "the active tab persisted across re-projection"
         );
     }
 }

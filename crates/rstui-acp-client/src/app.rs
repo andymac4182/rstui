@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rstui_core::{
-    Event, KeyCode, KeyEvent, KeyModifiers, Line, MouseButton, MouseEventKind, Position, Size,
-    TextArea,
+    Event, KeyCode, KeyEvent, KeyModifiers, Line, MouseButton, MouseEventKind, Position, Rect,
+    Size, TextArea,
 };
 use rstui_keymap::{Action, Chord, Dispatch, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd, Frame};
@@ -288,6 +288,12 @@ pub enum Role {
 /// *exactly* what a fresh render-time parse would produce — drift here
 /// would make the cache observably wrong.
 pub(crate) const MD_WIDTH: u16 = 80;
+
+/// The active interactive doc's focus ring, purely re-derived per
+/// frame: `(rich_docs key, pane inner rect, [(node id, pane-local
+/// rect)] in draw order)`. Shared by keyboard nav and mouse hit so
+/// they can never desync from the projection (ADR 0012).
+type FormRing = (u64, Rect, Vec<(String, Rect)>);
 
 /// One block in the scrolling transcript.
 #[derive(Debug, Clone)]
@@ -791,6 +797,14 @@ pub struct ChatApp {
     /// The live ACP wire console (raw stdio); auto-shown while connecting.
     wire: WireConsole,
     last_size: Size,
+    /// Keyboard focus is on the interactive right pane (the live
+    /// A2UI/json-render form) rather than the composer. Toggled with
+    /// `Tab` when a form is open; `Esc` returns to the composer.
+    form_focus: bool,
+    /// Index into the active doc's focus ring (its interactive nodes in
+    /// draw order, re-derived each frame from the [`HitMap`]). Clamped
+    /// to the ring on use, so it never desyncs from a re-projection.
+    form_node: usize,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
     /// sampled once per frame in `view` and shown in the header so the
@@ -886,6 +900,8 @@ impl ChatApp {
             diff: None,
             wire: WireConsole::default(),
             last_size: Size::new(80, 24),
+            form_focus: false,
+            form_node: 0,
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
             theme: crate::theme::startup_theme(),
@@ -935,6 +951,43 @@ impl ChatApp {
     #[must_use]
     pub fn rich_doc(&self, id: u64) -> Option<&crate::acp::RichDoc> {
         self.rich_docs.get(&id)
+    }
+    /// The id of the **active** interactive doc — the most recent
+    /// `Role::RichUi` transcript entry that has a live owned
+    /// [`crate::acp::RichDoc`] (A2UI/json-render; a static diagram has
+    /// none). This is the doc the interactive right pane shows so a
+    /// streamed form can be filled in and submitted while chat
+    /// continues on the left.
+    #[must_use]
+    pub fn active_rich(&self) -> Option<u64> {
+        self.transcript
+            .iter()
+            .rev()
+            .filter(|e| e.role == Role::RichUi)
+            .find_map(|e| e.rich)
+            .filter(|id| self.rich_docs.contains_key(id))
+    }
+    /// The active interactive doc, if any (pure accessor for the pane).
+    #[must_use]
+    pub fn active_rich_doc(&self) -> Option<&crate::acp::RichDoc> {
+        self.rich_docs.get(&self.active_rich()?)
+    }
+    /// `true` when an interactive form pane should be shown (there is an
+    /// active interactive doc).
+    #[must_use]
+    pub fn form_open(&self) -> bool {
+        self.active_rich().is_some()
+    }
+    /// `true` when keyboard focus is on the form pane (vs the composer).
+    #[must_use]
+    pub fn form_focus(&self) -> bool {
+        self.form_focus && self.form_open()
+    }
+    /// The current focus-ring index within the active doc (clamped by
+    /// the renderer/reducer against the live ring, so always valid).
+    #[must_use]
+    pub fn form_node(&self) -> usize {
+        self.form_node
     }
     /// The text `/copy` would place on the clipboard (the most recent agent
     /// answer), or `None` if the agent has not answered yet.
@@ -2864,8 +2917,139 @@ impl ChatApp {
         }
     }
 
+    /// The active doc's focus ring — its interactive nodes as
+    /// `(id, pane-local rect)` in draw order — purely re-derived for the
+    /// current frame size, with the doc id and the pane inner rect.
+    /// `None` when no interactive pane is shown. The single shared
+    /// derivation for keyboard nav and mouse hit (ADR 0012 — no stored
+    /// geometry; it can never desync from the projection).
+    fn form_ring(&self) -> Option<FormRing> {
+        let id = self.active_rich()?;
+        let inner = crate::ui::form_pane_inner(self, self.last_size)?;
+        let doc = self.rich_docs.get(&id)?;
+        let (_, hits) = doc.render_pane(inner.width, inner.height);
+        let ring = hits
+            .entries()
+            .iter()
+            .map(|h| (h.id.clone(), h.area))
+            .collect();
+        Some((id, inner, ring))
+    }
+
+    /// Route a resolved [`crate::acp::RichAction`] (from a pane click or
+    /// a keyboard activation): round-trip the spec envelope to the
+    /// agent, open a URL, or note a persisted local effect. Shared by
+    /// mouse + keyboard so both paths behave identically.
+    fn apply_rich_action(&mut self, action: crate::acp::RichAction) -> Cmd<Msg> {
+        match action {
+            crate::acp::RichAction::ToAgent(payload) => self.send_agent_action(payload),
+            crate::acp::RichAction::OpenUrl(url) => self.push_system(format!("↗ open: {url}")),
+            crate::acp::RichAction::Local(desc) => self.push_system(format!("· {desc}")),
+        }
+        Cmd::none()
+    }
+
+    /// Keyboard handling while the interactive form pane owns focus:
+    /// `Tab`/`⇧Tab`/`↑`/`↓` move the focus ring (off either end →
+    /// composer), a printable char / `Backspace` edits the focused
+    /// text field (two-way write-back so a later submit carries it),
+    /// `Enter`/`Space` activates the focused control (a field's `Enter`
+    /// advances), `Esc` returns to the composer.
+    fn form_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some((id, _inner, ring)) = self.form_ring() else {
+            self.form_focus = false;
+            return Cmd::none();
+        };
+        match key.code {
+            KeyCode::Esc => self.form_focus = false,
+            KeyCode::Tab if !shift => {
+                if ring.is_empty() || self.form_node + 1 >= ring.len() {
+                    self.form_focus = false; // Tab off the end → composer
+                } else {
+                    self.form_node += 1;
+                }
+            }
+            KeyCode::BackTab | KeyCode::Tab => {
+                if self.form_node == 0 {
+                    self.form_focus = false; // ⇧Tab before the first → composer
+                } else {
+                    self.form_node -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if !ring.is_empty() {
+                    self.form_node = (self.form_node + 1).min(ring.len() - 1);
+                }
+            }
+            KeyCode::Up => self.form_node = self.form_node.saturating_sub(1),
+            _ if ring.is_empty() => {}
+            code => {
+                let idx = self.form_node.min(ring.len() - 1);
+                let node_id = ring[idx].0.clone();
+                let is_field = self
+                    .rich_docs
+                    .get(&id)
+                    .is_some_and(|d| d.is_text_field(&node_id));
+                match code {
+                    KeyCode::Char(c) if is_field && !ctrl => {
+                        if let Some(doc) = self.rich_docs.get_mut(&id) {
+                            let mut v = doc.field_text(&node_id).unwrap_or_default();
+                            v.push(c);
+                            doc.set_field_text(&node_id, &v);
+                        }
+                    }
+                    KeyCode::Backspace if is_field => {
+                        if let Some(doc) = self.rich_docs.get_mut(&id) {
+                            let mut v = doc.field_text(&node_id).unwrap_or_default();
+                            v.pop();
+                            doc.set_field_text(&node_id, &v);
+                        }
+                    }
+                    KeyCode::Enter if is_field => {
+                        // A field doesn't submit — `Enter` advances to
+                        // the next control (clamped: stays on the last).
+                        self.form_node = (self.form_node + 1).min(ring.len().saturating_sub(1));
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        let ts = iso8601_now();
+                        if let Some(action) = self
+                            .rich_docs
+                            .get_mut(&id)
+                            .and_then(|d| d.act_node(&node_id, &ts))
+                        {
+                            return self.apply_rich_action(action);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Cmd::none()
+    }
+
     fn chat_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // When the interactive form pane owns focus, every key drives
+        // the rendered A2UI/json-render doc, not the composer.
+        if self.form_focus() {
+            return self.form_key(key);
+        }
+        // `Tab` (no popup, a form open) hands focus to the pane so the
+        // agent's form can be filled in with the keyboard — the
+        // discoverable toggle the pane title advertises.
+        if self.form_open()
+            && self.completion.is_none()
+            && self.mention.is_none()
+            && key.code == KeyCode::Tab
+            && !key.modifiers.contains(KeyModifiers::SHIFT)
+        {
+            self.form_focus = true;
+            self.form_node = 0;
+            return Cmd::none();
+        }
 
         // The slash-command autocomplete owns navigation/accept keys while it
         // is visible (opencode: ↑↓/Ctrl+P/N move, Tab completes, Enter runs,
@@ -3110,10 +3294,42 @@ impl App for ChatApp {
                 Cmd::none()
             }
             Msg::RichClick(pos) => {
-                // Map the click to a control in a rendered RichUi block,
-                // resolve its action, and round-trip it to the agent
-                // (ADR 0017). `rich_hit` re-derives the exact geometry
-                // the renderer drew (pure — no stored layout).
+                // A click inside the interactive form pane takes
+                // priority: focus the pane, move the focus ring to the
+                // clicked control, and activate it (the same `act_node`
+                // path the keyboard uses). Pure geometry re-derivation
+                // (`form_pane_inner`/`form_ring`) — no stored layout.
+                if let Some((id, inner, ring)) = self.form_ring() {
+                    if pos.x >= inner.x
+                        && pos.x < inner.x + inner.width
+                        && pos.y >= inner.y
+                        && pos.y < inner.y + inner.height
+                    {
+                        self.form_focus = true;
+                        let local = Position::new(pos.x - inner.x, pos.y - inner.y);
+                        if let Some(hit) = ring.iter().position(|(_, r)| {
+                            local.x >= r.x
+                                && local.x < r.x + r.width
+                                && local.y >= r.y
+                                && local.y < r.y + r.height
+                        }) {
+                            self.form_node = hit;
+                            let node_id = ring[hit].0.clone();
+                            let ts = iso8601_now();
+                            if let Some(action) = self
+                                .rich_docs
+                                .get_mut(&id)
+                                .and_then(|d| d.act_node(&node_id, &ts))
+                            {
+                                return self.apply_rich_action(action);
+                            }
+                        }
+                        return Cmd::none();
+                    }
+                }
+                // Otherwise map the click to a control in an inline
+                // transcript RichUi block (`rich_hit` re-derives the
+                // exact geometry the renderer drew — pure, no layout).
                 if let Some((entry_idx, local)) = crate::ui::rich_hit(self, self.last_size, pos) {
                     let resolved = self
                         .transcript
@@ -3122,10 +3338,7 @@ impl App for ChatApp {
                         .map(|entry| (entry.rich, entry.text.clone()));
                     if let Some((rich, source)) = resolved {
                         let timestamp = iso8601_now();
-                        // Prefer the caller-owned **stateful** doc: `act`
-                        // mutates it so a toggled checkbox / switched tab
-                        // / `setState` persists, then returns whatever
-                        // still has to happen (round-trip / open URL). A
+                        // Prefer the caller-owned **stateful** doc; a
                         // static diagram has no owned doc and falls back
                         // to the stateless resolver.
                         let action = match rich.and_then(|id| self.rich_docs.get_mut(&id)) {
@@ -3135,19 +3348,7 @@ impl App for ChatApp {
                             }
                         };
                         if let Some(action) = action {
-                            match action {
-                                crate::acp::RichAction::ToAgent(payload) => {
-                                    self.send_agent_action(payload);
-                                }
-                                crate::acp::RichAction::OpenUrl(url) => {
-                                    self.push_system(format!("↗ open: {url}"));
-                                }
-                                crate::acp::RichAction::Local(desc) => {
-                                    // Persisted now — the owned doc
-                                    // re-projects the new state next frame.
-                                    self.push_system(format!("· {desc}"));
-                                }
-                            }
+                            return self.apply_rich_action(action);
                         }
                     }
                 }

@@ -1392,14 +1392,81 @@ fn clicking_a_rendered_checkbox_persists_the_toggle_across_redraws() {
 }
 
 #[test]
+fn agent_form_opens_in_the_right_pane_and_keyboard_fills_then_submits() {
+    // The goal end to end: an agent streams an A2UI form; it opens in
+    // the interactive pane on the RIGHT next to chat; `Tab` focuses it;
+    // typing fills a bound field (two-way → visible in the pane); `Tab`
+    // to the submit button; `Enter` round-trips the spec envelope to
+    // the agent (headless has no driver, so the deterministic proof the
+    // whole pipeline fired is the "not connected" breadcrumb).
+    let mut h = chatting(160, 44);
+    h.message(Msg::Resize(Size::new(160, 44)));
+    for chunk in [
+        "Fill this in:\n\n```a2ui\n",
+        r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"c"}}"#,
+        "\n",
+        r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":["#,
+        r#"{"id":"root","component":"Column","children":["name","submit"]},"#,
+        r#"{"id":"name","component":"TextField","label":"Name","value":{"path":"/who"}},"#,
+        r#"{"id":"submit","component":"Button","child":"sl","action":{"event":{"name":"save","context":{"who":{"path":"/who"}}}}},"#,
+        r#"{"id":"sl","component":"Text","text":"Save"}]}}"#,
+        "\n```\n\nThen press Save.",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned())));
+
+    // The form opened in the right pane (chat still on the left).
+    assert!(h.app().form_open(), "an interactive doc opened a pane");
+    let pane = h.snapshot();
+    assert!(
+        pane.contains("Agent UI") && pane.contains("Name") && pane.contains("Save"),
+        "the form renders in the right pane:\n{pane}"
+    );
+    assert!(!h.app().form_focus(), "focus starts on the composer");
+
+    // Tab moves focus into the pane; typing fills the bound field.
+    key(&mut h, KeyCode::Tab);
+    assert!(h.app().form_focus(), "Tab focuses the form pane");
+    typ(&mut h, "Ada");
+    let typed = h.snapshot();
+    assert!(
+        typed.contains("Ada"),
+        "the typed value is written back and shown in the pane (two-way):\n{typed}"
+    );
+
+    // Tab to the submit button, Enter submits → the spec round-trip
+    // fired (headless: the not-connected breadcrumb proves the
+    // pipeline; the exact envelope is unit-tested in `richui`).
+    key(&mut h, KeyCode::Tab);
+    key(&mut h, KeyCode::Enter);
+    assert!(
+        h.app()
+            .transcript()
+            .iter()
+            .rev()
+            .take(3)
+            .any(|e| e.text.contains("not connected") || e.text.contains("UI action sent")),
+        "Enter on the submit button round-tripped the form to the agent:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}
+
+#[test]
 fn clicking_a_rendered_json_render_control_persists_state_across_redraws() {
     // The same Phase-2 proof for the *other* interactive format: a
     // json-render `ConfirmInput` whose Yes button `setState`s `/done`,
     // with a `$cond`-bound status line. Clicking Yes must flip the
     // status and KEEP it flipped on the next every-frame re-projection
     // (the owned `JsonRenderDoc`'s model is mutated, not re-parsed).
-    let mut h = chatting(120, 40);
-    h.message(Msg::Resize(Size::new(120, 40))); // set last_size for rich_hit
+    // The terminal is wide enough that the interactive right pane and a
+    // ≥ MD_WIDTH transcript column coexist, so the *inline* click path
+    // this test exercises still resolves (the pane path is covered by
+    // `agent_form_opens_in_the_right_pane_and_keyboard_fills_then_submits`).
+    let mut h = chatting(160, 40);
+    h.message(Msg::Resize(Size::new(160, 40))); // set last_size for rich_hit
     let spec = r#"{"root":"col","elements":{
         "col":{"type":"Box","children":["status","btn"]},
         "status":{"type":"Text","props":{"text":{"$cond":{"$state":"/done"},"$then":"STATE=DONE","$else":"STATE=PENDING"}}},
