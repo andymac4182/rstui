@@ -1,5 +1,5 @@
-//! [`ProjectionCache`] — the caller-owned memo of a [`DataTable`]'s
-//! [`project`](crate::data_table::project) result (DT-OPT-1, the
+//! [`ProjectionCache`] — the caller-owned memo of a
+//! [`DataTable`](crate::DataTable)'s [`project`] result (DT-OPT-1, the
 //! ADR 0012 §P1 / ADR 0025 caller-owned-cache seam; the
 //! [`MarkdownCache`](crate::MarkdownCache) / `LineCache` shape, here a
 //! single slot because a grid has exactly one *current* projection).
@@ -19,9 +19,9 @@
 //!
 //! The projection is a pure, deterministic function of `(columns, rows, the
 //! projecting state)`. The cache fingerprints every input
-//! [`project`](crate::data_table::project) reads — the `rows`/`columns`
+//! [`project`] reads — the `rows`/`columns`
 //! slice identity (pointer + length) and the projecting
-//! [`DataTableState`](crate::DataTableState) fields (sort keys, filter,
+//! [`DataTableState`] fields (sort keys, filter,
 //! grouping column + direction, collapsed groups). An identical fingerprint
 //! *is* an identical projection (no value-side re-verification).
 //!
@@ -52,7 +52,7 @@ use crate::SortDirection;
 use crate::data_table::{VisualRow, project};
 use crate::{DataColumn, DataRow, DataTableState};
 
-/// The complete set of inputs [`project`](crate::data_table::project)
+/// The complete set of inputs [`project`]
 /// derives its output from — the exact cache fingerprint (an identical
 /// fingerprint *is* an identical projection; there is no value-side
 /// re-verification).
@@ -113,7 +113,7 @@ impl ProjectionCache {
     }
 
     /// The projection for these exact inputs: the memoised slot when its
-    /// fingerprint matches, else [`project`](crate::data_table::project) is
+    /// fingerprint matches, else [`project`] is
     /// run **once** on its unchanged code path, stored, and returned. A hit
     /// and a miss are byte-identical (gate-enforced).
     pub(crate) fn resolve(

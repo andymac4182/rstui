@@ -1020,9 +1020,7 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
             .map(|r| {
                 sort_keys
                     .iter()
-                    .map(|&(col, _)| {
-                        r.cell_text(col).map(Cow::into_owned).unwrap_or_default()
-                    })
+                    .map(|&(col, _)| r.cell_text(col).map(Cow::into_owned).unwrap_or_default())
                     .collect()
             })
             .collect()
@@ -1063,10 +1061,7 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
             // map's iteration order never reaches the result).
             let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
             for s in kept {
-                by_key
-                    .entry(group_key(&rows[s], col))
-                    .or_default()
-                    .push(s);
+                by_key.entry(group_key(&rows[s], col)).or_default().push(s);
             }
             let mut buckets: Vec<(String, Vec<usize>)> = by_key.into_iter().collect();
             // Tier 1: order the groups by their key.
@@ -1114,16 +1109,17 @@ fn group_key(row: &DataRow, col: usize) -> String {
     }
 }
 
-/// [`project`] read through a caller-owned [`ProjectionCache`] — DT-OPT-1,
-/// the ADR 0012 §P1 / ADR 0025 caller-owned-cache seam. With unchanged
-/// inputs (the cache fingerprints every one [`project`] reads) this is an
-/// `O(1)` slot read instead of re-running the whole filter → group → sort →
-/// collapse pipeline; on a miss it is exactly [`project`] (byte-identical).
+/// [`project`] read through a caller-owned
+/// [`ProjectionCache`](crate::ProjectionCache) — DT-OPT-1, the ADR 0012
+/// §P1 / ADR 0025 caller-owned-cache seam. With unchanged inputs (the cache
+/// fingerprints every one [`project`] reads) this is an `O(1)` slot read
+/// instead of re-running the whole filter → group → sort → collapse
+/// pipeline; on a miss it is exactly [`project`] (byte-identical).
 ///
 /// The contract is [`MarkdownCache`](crate::MarkdownCache)'s: an in-place
 /// edit of a row's contents does not change the slice identity, so the
-/// caller [`clear`](ProjectionCache::clear)s the cache where it writes a
-/// cell back (its single re-project chokepoint). See
+/// caller [`clear`](crate::ProjectionCache::clear)s the cache where it
+/// writes a cell back (its single re-project chokepoint). See
 /// [`ProjectionCache`](crate::ProjectionCache).
 #[must_use]
 pub fn project_cached(
@@ -3260,10 +3256,8 @@ mod tests {
             }
             fn with_row<R>(&self, i: usize, f: impl FnOnce(&DataRow) -> R) -> Option<R> {
                 (i < self.0).then(|| {
-                    let row = DataRow::new([
-                        format!("r{:03}", (i * 37) % 50),
-                        format!("g{}", i % 4),
-                    ]);
+                    let row =
+                        DataRow::new([format!("r{:03}", (i * 37) % 50), format!("g{}", i % 4)]);
                     f(&row)
                 })
             }

@@ -23,7 +23,8 @@ use rstui_core::{
 use rstui_runtime::{App, Cmd, Frame, Harness};
 use rstui_widgets::{
     DataColumn, DataRow, DataTable, DataTableState, JsonCanvas, List, ListItem, Markdown,
-    Paragraph, Row, SortDirection, Structurizr, Table, Tree, TreeItem, Wrap, data_table::project,
+    Paragraph, ProjectionCache, Row, SortDirection, Structurizr, Table, Tree, TreeItem, Wrap,
+    data_table::{project, project_cached},
 };
 
 use crate::measure::{Bench, Stats};
@@ -271,17 +272,30 @@ fn widget_datatable_project(bench: &Bench) -> Stats {
 }
 
 /// `widget/datatable/project_sorted` — a single-key sorted `project()`. **2 000**
-/// rows, not 50 000: the comparator calls `line_text` (a per-cell `String`
-/// allocation) twice per comparison, so this path is O(n log n) *allocations*
-/// — ~4 s to sort 1 000 000 rows in the capacity sweep. The small N keeps the
-/// suite fast while still guarding that the sort comparator's per-row
-/// allocation behaviour never regresses (this is the `DataTable` scaling
-/// bottleneck the scale report calls out for a future `line_text` cache).
+/// rows, not 50 000: a single-key sort. Since DT-OPT-1 the sort-key text
+/// is precomputed once instead of `line_text`-allocated twice per
+/// comparison (was O(n log n) *allocations*, the millions-row wall) — this
+/// guards that the comparator stays allocation-free (`project_sorted` fell
+/// 1.10 ms → ~0.21 ms at this N; far more at 1M).
 fn widget_datatable_project_sorted(bench: &Bench) -> Stats {
     let (columns, data) = datatable_fixture(2_000, 6);
     let mut state = DataTableState::new();
     state.set_sort(Some((0, SortDirection::Ascending)));
     bench.run(|| project(&columns, &data, &state).len())
+}
+
+/// `widget/datatable/project_cached` — the same sorted projection read
+/// through a warm caller-owned [`ProjectionCache`] (DT-OPT-1, the ADR 0025
+/// seam, the `widget/markdown/cached` precedent): an unchanged-input
+/// re-projection is an `O(1)` slot read, not the filter→group→sort→collapse
+/// pipeline. Guards that the cache hit stays flat regardless of row count.
+fn widget_datatable_project_cached(bench: &Bench) -> Stats {
+    let (columns, data) = datatable_fixture(2_000, 6);
+    let mut state = DataTableState::new();
+    state.set_sort(Some((0, SortDirection::Ascending)));
+    let cache = ProjectionCache::new();
+    let _ = project_cached(&columns, &data, &state, &cache); // warm the slot
+    bench.run(|| project_cached(&columns, &data, &state, &cache).len())
 }
 
 /// `widget/tree/render` — a 300-node tree (the files/navigation pane): the
@@ -610,6 +624,10 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     (
         "widget/datatable/project_sorted",
         widget_datatable_project_sorted,
+    ),
+    (
+        "widget/datatable/project_cached",
+        widget_datatable_project_cached,
     ),
     ("widget/tree/render", widget_tree_render),
     ("widget/paragraph/render", widget_paragraph_render),

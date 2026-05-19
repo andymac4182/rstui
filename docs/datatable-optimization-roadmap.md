@@ -56,6 +56,47 @@
    additive, in the caller-owned-pure-projection idiom this codebase already
    uses (ADR 0012/0025).
 
+> **Status — IMPLEMENTED on `feat/datatable-optimizations`** (each a
+> gate-green slice; the existing 35 `data_table` render/project tests stay
+> green, gate-enforcing every "byte-identical" claim):
+>
+> - **DT-OPT-1 — DONE** (`9cd0e1c`). `project()`'s sort comparator no
+>   longer re-derives `line_text` per comparison (the ~N·logN `String`
+>   alloc wall): the sort-key text is precomputed once.
+>   `widget/datatable/project_sorted` **1.10 ms → 0.21 ms** at 2 000 rows
+>   (≈5×; scales far harder at 1M — the ~4–5 s sort → sub-second). Plus the
+>   opt-in `ProjectionCache` / `project_cached` ADR 0025 caller-owned-cache
+>   seam (the `MarkdownCache` shape), cached≡uncached gate-enforced.
+> - **DT-OPT-2 — DONE** (`d03bc48`). Grouping bucketed via a `HashMap`
+>   (was O(rows × distinct groups) linear `find`) → O(rows); byte-identical.
+> - **DT-OPT-5a — DONE** (`5c125bd`). Additive `DataRow::text` →
+>   `Cow<str>` cells (no per-cell `Vec<Span>`/`Style`; borrowed = 0 alloc),
+>   byte-identical to `DataRow::new` of the same strings (equivalence test).
+> - **DT-OPT-3 — DONE** (`ded6984`). `DataTableState` horizontal column
+>   window (`col_offset`/`scroll_columns_by`); `geometry()` shift +
+>   the `cell_w == 0` early-out *is* the column virtualization; offset 0
+>   byte-identical. Folded smaller win: the per-visible-cell text alloc is
+>   now read only by the Checkbox/Switch arms that need it.
+> - **DT-OPT-4 — DONE** (`7c791ca`). Kitchen-sink `data_grid.rs` composes
+>   a vertical + horizontal `Scrollbar` from the grid's own metrics (←→
+>   scrolls columns); `composition.md` worked-reference note.
+> - **DT-OPT-5b — DONE** (`cf30c36`). `RowSource` trait + `project_source`
+>   + `materialize_window`: project a borrowed/generated row store without
+>   ever materializing the whole `Vec<DataRow>`; `[DataRow]` impls it
+>   zero-copy, `project()` unchanged & `project_source(&rows[..])`
+>   byte-identical (gate-enforced); a pure generator projects identically.
+>
+> *Deferred with reason:* the "filter case-fold without alloc" micro-win
+> is **not** taken — `str::to_lowercase` applies the Unicode Greek
+> final-sigma rule that per-`char` lowering does not, so an
+> allocation-free rewrite would not be byte-identical; correctness
+> outranks a one-pass micro-opt (the O(N·logN) sort alloc, the actual
+> wall, is gone via DT-OPT-1). *No new ADR:* every item is additive under
+> ADR 0012 (pure projection / caller-owned state) and ADR 0025 (the
+> caller-owned-cache seam `ProjectionCache` instantiates) — the
+> per-feature-no-ADR norm the widget catalog already follows;
+> `composition.md` documents the new seams.
+
 ## What you have today (code-evidenced)
 
 | Concern | State | Evidence |
