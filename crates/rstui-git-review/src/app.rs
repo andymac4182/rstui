@@ -1755,10 +1755,19 @@ impl GitReview {
         } else {
             let d = Diff::new(self.diff.as_str())
                 .syntax(true)
-                // Language-aware diff colour (gap G): resolved best-effort
-                // from the first `+++ b/<path>` in the patch (the git Cmd
-                // seam — the widget stays pure). No header ⇒ `Unknown`, which
-                // is byte-identical to the historical built-in tinter.
+                // Tier-1 tree-sitter colour (ADR 0024): a real grammar parse
+                // of each file's reconstructed text — the same accuracy
+                // upgrade the kitchen-sink IDE editor got. `Changeset` (inside
+                // `Diff`) splits the possibly-multi-file patch and resolves a
+                // grammar per file; an unknown-language file transparently
+                // falls back to the Tier-0 lexer below. Tier-0 stays the
+                // always-present floor.
+                .tree_sitter(true)
+                // Language-aware Tier-0 fallback colour (gap G): resolved
+                // best-effort from the first `+++ b/<path>` in the patch (the
+                // git Cmd seam — the widget stays pure). No header ⇒
+                // `Unknown`, which is byte-identical to the historical
+                // built-in tinter.
                 .language(self.diff_lang())
                 .scroll(self.diff_scroll)
                 .col(self.diff_col);

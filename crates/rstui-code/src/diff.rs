@@ -100,8 +100,11 @@
 //! ```
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
+use crate::changeset::Changeset;
 use crate::syntax::{self, Language, LexState, SyntaxStyles};
+use crate::treesitter::{Analyzer, TsLanguage};
 use rstui_core::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
 use rstui_widgets::Block;
 
@@ -156,6 +159,30 @@ pub struct DiffTheme {
     /// A common-keyword token (`fn`/`let`/`if`/…) when [`Diff::syntax`] is on.
     /// Same under-layering.
     pub syntax_keyword: Style,
+    /// A function / method / macro / constructor name (a *Tier-1* semantic
+    /// class — only produced when [`Diff::tree_sitter`] is on; the Tier-0
+    /// dependency-free lexer never emits it). Same under-layering as the
+    /// legacy four; see [ADR 0024](https://github.com/andymac4182/rstui/blob/main/docs/adr/0024-code-widget-crate-and-treesitter-exemption.md).
+    pub syntax_function: Style,
+    /// A type / class / enum / trait / builtin-type name (Tier-1 only — see
+    /// [`syntax_function`](Self::syntax_function)). Same under-layering.
+    pub syntax_type: Style,
+    /// A named constant or enum variant (Tier-1 only). Same under-layering.
+    pub syntax_constant: Style,
+    /// An identifier / parameter / field / property (Tier-1 only). Defaults
+    /// to no colour so plain variables keep the row foreground, matching the
+    /// editor's Tier-1 palette. Same under-layering.
+    pub syntax_variable: Style,
+    /// An operator (Tier-1 only). Same under-layering.
+    pub syntax_operator: Style,
+    /// A bracket / delimiter / punctuation glyph (Tier-1 only). Same
+    /// under-layering.
+    pub syntax_punctuation: Style,
+    /// An attribute / decorator / annotation (Tier-1 only). Same
+    /// under-layering.
+    pub syntax_attribute: Style,
+    /// A module / namespace (Tier-1 only). Same under-layering.
+    pub syntax_namespace: Style,
 }
 
 impl Default for DiffTheme {
@@ -183,6 +210,19 @@ impl Default for DiffTheme {
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
             syntax_keyword: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            // Tier-1-only semantic classes (only emitted when
+            // `Diff::tree_sitter` is on). Distinct, non-empty defaults in the
+            // spirit of the existing palette; `syntax_variable` stays unset
+            // so plain identifiers keep the row foreground (the editor's
+            // Tier-1 default too).
+            syntax_function: Style::new().fg(Color::Cyan),
+            syntax_type: Style::new().fg(Color::Yellow),
+            syntax_constant: Style::new().fg(Color::Magenta),
+            syntax_variable: Style::new(),
+            syntax_operator: Style::new().fg(Color::DarkGray),
+            syntax_punctuation: Style::new().fg(Color::DarkGray),
+            syntax_attribute: Style::new().fg(Color::Blue),
+            syntax_namespace: Style::new().fg(Color::Cyan),
         }
     }
 }
@@ -246,6 +286,7 @@ pub struct Diff<'a> {
     theme: DiffTheme,
     layout: DiffLayout,
     syntax: bool,
+    tree_sitter: bool,
     language: Language,
     tab_width: usize,
 }
@@ -262,6 +303,7 @@ impl<'a> Diff<'a> {
             theme: DiffTheme::default(),
             layout: DiffLayout::default(),
             syntax: false,
+            tree_sitter: false,
             language: Language::Unknown,
             tab_width: 4,
         }
@@ -405,6 +447,55 @@ impl<'a> Diff<'a> {
         self
     }
 
+    /// Opts the body code into **Tier-1** tree-sitter syntax colour — a real
+    /// grammar parse of the reconstructed file text instead of the
+    /// dependency-free, language-blind four-bucket Tier-0 lexer. **Off by
+    /// default.**
+    ///
+    /// Tier-0 ([`syntax`](Diff::syntax)) is the always-present floor; Tier-1
+    /// is the accuracy upgrade, exactly as in the code editor (ADR 0022 /
+    /// **[ADR 0024](https://github.com/andymac4182/rstui/blob/main/docs/adr/0024-code-widget-crate-and-treesitter-exemption.md)**:
+    /// `rstui-code` deps `tree-sitter` first-class, the dependency-free floor
+    /// stays in `rstui-core`/`rstui-widgets`). When on, the source is parsed
+    /// per file via [`Changeset`] + [`TsLanguage::from_path`] and each body
+    /// line is coloured from the real parse tree's captures into the *richer*
+    /// semantic classes — function / type / constant / variable / operator /
+    /// punctuation / attribute / namespace
+    /// ([`syntax_function`](DiffTheme::syntax_function) and friends) — not
+    /// just string / number / comment / keyword.
+    ///
+    /// Like every overlay this is layered *under* the add/del row background
+    /// and the intra-line word emphasis, so a changed word still wins, and it
+    /// honours both [`DiffLayout`]s. It is **total and falls back per line**:
+    /// a file whose extension no grammar matches, an unparseable region, a
+    /// length mismatch, a binary/garbage patch — each such line transparently
+    /// uses the Tier-0 overlay (or nothing, if [`syntax`](Diff::syntax) is
+    /// off) and never panics. With `tree_sitter(false)` (the default) the
+    /// render is byte-identical to the historical Tier-0 path.
+    ///
+    /// ```
+    /// use rstui_code::Diff;
+    /// use rstui_core::{Buffer, Rect, Widget};
+    ///
+    /// // The `+++ b/x.rs` header lets `Changeset` pick the Rust grammar.
+    /// let patch = "\
+    /// --- a/x.rs
+    /// +++ b/x.rs
+    /// @@ -0,0 +1 @@
+    /// +fn main() {}
+    /// ";
+    /// let mut buf = Buffer::empty(Rect::new(0, 0, 32, 4));
+    /// Diff::new(patch)
+    ///     .syntax(true)
+    ///     .tree_sitter(true)
+    ///     .render(buf.area(), &mut buf);
+    /// ```
+    #[must_use]
+    pub fn tree_sitter(mut self, on: bool) -> Self {
+        self.tree_sitter = on;
+        self
+    }
+
     /// Parses the source and lays it out to display rows for a content area
     /// `width` columns wide, honouring the active [`DiffLayout`]. Public so a
     /// host can measure a patch (its row count) for scroll math or a
@@ -455,6 +546,16 @@ impl<'a> Diff<'a> {
         }
         let rows = parse_rows(self.source.as_ref());
         let width = width as usize;
+        // Tier-1 (ADR 0024): only when opted in. The map is built once per
+        // layout pass (the same `parse → layout` cadence the rest of the
+        // widget uses) and is purely additive — with `tree_sitter == false`
+        // it is `None` and every code path below is exactly the historical
+        // Tier-0 one (gate-enforced byte-identical).
+        let tier1 = if self.tree_sitter {
+            Some(build_tier1_map(self.source.as_ref(), &self.theme))
+        } else {
+            None
+        };
         let opts = RenderOpts {
             theme: &self.theme,
             syntax: self.syntax,
@@ -463,12 +564,199 @@ impl<'a> Diff<'a> {
             // A 0 tab width would make a tab a zero-width column; clamp to 1
             // so the render path stays total.
             tab_width: self.tab_width.max(1),
+            tier1: tier1.as_ref(),
         };
         match self.layout {
             DiffLayout::Unified => layout_rows(&rows, width, &opts, row_cap),
             DiffLayout::Split => layout_rows_split(&rows, width, &opts, row_cap),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tier-1 (tree-sitter) syntax overlay (ADR 0022 / ADR 0024)
+// ---------------------------------------------------------------------------
+
+/// One file's precomputed Tier-1 overlays: `new_no -> line styles` and
+/// `old_no -> line styles`. Each `Vec<Style>` is one [`Style`] per
+/// **character** of that reconstructed line's *content* (sign stripped, no
+/// trailing `'\n'`) — exactly `content.chars().count()` long, so it patches
+/// straight onto a [`DiffRow::Body`]'s `content` the same way the Tier-0
+/// `line_overlay` slice does.
+type FileTier1 = (HashMap<u32, Vec<Style>>, HashMap<u32, Vec<Style>>);
+
+/// Per-file Tier-1 overlay map, keyed by the file's
+/// [`DiffFile::path`](crate::DiffFile) (the same cleaned path a
+/// [`DiffRow::File`] carries). Absent path / side / line ⇒ the caller falls
+/// back to Tier-0.
+type Tier1Map = HashMap<String, FileTier1>;
+
+/// Precomputes the per-file Tier-1 (tree-sitter) overlay map for `source`.
+///
+/// For each file in the [`Changeset`] whose path resolves to a
+/// [`TsLanguage`], the new-side text is reconstructed from the file's context
+/// and addition body lines (each tagged with its running *new* line number,
+/// seeded from every hunk's `new_start`); the old-side text from the context
+/// and deletion lines (running *old* line number, seeded from `old_start`).
+/// Each side is parsed once by an [`Analyzer`]; the flattened
+/// newline-inclusive overlay is split back at the `'\n'` slots we placed and
+/// each line's slice is keyed by its source line number.
+///
+/// **Total.** Any file whose extension matches no enabled grammar is skipped
+/// (Tier-0 fallback); a parse shortfall just leaves entries absent; a
+/// garbage / binary / empty patch yields an empty (or partial) map. Never
+/// panics.
+fn build_tier1_map(source: &str, theme: &DiffTheme) -> Tier1Map {
+    let styles = syntax_styles(theme);
+    let mut map: Tier1Map = HashMap::new();
+    for file in Changeset::parse(source).files {
+        let Some(lang) = TsLanguage::from_path(&file.path) else {
+            continue;
+        };
+        // Reconstruct each side: the line text in source order plus the
+        // line-number each text line carries (so we can key the overlay).
+        let new_side = reconstruct_side(&file, Side::Right);
+        let old_side = reconstruct_side(&file, Side::Left);
+
+        let new_map = highlight_side(lang, &new_side, &styles);
+        let old_map = highlight_side(lang, &old_side, &styles);
+        if new_map.is_empty() && old_map.is_empty() {
+            continue;
+        }
+        // Key by every label a `DiffRow::File` could carry for this file so
+        // the layout's `current_path` (the rendered label) resolves: the raw
+        // `DiffFile::path` (matches a plain modified file, old == new) *and*
+        // the `file_label`-rendered form (added / deleted / renamed). A path
+        // that still misses both transparently falls back to Tier-0.
+        for key in file_label_keys(&file) {
+            map.entry(key)
+                .or_insert_with(|| (new_map.clone(), old_map.clone()));
+        }
+    }
+    map
+}
+
+/// Every `DiffRow::File`-label string this file could be shown under, so the
+/// layout's running `current_path` (which is exactly that rendered label)
+/// resolves the Tier-1 entry. Mirrors [`file_label`]: a plain modified file
+/// is its bare path; an added / deleted / renamed / copied file gets the
+/// suffixed / `old → new` form too. Over-keying is harmless — the per-line
+/// length guard in [`resolve_overlay`] still gates every actual use.
+fn file_label_keys(file: &crate::changeset::DiffFile) -> Vec<String> {
+    use crate::changeset::FileStatus;
+    let mut keys = vec![file.path.clone()];
+    let label = match file.status {
+        FileStatus::Added => format!("{} (added)", file.path),
+        FileStatus::Deleted => format!("{} (deleted)", file.path),
+        FileStatus::Renamed | FileStatus::Copied => {
+            if let Some(old) = &file.old_path {
+                format!("{old} → {}", file.path)
+            } else {
+                file.path.clone()
+            }
+        }
+        FileStatus::Modified | FileStatus::Binary => file.path.clone(),
+    };
+    if label != file.path {
+        keys.push(label);
+    }
+    keys
+}
+
+/// The reconstructed text of one side of a file's patch: the per-line content
+/// (sign stripped, `\r` already normalised by [`Changeset`]) and the source
+/// line number that line occupies on that side. New side = context +
+/// additions numbered from each hunk's `new_start`; old side = context +
+/// deletions numbered from `old_start`.
+fn reconstruct_side(file: &crate::changeset::DiffFile, side: Side) -> Vec<(u32, String)> {
+    let patch_lines: Vec<&str> = file.patch().lines().collect();
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for hunk in &file.hunks {
+        // Per ADR/changeset contract `patch_lines` is 0-based end-exclusive
+        // into `file.patch().lines()` and the first line is the `@@` header.
+        let mut no = match side {
+            Side::Right => hunk.new_start,
+            Side::Left => hunk.old_start,
+        };
+        let range = hunk.patch_lines.clone();
+        for &line in patch_lines
+            .get(range.start..range.end.min(patch_lines.len()))
+            .unwrap_or(&[])
+            .iter()
+            .skip(1)
+        // skip the `@@ … @@` header line itself
+        {
+            // Combined `@@@` merge hunks are out of Tier-1 scope (their
+            // multi-column signs make a single new/old reconstruction
+            // ambiguous); treat only the ordinary single-sign body, and on
+            // anything unexpected just stop this hunk (Tier-0 still covers
+            // those rows).
+            match line.chars().next() {
+                Some(' ') => {
+                    out.push((no, line[1..].to_owned()));
+                    no = no.saturating_add(1);
+                }
+                Some('+') if matches!(side, Side::Right) => {
+                    out.push((no, line[1..].to_owned()));
+                    no = no.saturating_add(1);
+                }
+                Some('-') if matches!(side, Side::Left) => {
+                    out.push((no, line[1..].to_owned()));
+                    no = no.saturating_add(1);
+                }
+                // The other side's sign: it does not occupy a line on *this*
+                // side, so the running number does not advance.
+                Some('+') | Some('-') => {}
+                // `\ No newline…`, an empty string, or anything unexpected:
+                // not a numbered body line on this side.
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Parses `side`'s reconstructed text once and splits the flattened,
+/// newline-inclusive overlay back into a `line_no -> Vec<Style>` map (one
+/// [`Style`] per content char, the `'\n'` slots dropped). Empty input ⇒ an
+/// empty map (Tier-0 fallback). Total.
+fn highlight_side(
+    lang: TsLanguage,
+    side: &[(u32, String)],
+    styles: &SyntaxStyles,
+) -> HashMap<u32, Vec<Style>> {
+    let mut out: HashMap<u32, Vec<Style>> = HashMap::new();
+    if side.is_empty() {
+        return out;
+    }
+    // Rows joined by `'\n'` — exactly the shape `Analyzer::set_source`
+    // documents; the overlay then has one slot per char including each `'\n'`.
+    let text = side
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut a = Analyzer::new(lang);
+    a.set_source(&text);
+    let ov = a.highlight(styles);
+    // The overlay is newline-inclusive and exactly `text.chars().count()`
+    // long; walk it line-by-line, consuming each line's char count then the
+    // single `'\n'` slot that follows (except after the last line). If the
+    // length is ever short (it never is — `highlight` is total and
+    // length-exact) we simply stop, leaving later lines absent (Tier-0).
+    let mut pos = 0usize;
+    for (idx, (no, content)) in side.iter().enumerate() {
+        let n = content.chars().count();
+        let Some(slice) = ov.get(pos..pos + n) else {
+            break;
+        };
+        out.insert(*no, slice.to_vec());
+        pos += n;
+        if idx + 1 < side.len() {
+            pos += 1; // the '\n' joiner slot
+        }
+    }
+    out
 }
 
 /// The content-rendering knobs threaded from a [`Diff`] through the layout
@@ -491,6 +779,11 @@ struct RenderOpts<'t> {
     /// Cells a literal tab expands to, advancing to the next multiple (gap
     /// D); already clamped to `>= 1`.
     tab_width: usize,
+    /// The precomputed per-file Tier-1 (tree-sitter) overlay map, when
+    /// [`Diff::tree_sitter`] is on; `None` ⇒ Tier-0 only. Resolved by the
+    /// layout callers (which track the current file path + each row's side /
+    /// line number); a miss falls back to Tier-0.
+    tier1: Option<&'t Tier1Map>,
 }
 
 impl Widget for Diff<'_> {
@@ -966,11 +1259,26 @@ fn layout_rows(
     // `usize::MAX`, so its result is unchanged. `render_row(idx, …)` depends
     // only on the full-row pre-scans, so `out[..cap]` is an exact prefix.
     let mut out = Vec::with_capacity(rows.len().min(row_cap));
+    // The current file path — the most recent `DiffRow::File` — selects which
+    // file's Tier-1 overlay a body row reads (Tier-0 path ignores it).
+    let mut current_path: Option<&str> = None;
     for (idx, row) in rows.iter().enumerate() {
         if out.len() >= row_cap {
             break;
         }
-        out.push(render_row(idx, row, num_w, sign_w, &marks, width, opts));
+        if let DiffRow::File { path } = row {
+            current_path = Some(path.as_str());
+        }
+        out.push(render_row(
+            idx,
+            row,
+            num_w,
+            sign_w,
+            &marks,
+            width,
+            current_path,
+            opts,
+        ));
     }
     out
 }
@@ -1014,6 +1322,13 @@ fn digits(n: u32) -> usize {
 /// trailing spaces so a row background spans the full `width`. `sign_w` is
 /// the sign-gutter width (1, or the parent count for a combined hunk); `opts`
 /// carries the syntax / language / horizontal-scroll / tab-width knobs.
+/// `current_path` is the most recent [`DiffRow::File`] path, used to look up
+/// this file's Tier-1 overlay (`None` ⇒ Tier-0 only).
+// `current_path` varies *per row* within one layout pass (it changes as the
+// walk crosses a file header), so — unlike the once-built `RenderOpts` knobs
+// — it cannot be folded into that struct; it is a genuine per-call input.
+// Same `#[allow]` precedent as `split_line` below.
+#[allow(clippy::too_many_arguments)]
 fn render_row(
     idx: usize,
     row: &DiffRow,
@@ -1021,6 +1336,7 @@ fn render_row(
     sign_w: usize,
     marks: &[Option<Vec<bool>>],
     width: usize,
+    current_path: Option<&str>,
     opts: &RenderOpts<'_>,
 ) -> Line<'static> {
     let theme = opts.theme;
@@ -1062,8 +1378,17 @@ fn render_row(
 
             let mut spans = vec![Span::styled(gutter, theme.gutter.patch(row_style))];
             let mask = marks.get(idx).and_then(Option::as_ref).map(Vec::as_slice);
+            // Tier-1 side/line: a context or addition row is on the *new*
+            // side keyed by its new number; a deletion is on the *old* side
+            // keyed by its old number. `resolve_overlay` applies the
+            // Tier-1 → Tier-0 → none precedence.
+            let (side, lineno) = match kind {
+                ChangeKind::Deletion => (Side::Left, *old_no),
+                ChangeKind::Context | ChangeKind::Addition => (Side::Right, *new_no),
+            };
+            let overlay = resolve_overlay(opts, current_path, side, lineno, content);
             spans.extend(content_spans(
-                content, body_w, mask, row_style, word_style, opts,
+                content, body_w, mask, row_style, word_style, &overlay, opts,
             ));
             Line::from(spans).style(row_style)
         }
@@ -1092,15 +1417,66 @@ fn body_styles(kind: ChangeKind, theme: &DiffTheme) -> (Style, Style) {
     }
 }
 
+/// Resolves the per-char syntax overlay for one body line, applying the
+/// **Tier-1 → Tier-0 → none** precedence (ADR 0024):
+///
+/// 1. **Tier-1**: if [`Diff::tree_sitter`] is on (`opts.tier1` is `Some`),
+///    `current_path` is known, and the precomputed map has an entry for that
+///    file's `side` at `lineno` *whose length exactly matches the line's
+///    `content.chars().count()`* — use that real tree-sitter slice. The
+///    length guard means any reconstruction skew (a hunk Tier-1 could not
+///    align) silently falls through rather than mis-painting.
+/// 2. **Tier-0**: else, if [`Diff::syntax`] is on, the dependency-free,
+///    language-blind (or `language`-specific) [`crate::syntax`] overlay,
+///    lexed from a fresh [`LexState`] (a diff row is one non-contiguous
+///    line). With `tree_sitter == false` this is the *only* branch reachable
+///    — byte-identical to the historical render (gate-enforced).
+/// 3. **Neither**: an empty overlay (no syntax colour).
+///
+/// `side` selects which precomputed map a body line reads: a context or
+/// addition line is on the *new* side keyed by `new_no`; a deletion is on the
+/// *old* side keyed by `old_no`.
+fn resolve_overlay(
+    opts: &RenderOpts<'_>,
+    current_path: Option<&str>,
+    side: Side,
+    lineno: Option<u32>,
+    content: &str,
+) -> Vec<Style> {
+    // 1. Tier-1: an exact-length hit in the precomputed per-file map.
+    if let (Some(map), Some(path), Some(no)) = (opts.tier1, current_path, lineno) {
+        if let Some((new_map, old_map)) = map.get(path) {
+            let per_side = match side {
+                Side::Right => new_map,
+                Side::Left => old_map,
+            };
+            if let Some(styles) = per_side.get(&no) {
+                if styles.len() == content.chars().count() {
+                    return styles.clone();
+                }
+            }
+        }
+    }
+    // 2. Tier-0: the shared dependency-free overlay (the historical path).
+    if opts.syntax {
+        let styles = syntax_styles(opts.theme);
+        return syntax::line_overlay(content, opts.language, &styles, LexState::default()).0;
+    }
+    // 3. Neither: no syntax colour.
+    Vec::new()
+}
+
 /// The styled spans for one body line's content, horizontally scrolled by
 /// `opts.col`, clipped to `body_w` cells, and padded with trailing spaces so
 /// the row background reads as a block.
 ///
 /// Each char's style is the three-layer cascade: the row add/del/context
-/// style, then (if `opts.syntax`) the [`crate::syntax`] overlay under it,
-/// then (where the intra-line `mask` is set) the changed-word emphasis on top
-/// — so a changed word always wins over a keyword tint, which wins over the
-/// plain row. A run is emitted whenever any of those three layers changes.
+/// style, then the resolved syntax `overlay` under it (Tier-1 tree-sitter or
+/// Tier-0 — see [`resolve_overlay`], whose precedence the caller already
+/// applied), then (where the intra-line `mask` is set) the changed-word
+/// emphasis on top — so a changed word always wins over a syntax tint, which
+/// wins over the plain row. A run is emitted whenever any of those three
+/// layers changes.
 ///
 /// The cascade is computed per **original** char (the syntax overlay and the
 /// word `mask` are both original-char-indexed, exactly as before), then a
@@ -1116,20 +1492,14 @@ fn content_spans(
     mask: Option<&[bool]>,
     row_style: Style,
     word_style: Style,
+    overlay: &[Style],
     opts: &RenderOpts<'_>,
 ) -> Vec<Span<'static>> {
-    // 1. The syntax overlay over the *original* content (gap G): delegated
-    //    to the shared `crate::syntax`. A diff row is a single,
-    //    non-contiguous line, so lex from a fresh `LexState` and discard the
-    //    returned state. `Language::Unknown` (the default) reproduces the
-    //    legacy `diff.rs` algorithm byte-for-byte.
+    // The syntax overlay (Tier-1 or Tier-0) is resolved by the caller — it
+    // knows the row's side / line number / current file path — and handed in
+    // already original-char-indexed (one `Style` per `content` char), the
+    // exact contract the `crate::syntax` slice had.
     let chars: Vec<char> = content.chars().collect();
-    let overlay = if opts.syntax {
-        let styles = syntax_styles(opts.theme);
-        syntax::line_overlay(content, opts.language, &styles, LexState::default()).0
-    } else {
-        Vec::new()
-    };
 
     // 2. The per-original-char cascade, then tab expansion (gap D), into a
     //    flat list of rendered cells. A tab's expansion cells inherit that
@@ -1185,19 +1555,33 @@ fn content_spans(
     spans
 }
 
-/// Maps a [`DiffTheme`]'s four `syntax_*` style fields into the shared
-/// [`SyntaxStyles`] the [`crate::syntax`] overlay consumes, so `Diff` keeps
-/// owning the colours (and `rstui-theme` themes code for free) while the
-/// lexer stays theme-agnostic.
+/// Maps a [`DiffTheme`]'s twelve `syntax_*` style fields into the shared
+/// [`SyntaxStyles`] both the Tier-0 [`crate::syntax`] overlay and the Tier-1
+/// [`crate::treesitter`] analyzer consume, so `Diff` keeps owning the colours
+/// (and `rstui-theme` themes code for free) while the lexer / parser stay
+/// theme-agnostic.
+///
+/// The four legacy buckets (comment / string / number / keyword) map exactly
+/// as before — the only ones Tier-0's language-blind lexer ever emits — so a
+/// Tier-0 render is **byte-identical** to the historical one. The richer
+/// eight (function / type / constant / variable / operator / punctuation /
+/// attribute / namespace) are only ever applied by the Tier-1 tree-sitter
+/// parse ([`Diff::tree_sitter`]); under Tier-0 they are simply never looked
+/// up.
 fn syntax_styles(theme: &DiffTheme) -> SyntaxStyles {
     SyntaxStyles {
         comment: theme.syntax_comment,
         string: theme.syntax_string,
         number: theme.syntax_number,
         keyword: theme.syntax_keyword,
-        // `Diff` is Tier-0 only — the richer semantic classes default to no
-        // colour (the dependency-free lexer cannot detect them).
-        ..Default::default()
+        function: theme.syntax_function,
+        type_: theme.syntax_type,
+        constant: theme.syntax_constant,
+        variable: theme.syntax_variable,
+        operator: theme.syntax_operator,
+        punctuation: theme.syntax_punctuation,
+        attribute: theme.syntax_attribute,
+        namespace: theme.syntax_namespace,
     }
 }
 
@@ -1249,6 +1633,9 @@ struct SideCell<'r> {
     row: Option<&'r DiffRow>,
     /// The intra-line changed-char mask for `row`, when it is a paired change.
     mask: Option<&'r [bool]>,
+    /// The current file's path (the most recent [`DiffRow::File`] label),
+    /// used to look up this file's Tier-1 overlay; `None` ⇒ Tier-0 only.
+    current_path: Option<&'r str>,
 }
 
 /// Lays the parsed rows out side by side for a content area `width` wide:
@@ -1285,9 +1672,15 @@ fn layout_rows_split(
     // and `render` clips with `take`). `Diff::lines` passes `usize::MAX`.
     let mut out = Vec::with_capacity(rows.len().min(row_cap));
     let mut i = 0;
+    // The current file path — the most recent `DiffRow::File` — selects which
+    // file's Tier-1 overlay a body row reads (Tier-0 path ignores it).
+    let mut cur_path: Option<&str> = None;
     while i < rows.len() {
         if out.len() >= row_cap {
             break;
+        }
+        if let DiffRow::File { path } = &rows[i] {
+            cur_path = Some(path.as_str());
         }
         match &rows[i] {
             // Headers, metadata, binary, and the no-newline marker read
@@ -1311,11 +1704,13 @@ fn layout_rows_split(
                         side: Side::Left,
                         row: Some(&rows[i]),
                         mask: None,
+                        current_path: cur_path,
                     },
                     &SideCell {
                         side: Side::Right,
                         row: Some(&rows[i]),
                         mask: None,
+                        current_path: cur_path,
                     },
                     num_w,
                     sign_w,
@@ -1361,12 +1756,14 @@ fn layout_rows_split(
                             side: Side::Left,
                             row: Some(&rows[di]),
                             mask: marks[di].as_deref(),
+                            current_path: cur_path,
                         }
                     } else {
                         SideCell {
                             side: Side::Left,
                             row: None,
                             mask: None,
+                            current_path: cur_path,
                         }
                     };
                     let right = if k < adds {
@@ -1375,12 +1772,14 @@ fn layout_rows_split(
                             side: Side::Right,
                             row: Some(&rows[ai]),
                             mask: marks[ai].as_deref(),
+                            current_path: cur_path,
                         }
                     } else {
                         SideCell {
                             side: Side::Right,
                             row: None,
                             mask: None,
+                            current_path: cur_path,
                         }
                     };
                     out.push(split_line(
@@ -1396,11 +1795,13 @@ fn layout_rows_split(
                             side: Side::Left,
                             row: Some(&rows[i]),
                             mask: None,
+                            current_path: cur_path,
                         },
                         &SideCell {
                             side: Side::Right,
                             row: None,
                             mask: None,
+                            current_path: cur_path,
                         },
                         num_w,
                         sign_w,
@@ -1489,6 +1890,8 @@ fn side_spans(
     let (row_style, word_style) = body_styles(*kind, opts.theme);
     // A deletion has only an old number, an addition only a new one; a
     // context line has both, so the left column shows old, the right new.
+    // `shown_no` is also exactly the line number the Tier-1 overlay for this
+    // column's `side` is keyed by.
     let shown_no = match cell.side {
         Side::Left => *old_no,
         Side::Right => *new_no,
@@ -1505,8 +1908,12 @@ fn side_spans(
         sw = sign_w,
     );
     spans.push(Span::styled(gutter, opts.theme.gutter.patch(row_style)));
+    // The split column already knows its `side`; resolve Tier-1 → Tier-0 →
+    // none for *this* column's line number (the same precedence the unified
+    // renderer applies).
+    let overlay = resolve_overlay(opts, cell.current_path, cell.side, shown_no, content);
     spans.extend(content_spans(
-        content, body_w, cell.mask, row_style, word_style, opts,
+        content, body_w, cell.mask, row_style, word_style, &overlay, opts,
     ));
     spans
 }
@@ -2777,5 +3184,223 @@ HcmV?d00001
         // content — and rendering it is panic-free.
         assert!(matches!(rows.get(1), Some(DiffRow::Body { .. })));
         let _ = lines(Diff::new(patch), 20, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier-1 (tree-sitter) syntax colour (ADR 0022 / ADR 0024)
+    // -----------------------------------------------------------------------
+
+    /// Renders `widget` into a `width`×`height` buffer and returns the `fg`
+    /// colour of the first cell on row `y` whose glyph starts the substring
+    /// `needle` (the rest of `needle` must follow contiguously). `None` if
+    /// not found — so a test fails loudly rather than reading the wrong cell.
+    fn fg_of<W: Widget>(widget: W, width: u16, height: u16, y: u16, needle: &str) -> Option<Color> {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        widget.render(buf.area(), &mut buf);
+        let want: Vec<char> = needle.chars().collect();
+        'cols: for x in 0..width {
+            for (k, &wc) in want.iter().enumerate() {
+                let cx = x as usize + k;
+                if cx >= width as usize {
+                    continue 'cols;
+                }
+                if buf.get(Position::new(cx as u16, y)).unwrap().symbol != wc {
+                    continue 'cols;
+                }
+            }
+            return Some(buf.get(Position::new(x, y)).unwrap().fg);
+        }
+        None
+    }
+
+    /// The headline payoff: a real tree-sitter parse colours the diff with
+    /// the *richer* semantic classes, not the four-bucket Tier-0 lexer. A
+    /// **multi-hunk** Rust unified patch (the `+++ b/lib.rs` header lets the
+    /// internal [`Changeset`] pick the Rust grammar — no `.language(..)`
+    /// needed); an added line's *function name* takes `syntax_function`
+    /// (Cyan) and an added line's *type name* takes `syntax_type` (Yellow),
+    /// both distinct from the `syntax_keyword` (Blue) the `fn`/`struct`
+    /// tokens get. The four-bucket Tier-0 lexer cannot tell any of these
+    /// apart (every identifier is plain), so this proves the upgrade.
+    #[cfg(feature = "rust")]
+    #[test]
+    fn tree_sitter_colours_added_function_and_type_names_in_a_multi_hunk_rust_patch() {
+        // Two hunks; the new-side reconstruction is
+        // `struct Foo {}\nstruct Bar {}\nfn keep() {}\nfn other() {}\n\
+        //  fn do_thing() -> Foo { Foo {} }`, so `Bar` (added, new line 2),
+        // and `do_thing`/`Foo` (added, new line 12) are real parse-tree
+        // type / function captures.
+        let patch = "\
+--- a/lib.rs
++++ b/lib.rs
+@@ -1,2 +1,3 @@
+ struct Foo {}
++struct Bar {}
+ fn keep() {}
+@@ -10,1 +11,2 @@
+ fn other() {}
++fn do_thing() -> Foo { Foo {} }
+";
+        let theme = DiffTheme::default();
+        let d = || Diff::new(patch).syntax(true).tree_sitter(true);
+        // Row layout: File(0), Hunk(1), ` struct Foo`(2), `+struct Bar`(3),
+        // ` fn keep`(4), Hunk(5), ` fn other`(6), `+fn do_thing`(7).
+        let w = 48;
+        let h = 8;
+        // The added type name `Bar` (row 3) → the `syntax_type` colour.
+        assert_eq!(
+            fg_of(d(), w, h, 3, "Bar"),
+            Some(theme.syntax_type.fg.unwrap()),
+            "added type name must take the tree-sitter type class (Yellow)"
+        );
+        // The added function name `do_thing` (row 7) → `syntax_function`.
+        assert_eq!(
+            fg_of(d(), w, h, 7, "do_thing"),
+            Some(theme.syntax_function.fg.unwrap()),
+            "added fn name must take the tree-sitter function class (Cyan)"
+        );
+        // The return type `Foo` on the same added line → `syntax_type`.
+        assert_eq!(
+            fg_of(d(), w, h, 7, "Foo"),
+            Some(theme.syntax_type.fg.unwrap()),
+            "added return type must take the tree-sitter type class"
+        );
+        // The `fn` keyword on that added line → `syntax_keyword` (Blue) —
+        // a class *distinct* from function/type, which the 4-bucket lexer
+        // could not produce for the names.
+        assert_eq!(
+            fg_of(d(), w, h, 7, "fn "),
+            Some(theme.syntax_keyword.fg.unwrap()),
+            "the `fn` token stays keyword"
+        );
+        // Sanity: the three semantic classes are genuinely different colours
+        // (so the asserts above are not vacuously equal).
+        assert_ne!(theme.syntax_function.fg, theme.syntax_keyword.fg);
+        assert_ne!(theme.syntax_type.fg, theme.syntax_keyword.fg);
+        assert_ne!(theme.syntax_function.fg, theme.syntax_type.fg);
+    }
+
+    /// Tier-1 is opt-in: the *default* (`tree_sitter(false)`) render — even
+    /// on a Rust patch — is **byte-identical** to the Tier-0 path (the
+    /// gate). Pinned across both layouts: glyphs *and* every per-cell style.
+    #[test]
+    fn tree_sitter_off_is_byte_identical_to_tier0() {
+        let patch = "\
+--- a/lib.rs
++++ b/lib.rs
+@@ -1,2 +1,2 @@
+ struct Foo {}
+-fn old() {}
++fn new() -> Foo {}
+";
+        for split in [false, true] {
+            let t0 = || {
+                let d = Diff::new(patch).syntax(true);
+                if split { d.side_by_side() } else { d }
+            };
+            let with_default = || {
+                // Default = tree_sitter(false); also pin the explicit form.
+                let d = Diff::new(patch).syntax(true).tree_sitter(false);
+                if split { d.side_by_side() } else { d }
+            };
+            assert_eq!(
+                t0().lines(60),
+                with_default().lines(60),
+                "tree_sitter(false) must be byte-identical to Tier-0 (split={split})"
+            );
+            // And the rendered cells (style included), not just the glyphs.
+            let mut a = Buffer::empty(Rect::new(0, 0, 60, 6));
+            let mut b = Buffer::empty(Rect::new(0, 0, 60, 6));
+            t0().render(a.area(), &mut a);
+            with_default().render(b.area(), &mut b);
+            assert_eq!(a, b, "Tier-0 cells must be identical (split={split})");
+        }
+    }
+
+    /// An unknown extension (no grammar) with `tree_sitter(true)` transparently
+    /// falls back to the Tier-0 overlay — byte-identical to the Tier-0 render,
+    /// glyphs and styles. The fallback is *per file/line*, so a mixed patch
+    /// still Tier-1-colours the files it can.
+    #[test]
+    fn unknown_extension_with_tree_sitter_falls_back_to_tier0() {
+        // `.weird` matches no shipped grammar ⇒ every line is Tier-0.
+        let patch = "\
+--- a/notes.weird
++++ b/notes.weird
+@@ -1 +1 @@
+-let n = 1; // c
++let n = 2; // c
+";
+        let t0 = Diff::new(patch).syntax(true);
+        let t1 = Diff::new(patch).syntax(true).tree_sitter(true);
+        assert_eq!(t0.lines(40), t1.lines(40));
+        let mut a = Buffer::empty(Rect::new(0, 0, 40, 4));
+        let mut b = Buffer::empty(Rect::new(0, 0, 40, 4));
+        t0.render(a.area(), &mut a);
+        t1.render(b.area(), &mut b);
+        assert_eq!(a, b, "unknown-language file must render exactly as Tier-0");
+    }
+
+    /// Totality: a garbage / binary / empty patch with `tree_sitter(true)`
+    /// (in either layout) must never panic — the precompute, reconstruction,
+    /// and per-line length guard are all total.
+    #[test]
+    fn tree_sitter_is_total_on_garbage_binary_and_empty_patches() {
+        let cases = [
+            "",
+            "not a diff at all\njust text\n",
+            // A Rust-named binary patch (no textual hunks).
+            "diff --git a/x.rs b/x.rs\nBinary files a/x.rs and b/x.rs differ\n",
+            // A truncated hunk header + half a line, Rust-named.
+            "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1\n+fn ",
+            // A `@@@` combined merge hunk (out of Tier-1 scope → Tier-0).
+            "--- a/m.rs\n+++ b/m.rs\n@@@ -1,1 -1,1 +1,1 @@@\n++ fn z() {}\n",
+            // Multibyte content under a Rust extension.
+            "--- a/u.rs\n+++ b/u.rs\n@@ -0,0 +1 @@\n+let s = \"€λ→\"; // 𝕊\n",
+        ];
+        for p in cases {
+            for split in [false, true] {
+                let d = Diff::new(p).syntax(true).tree_sitter(true);
+                let d = if split { d.side_by_side() } else { d };
+                let _ = d.row_count(40);
+                let _ = lines(d, 40, 10);
+            }
+        }
+    }
+
+    /// The new `DiffTheme` Tier-1 fields have sensible non-empty defaults and
+    /// the legacy four are unchanged (the Tier-0 byte-identity contract is a
+    /// function of these defaults staying put).
+    #[test]
+    fn diff_theme_tier1_defaults_are_present_and_legacy_unchanged() {
+        let t = DiffTheme::default();
+        // Legacy four — unchanged.
+        assert_eq!(t.syntax_string, Style::new().fg(Color::Green));
+        assert_eq!(t.syntax_number, Style::new().fg(Color::Magenta));
+        assert_eq!(
+            t.syntax_comment,
+            Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC)
+        );
+        assert_eq!(
+            t.syntax_keyword,
+            Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
+        );
+        // New eight — non-empty (except `variable`, deliberately the row fg).
+        assert_eq!(t.syntax_function.fg, Some(Color::Cyan));
+        assert_eq!(t.syntax_type.fg, Some(Color::Yellow));
+        assert_eq!(t.syntax_constant.fg, Some(Color::Magenta));
+        assert_eq!(t.syntax_variable, Style::new());
+        assert_eq!(t.syntax_operator.fg, Some(Color::DarkGray));
+        assert_eq!(t.syntax_punctuation.fg, Some(Color::DarkGray));
+        assert_eq!(t.syntax_attribute.fg, Some(Color::Blue));
+        assert_eq!(t.syntax_namespace.fg, Some(Color::Cyan));
+        // `syntax_styles` now threads ALL twelve into `SyntaxStyles`.
+        let ss = syntax_styles(&t);
+        assert_eq!(ss.function, t.syntax_function);
+        assert_eq!(ss.type_, t.syntax_type);
+        assert_eq!(ss.namespace, t.syntax_namespace);
+        assert_eq!(ss.keyword, t.syntax_keyword); // legacy still mapped
     }
 }
