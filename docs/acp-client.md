@@ -65,7 +65,16 @@ speak ACP to over its stdio — a local dev build, `python my_acp.py`, any
 ACP server — bypassing the registry. The crate sets `default-run`, so
 `cargo run -p rstui-acp-client -- …` is unambiguous even though it ships
 nine binaries; the `--` before the switch is required (it separates Cargo's
-args from the program's).
+args from the program's). The command is **shell-split** (single/double
+quotes and `\` escapes honored), so spaced paths and quoted args survive:
+`--cmd 'python "/p with space/s.py" --flag'`.
+
+The target **must speak ACP** (JSON-RPC 2.0) over stdio and write *nothing
+else* to stdout — logs, banners, or `npx`/`npm` progress on stdout will
+stall the JSON-RPC handshake. Rather than freezing on "spawning…", the
+handshake is bounded (`RSTUI_ACP_CONNECT_TIMEOUT`, default 30 s): on
+timeout you get an actionable error and return to the picker; the agent's
+**stderr** is in the `/log` overlay.
 
 **Agent profiles.** For a repeatable setup, put named recipes in
 `~/.config/rstui/acp-client.agents` (`RSTUI_ACP_AGENTS_FILE` overrides) — a

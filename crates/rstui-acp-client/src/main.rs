@@ -53,8 +53,14 @@ fn print_usage() {
          \x20 --plugin <cmd>   Attach an extension plugin process (repeatable)\n\
          \x20 -h, --help       Show this help\n\n\
          ENV:\n\
-         \x20 RSTUI_ACP_AGENT       Custom ACP command when no --cmd/--profile\n\
-         \x20 RSTUI_ACP_AGENTS_FILE Override the profiles file path\n\n\
+         \x20 RSTUI_ACP_AGENT          Custom ACP command when no --cmd/--profile\n\
+         \x20 RSTUI_ACP_AGENTS_FILE    Override the profiles file path\n\
+         \x20 RSTUI_ACP_CONNECT_TIMEOUT Seconds to wait for the ACP handshake\n\
+         \x20                          before giving up (default 30)\n\n\
+         The command is split with shell-style quoting, so spaced paths and\n\
+         quoted args work: --cmd 'python \"/p with space/s.py\" --flag'.\n\
+         It must speak ACP (JSON-RPC 2.0) over stdio — anything else on its\n\
+         stdout hangs the handshake (you get a timeout error, not a freeze).\n\n\
          Precedence: --cmd › --profile › RSTUI_ACP_AGENT › the registry\n\
          picker (which also has a \"Custom command…\" entry). With no --plugin\n\
          the in-tree reference plugins beside this binary are auto-attached.\n\n\

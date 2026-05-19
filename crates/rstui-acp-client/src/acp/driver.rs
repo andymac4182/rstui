@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use sacp::schema::{
     AuthMethodId, AuthenticateRequest, ClientCapabilities, ContentBlock, ContentChunk,
@@ -74,12 +75,11 @@ async fn run(
 ) -> Result<(), String> {
     let _ = ev_tx.send(AcpEvent::Status(format!("spawning `{command}`…")));
 
-    let mut parts = command.split_whitespace();
-    let program = parts.next().ok_or("empty agent command")?;
-    let args: Vec<&str> = parts.collect();
+    let argv = shell_split(&command);
+    let (program, args) = argv.split_first().ok_or("empty agent command")?;
 
     let mut child = tokio::process::Command::new(program)
-        .args(&args)
+        .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -108,6 +108,26 @@ async fn run(
     let perm_map_handler = perm_map.clone();
     let perm_ids_handler = perm_ids.clone();
     let loop_tx = ev_tx.clone();
+
+    // A non-ACP / stdout-polluting custom command would otherwise hang the
+    // JSON-RPC handshake forever (no reply ever parses). Bound it so the
+    // user gets an actionable error instead of an eternal "spawning…".
+    let handshake = Duration::from_secs(connect_timeout_secs(
+        std::env::var("RSTUI_ACP_CONNECT_TIMEOUT").ok().as_deref(),
+    ));
+    let stuck_msg = |stage: &str| {
+        format!(
+            "no ACP `{stage}` reply from `{command}` within {}s — is it an \
+             ACP server speaking JSON-RPC 2.0 over stdio? Anything else on \
+             its stdout (logs, banners, npx/npm output) hangs the handshake. \
+             Open the log (/log) for its stderr.",
+            handshake.as_secs()
+        )
+    };
+    // Built eagerly into owned Strings so the (`'static`, spawned) connect
+    // closure can move them without borrowing the local `command`.
+    let init_stuck = stuck_msg("initialize");
+    let session_stuck = stuck_msg("session/new");
 
     let result = Client
         .builder()
@@ -145,14 +165,21 @@ async fn run(
             // that this terminal client can render A2UI / json-render, so
             // an agent may reply with a declarative UI document. A2UI
             // negotiates via this metadata (`a2uiClientCapabilities`).
-            let init = connection
+            let init_fut = connection
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::LATEST).client_capabilities(
                         ClientCapabilities::new().meta(super::richui::render_capability_meta()),
                     ),
                 )
-                .block_task()
-                .await?;
+                .block_task();
+            let init = match tokio::time::timeout(handshake, init_fut).await {
+                Ok(Ok(i)) => i,
+                Ok(Err(e)) => return Err(e),
+                Err(_elapsed) => {
+                    let _ = loop_tx.send(AcpEvent::Error(init_stuck));
+                    return Ok(());
+                }
+            };
             let _ = loop_tx.send(AcpEvent::Connected(format!("{:?}", init.agent_info)));
 
             // Create the session, running the ACP `authenticate` handshake
@@ -160,11 +187,17 @@ async fn run(
             // (Codex sign-in). Agents that auth out-of-band (env/API key)
             // simply succeed on the first try and never hit this.
             let new_session = 'session: loop {
-                match connection
+                let sess_fut = connection
                     .send_request(NewSessionRequest::new(cwd.clone()))
-                    .block_task()
-                    .await
-                {
+                    .block_task();
+                let attempt = match tokio::time::timeout(handshake, sess_fut).await {
+                    Ok(r) => r,
+                    Err(_elapsed) => {
+                        let _ = loop_tx.send(AcpEvent::Error(session_stuck.clone()));
+                        return Ok(());
+                    }
+                };
+                match attempt {
                     Ok(s) => break 'session s,
                     Err(e) => {
                         if init.auth_methods.is_empty() {
@@ -705,6 +738,82 @@ fn render_diff(old: &str, new: &str) -> String {
     lines.join("\n")
 }
 
+/// Splits an agent command into argv with POSIX-ish quoting: single quotes
+/// are literal, double quotes allow `\"` / `\\`, an unquoted `\` escapes the
+/// next char, runs of whitespace separate tokens. Hand-rolled (no shell, no
+/// dep — the workspace forbids casual deps) so a custom command with spaced
+/// paths or quoted args (`--cmd 'python "/p with space/s.py" --flag'`) is
+/// not silently mangled the way a bare `split_whitespace` does.
+#[must_use]
+fn shell_split(input: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut has = false; // a token has started (so "" / '' yields an empty arg)
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if has {
+                    out.push(std::mem::take(&mut cur));
+                    has = false;
+                }
+            }
+            '\'' => {
+                has = true;
+                for q in chars.by_ref() {
+                    if q == '\'' {
+                        break;
+                    }
+                    cur.push(q);
+                }
+            }
+            '"' => {
+                has = true;
+                while let Some(q) = chars.next() {
+                    match q {
+                        '"' => break,
+                        '\\' => {
+                            if let Some(&n) = chars.peek() {
+                                if n == '"' || n == '\\' {
+                                    cur.push(n);
+                                    chars.next();
+                                    continue;
+                                }
+                            }
+                            cur.push('\\');
+                        }
+                        _ => cur.push(q),
+                    }
+                }
+            }
+            '\\' => {
+                has = true;
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            _ => {
+                has = true;
+                cur.push(c);
+            }
+        }
+    }
+    if has {
+        out.push(cur);
+    }
+    out
+}
+
+/// The ACP handshake timeout in seconds: `RSTUI_ACP_CONNECT_TIMEOUT` if it
+/// is a positive integer, else 30. Split from the env read so the parse is
+/// unit-testable without the process env.
+#[must_use]
+fn connect_timeout_secs(env: Option<&str>) -> u64 {
+    env.and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(30)
+}
+
 #[cfg(test)]
 mod drv2_tests {
     use super::*;
@@ -811,5 +920,33 @@ mod drv2_tests {
                 "case {i}: typed describe_permission diverged from the JSON walk"
             );
         }
+    }
+
+    #[test]
+    fn shell_split_handles_quotes_escapes_and_whitespace() {
+        assert_eq!(shell_split("a b c"), ["a", "b", "c"]);
+        assert_eq!(shell_split("   spaced   out  "), ["spaced", "out"]);
+        assert_eq!(shell_split(""), Vec::<String>::new());
+        // A spaced path inside double quotes stays one arg.
+        assert_eq!(
+            shell_split(r#"python "/p with space/s.py" --flag"#),
+            ["python", "/p with space/s.py", "--flag"]
+        );
+        // Single quotes are literal (no escape processing inside).
+        assert_eq!(shell_split(r#"sh -c 'echo a b'"#), ["sh", "-c", "echo a b"]);
+        // Backslash escapes a space outside quotes; \" inside double quotes.
+        assert_eq!(shell_split(r"a\ b"), ["a b"]);
+        assert_eq!(shell_split(r#""a\"b""#), [r#"a"b"#]);
+        // An empty quoted string is a real (empty) argument.
+        assert_eq!(shell_split(r#"x "" y"#), ["x", "", "y"]);
+    }
+
+    #[test]
+    fn connect_timeout_defaults_and_parses() {
+        assert_eq!(connect_timeout_secs(None), 30);
+        assert_eq!(connect_timeout_secs(Some("")), 30);
+        assert_eq!(connect_timeout_secs(Some("0")), 30, "0 is not allowed");
+        assert_eq!(connect_timeout_secs(Some("nonsense")), 30);
+        assert_eq!(connect_timeout_secs(Some(" 45 ")), 45);
     }
 }
