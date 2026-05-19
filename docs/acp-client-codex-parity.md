@@ -55,7 +55,7 @@ out of scope per above.
 | ~~`/status` session + token usage~~ | **Done** (iter 7) | W2-1 ✅ |
 | ~~`/model`~~ picker (model selection) | **Done** (iter 7) | W2-2 ✅ |
 | ~~`/mode`~~ session-mode switch (covers `/plan`, approval modes) | **Done** (iter 7) | W2-3 ✅ |
-| **`/resume`** list & load prior sessions | **Gap** | W2-4 |
+| ~~`/resume`~~ list & load prior sessions | **Done** (iter 7) | W2-4 ✅ |
 | **`@`-file mentions** with fuzzy completion | **Gap** | W2-5 |
 | **Sign-in** when the agent requires auth | **Gap** | W2-6 |
 | External `$EDITOR` compose | **Gap** | W3-1 |
@@ -120,8 +120,13 @@ docs-updated slice, merged back under the serialized lock
    agent-initiated `current_mode_update` notification is reflected back
    (`AcpEvent::ModeChanged`). Shown in `/status`. This is how Codex's
    plan/approval modes reach a generic client.
-10. **W2-4 `/resume`** — list resumable sessions and `session/load` one,
-    gated on `SessionResumeCapabilities`.
+10. **W2-4 `/resume`** ✅ *(landed, iter 7)* — `src/sessions.rs` (a
+    persisted `SessionStore`, mirrors `history.rs`): every
+    `AcpEvent::SessionStarted` records `(id, cwd, agent, when)`; the
+    `/resume` picker lists them newest-first and Enter issues the **typed**
+    `LoadSessionRequest` (`session/load`) — the agent replays the
+    conversation through the existing notification path (transcript cleared
+    first to avoid mixing).
 11. **W2-5 `@`-mentions** — fuzzy file completion in the composer; selected
     paths sent as ACP resource-link content blocks.
 12. **W2-6 Sign-in** — when `initialize`/prompt reports auth required, run the

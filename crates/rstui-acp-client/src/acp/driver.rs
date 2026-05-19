@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sacp::schema::{
-    ClientCapabilities, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
-    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionModeId, SessionNotification,
-    SessionUpdate, SetSessionModeRequest, TextContent,
+    ClientCapabilities, ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest,
+    NewSessionRequest, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionModeId, SessionNotification, SessionUpdate, SetSessionModeRequest, TextContent,
 };
 use sacp::{Agent, Client, ConnectionTo};
 use tokio::io::AsyncBufReadExt;
@@ -162,6 +162,9 @@ async fn run(
             let model_state = new_session.models.clone();
             let mode_state = new_session.modes.clone();
             let _ = loop_tx.send(AcpEvent::Status("session ready".to_owned()));
+            // Remember this session id so `/resume` can ask the agent to
+            // `session/load` it on a later run.
+            let _ = loop_tx.send(AcpEvent::SessionStarted(session_id.0.to_string()));
             // Surface the agent's session modes (if any) so `/mode` can
             // offer them — how Codex's plan/approval modes reach the client.
             if let Some(ms) = mode_state {
@@ -259,6 +262,22 @@ async fn run(
                         match connection.send_request(req).block_task().await {
                             Ok(_) => {
                                 let _ = loop_tx.send(AcpEvent::ModeChanged(mode_id));
+                            }
+                            Err(err) => {
+                                let _ = loop_tx.send(AcpEvent::Error(err.to_string()));
+                            }
+                        }
+                    }
+                    DriverCmd::LoadSession(sid) => {
+                        // sacp 11 *does* type `session/load`. The agent
+                        // replays the prior conversation as session/update
+                        // notifications, which flow into the transcript
+                        // through the existing notification path.
+                        let req = LoadSessionRequest::new(SessionId::new(sid.clone()), cwd.clone());
+                        match connection.send_request(req).block_task().await {
+                            Ok(_) => {
+                                let _ = loop_tx
+                                    .send(AcpEvent::Status(format!("resumed session {sid}")));
                             }
                             Err(err) => {
                                 let _ = loop_tx.send(AcpEvent::Error(err.to_string()));

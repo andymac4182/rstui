@@ -10,6 +10,9 @@ use super::richui::RichUiPayload;
 pub enum AcpEvent {
     /// `initialize` succeeded; carries the agent's self-reported info.
     Connected(String),
+    /// A session was created (`session/new`) — its id, so the client can
+    /// remember it for `/resume`.
+    SessionStarted(String),
     /// A human-readable connection/lifecycle status line.
     Status(String),
     /// A chunk of assistant message text (appended to the open turn).
@@ -304,6 +307,8 @@ pub enum DriverCmd {
     SetModel(String),
     /// Switch the session mode (`session/set_mode`) to this mode id.
     SetMode(String),
+    /// Resume a prior session (`session/load`) by its id.
+    LoadSession(String),
     /// Answer a pending [`AcpEvent::Permission`].
     Permission {
         /// The id from the request being answered.

@@ -1531,3 +1531,59 @@ fn session_modes_drive_the_mode_picker() {
     );
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W2-4: /resume prior sessions ----
+
+/// Each started session (`AcpEvent::SessionStarted`) is remembered;
+/// `/resume` lists them and Enter routes a `session/load` (the connected
+/// send is the async side, out of Harness by ADR 0011 — so disconnected it
+/// reports "not connected", which is what proves the wiring).
+#[test]
+fn started_sessions_feed_the_resume_picker() {
+    let mut h = chatting(110, 30);
+
+    // Nothing recorded yet.
+    typ(&mut h, "/resume");
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().resume_picker_open());
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("no saved sessions")
+    );
+
+    // Two sessions start; both are remembered (dedup is by id).
+    h.message(Msg::Acp(AcpEvent::SessionStarted("sess-A".to_owned())));
+    h.message(Msg::Acp(AcpEvent::SessionStarted("sess-B".to_owned())));
+    h.message(Msg::Acp(AcpEvent::SessionStarted("sess-A".to_owned())));
+    let ids: Vec<String> = h
+        .app()
+        .resume_sessions()
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+    assert_eq!(ids.len(), 2, "dedup by id; got {ids:?}");
+    assert!(ids.contains(&"sess-A".to_owned()) && ids.contains(&"sess-B".to_owned()));
+
+    typ(&mut h, "/resume");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().resume_picker_open(), "/resume opens with history");
+    assert!(h.snapshot().contains("Resume"), "resume chrome drawn");
+
+    // Choose one — no driver headless, so it reports not-connected and the
+    // picker still closes (the route is what we assert).
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().resume_picker_open());
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("not connected")
+    );
+    assert!(h.is_running());
+}

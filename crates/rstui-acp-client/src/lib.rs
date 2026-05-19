@@ -17,6 +17,7 @@
 //!   footer, slash commands, ask-user overlay): a separate-process protocol
 //!   reusing ADR 0007's posture, complementary to `rstui-plugin-host`.
 //! - [`history`] — the persisted composer input history (↑/↓ prompt recall).
+//! - [`sessions`] — the persisted resumable-session index (`/resume`).
 //! - [`input`] — the async terminal [`AsyncEventSource`](rstui_runtime::AsyncEventSource).
 //!
 //! [`run`] composes them into the live full-screen client.
@@ -28,6 +29,7 @@ pub mod history;
 pub mod input;
 pub mod plugin;
 pub mod registry;
+pub mod sessions;
 pub mod theme;
 pub(crate) mod title;
 pub mod ui;

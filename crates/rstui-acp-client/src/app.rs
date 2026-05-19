@@ -18,6 +18,7 @@ use crate::acp::{
 use crate::history::InputHistory;
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
 use crate::registry::Registry;
+use crate::sessions::{SessionRef, SessionStore};
 use crate::ui;
 
 /// acp-client's mode-independent **global** command surface as semantic
@@ -74,6 +75,16 @@ fn bell_from_env(val: Option<&str>) -> bool {
 #[must_use]
 fn bell_default() -> bool {
     bell_from_env(std::env::var("RSTUI_ACP_BELL").ok().as_deref())
+}
+
+/// Unix seconds now (0 before the epoch — impossible in practice; only the
+/// relative ordering of `/resume` entries matters anyway).
+#[must_use]
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Which top-level screen is showing.
@@ -340,6 +351,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("status", "Show session info & token usage"),
     ("model", "Choose the model (if the agent offers a choice)"),
     ("mode", "Switch the session mode (plan / approval / …)"),
+    ("resume", "Resume a previous session (session/load)"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -466,6 +478,11 @@ pub struct ChatApp {
     /// `/mode` picker overlay open + its highlighted row.
     mode_picker_open: bool,
     mode_sel: usize,
+    /// Persisted index of sessions this client started (`/resume`), and the
+    /// picker overlay state.
+    sessions: SessionStore,
+    resume_picker_open: bool,
+    resume_sel: usize,
     last_size: Size,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
@@ -549,6 +566,9 @@ impl ChatApp {
             current_mode: None,
             mode_picker_open: false,
             mode_sel: 0,
+            sessions: SessionStore::load(),
+            resume_picker_open: false,
+            resume_sel: 0,
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
@@ -791,6 +811,21 @@ impl ChatApp {
     #[must_use]
     pub fn mode_sel(&self) -> usize {
         self.mode_sel
+    }
+    /// The resumable sessions this client has started, newest first.
+    #[must_use]
+    pub fn resume_sessions(&self) -> Vec<SessionRef> {
+        self.sessions.newest_first()
+    }
+    /// Whether the `/resume` picker overlay is open.
+    #[must_use]
+    pub fn resume_picker_open(&self) -> bool {
+        self.resume_picker_open
+    }
+    /// The highlighted row in the `/resume` picker.
+    #[must_use]
+    pub fn resume_sel(&self) -> usize {
+        self.resume_sel
     }
     /// The launch command of the connected agent (empty before connect).
     #[must_use]
@@ -1230,6 +1265,15 @@ impl ChatApp {
                         .and_then(|id| self.models.iter().position(|m| m.id == id))
                         .unwrap_or(0);
                     self.model_picker_open = true;
+                }
+                Cmd::none()
+            }
+            "resume" => {
+                if self.resume_sessions().is_empty() {
+                    self.push_system("no saved sessions yet (a session is saved once it starts)");
+                } else {
+                    self.resume_sel = 0;
+                    self.resume_picker_open = true;
                 }
                 Cmd::none()
             }
@@ -1769,6 +1813,45 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Key handling for the `/resume` picker: ↑/↓ (or `j`/`k`) move, Enter
+    /// asks the agent to `session/load` the chosen session (its replayed
+    /// history streams back in as normal notifications, so the transcript
+    /// is cleared first to avoid mixing), Esc cancels.
+    fn resume_picker_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let list = self.resume_sessions();
+        let last = list.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => self.resume_picker_open = false,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.resume_sel = self.resume_sel.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.resume_sel = (self.resume_sel + 1).min(last);
+            }
+            KeyCode::Enter => {
+                if let Some(s) = list.get(self.resume_sel) {
+                    let id = s.id.clone();
+                    if self.driver.is_some() {
+                        // Clear first: the agent replays the loaded
+                        // conversation through the normal notification path.
+                        self.transcript.clear();
+                        self.scroll = 0;
+                        self.follow = true;
+                        self.push_system(format!("resuming session {id}…"));
+                        if let Some(driver) = &self.driver {
+                            driver.send(DriverCmd::LoadSession(id));
+                        }
+                    } else {
+                        self.push_system("not connected — cannot resume");
+                    }
+                }
+                self.resume_picker_open = false;
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         if self.picking {
@@ -1807,6 +1890,9 @@ impl ChatApp {
         }
         if self.mode_picker_open {
             return self.mode_picker_key(key);
+        }
+        if self.resume_picker_open {
+            return self.resume_picker_key(key);
         }
         if self.keymap_panel {
             return self.keymap_panel_key(key);
@@ -2351,6 +2437,15 @@ impl ChatApp {
                 self.screen = Screen::Chat;
                 self.status_line = format!("connected · {}", short(&info));
                 self.push_system(format!("connected to agent: {}", short(&info)));
+            }
+            AcpEvent::SessionStarted(id) => {
+                self.sessions.record(SessionRef {
+                    id,
+                    cwd: self.cwd.display().to_string(),
+                    agent: self.agent_label.clone(),
+                    when: unix_now(),
+                });
+                self.sessions.save();
             }
             AcpEvent::Status(s) => {
                 if s == "session ready" {

@@ -48,6 +48,8 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
         render_model_picker(app, frame, area);
     } else if app.mode_picker_open() {
         render_mode_picker(app, frame, area);
+    } else if app.resume_picker_open() {
+        render_resume_picker(app, frame, area);
     } else if app.plugins_overlay() {
         render_plugins_overlay(app, frame, area);
     } else if app.keymap_panel_open() {
@@ -1062,6 +1064,43 @@ fn render_mode_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
                 format!(" {marker} {} — {}", m.name, m.description)
             };
             if i == app.mode_sel() {
+                Line::styled(label, t.selection())
+            } else {
+                Line::styled(label, t.base())
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The `/resume` picker — the sessions this client has started, newest
+/// first; Enter asks the agent to `session/load` the chosen one. A pure
+/// projection of the persisted `SessionStore`.
+fn render_resume_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let list = app.resume_sessions();
+    let h = (list.len() as u16 + 4).clamp(7, area.height.saturating_sub(2).max(7));
+    let rect = centered(area, area.width.min(90), h);
+    let block = Block::bordered()
+        .title(" Resume (↑↓ select · Enter load · Esc cancel) ")
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let lines: Vec<Line> = list
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let id_short: String = s.id.chars().take(8).collect();
+            let agent = if s.agent.is_empty() {
+                "agent"
+            } else {
+                &s.agent
+            };
+            let label = format!(" {agent}  ·  {}  ·  #{id_short}", s.cwd);
+            if i == app.resume_sel() {
                 Line::styled(label, t.selection())
             } else {
                 Line::styled(label, t.base())
