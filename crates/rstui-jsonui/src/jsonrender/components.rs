@@ -112,6 +112,7 @@ fn project_element(
         key,
         &bindings,
         &element.on,
+        scope.palette,
     )
 }
 
@@ -197,9 +198,16 @@ fn prop_value<'value>(props: &'value Value, key: &str) -> Option<&'value Value> 
 /// The text style for an Ink-style `Text` element's modifier props
 /// (`bold`/`italic`/`underline`/`strikethrough`/`dimColor`/`inverse` +
 /// `color`).
-fn text_style(props: &Value) -> Style {
+fn text_style(props: &Value, palette: &crate::color::Palette) -> Style {
     let mut style = Style::new();
-    if let Some(color) = parse_color(prop_value(props, "color")) {
+    // A `"color"` prop is a theme token (`success`, `chart2`, …) or a
+    // raw `#hex`/named fallback, resolved against the active palette;
+    // the legacy named-only `parse_color` is the last resort.
+    if let Some(color) = prop_str(props, "color")
+        .and_then(crate::color::parse_token)
+        .map(|token| palette.resolve(token))
+        .or_else(|| parse_color(prop_value(props, "color")))
+    {
         style = style.fg(color);
     }
     if prop_bool(props, "bold") {
@@ -287,6 +295,7 @@ fn map_component(
     node_id: &str,
     bindings: &std::collections::BTreeMap<String, String>,
     on: &serde_json::Map<String, Value>,
+    palette: &crate::color::Palette,
 ) -> UiNode {
     match type_name {
         "Box" => {
@@ -312,7 +321,7 @@ fn map_component(
         "Text" => {
             let text = prop_str(props, "text").unwrap_or("").to_owned();
             UiNode::Text {
-                spans: vec![(text, text_style(props))],
+                spans: vec![(text, text_style(props, palette))],
                 variant: TextVariant::Body,
                 align: Alignment::Left,
                 wrap: matches!(prop_str(props, "wrap"), Some("wrap") | None),
@@ -327,7 +336,11 @@ fn map_component(
                 _ => TextVariant::H2,
             };
             let mut style = Style::new();
-            if let Some(color) = parse_color(prop_value(props, "color")) {
+            if let Some(color) = prop_str(props, "color")
+                .and_then(crate::color::parse_token)
+                .map(|token| palette.resolve(token))
+                .or_else(|| parse_color(prop_value(props, "color")))
+            {
                 style = style.fg(color);
             }
             UiNode::Text {

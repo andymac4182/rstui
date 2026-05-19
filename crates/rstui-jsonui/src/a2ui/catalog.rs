@@ -158,11 +158,19 @@ struct Walk<'a> {
     model: &'a DataModel,
     selection: &'a SelectionState,
     interaction: &'a InteractionState,
+    /// The active theme-token colour palette (a `"color"` prop / chart
+    /// series resolves against it).
+    palette: &'a crate::color::Palette,
     /// Remaining nodes that may still be emitted (breadth bound).
     budget: usize,
     /// Containers descended so far on this path (stack-depth bound).
     depth: usize,
 }
+
+/// Process-wide default palette so the 4-arg [`project`] keeps its
+/// signature (existing callers / tests unchanged); a themed host calls
+/// [`project_with_palette`].
+static DEFAULT_PALETTE: crate::color::Palette = crate::color::Palette::ANSI;
 
 /// Projects the surface rooted at `root` into a [`UiNode`].
 ///
@@ -178,11 +186,26 @@ pub fn project(
     selection: &SelectionState,
     interaction: &InteractionState,
 ) -> UiNode {
+    project_with_palette(components, model, selection, interaction, &DEFAULT_PALETTE)
+}
+
+/// [`project`] with an explicit theme-token palette (a `"color"` prop /
+/// chart series resolves against it). `A2uiSurface::project` passes its
+/// host-supplied palette here.
+#[must_use]
+pub fn project_with_palette(
+    components: &ComponentMap,
+    model: &DataModel,
+    selection: &SelectionState,
+    interaction: &InteractionState,
+    palette: &crate::color::Palette,
+) -> UiNode {
     let mut walk = Walk {
         components,
         model,
         selection,
         interaction,
+        palette,
         budget: MAX_PROJECTION_NODES,
         depth: 0,
     };
@@ -213,12 +236,21 @@ fn project_id(id: &str, scope: &str, walk: &mut Walk<'_>) -> UiNode {
                 .map(|raw| resolve_text(raw, model, scope))
                 .unwrap_or_default();
             let variant = text_variant(prop("variant"));
+            // An optional `"color"` is a theme token (`success`,
+            // `chart2`, …) or a raw `#hex`/named fallback, resolved
+            // against the active palette.
+            let style = prop("color")
+                .and_then(Value::as_str)
+                .and_then(crate::color::parse_token)
+                .map_or_else(rstui_core::Style::new, |token| {
+                    rstui_core::Style::new().fg(walk.palette.resolve(token))
+                });
             // Simple-markdown-capable: bold/italic survive Markdown.
             if text.contains('*') || text.contains('`') || text.contains('_') {
                 UiNode::Markdown(text)
             } else {
                 UiNode::Text {
-                    spans: vec![(text, rstui_core::Style::new())],
+                    spans: vec![(text, style)],
                     variant,
                     align: rstui_core::Alignment::Left,
                     wrap: true,

@@ -59,11 +59,23 @@ pub struct ResolveScope<'model> {
     pub functions: &'model std::collections::BTreeMap<String, ComputedFn>,
     /// Custom directive registry (the 8 built-ins live here).
     pub directives: &'model DirectiveRegistry,
+    /// The active theme-token colour palette — a component's `"color"`
+    /// prop or a chart series resolves against this. Defaults to the
+    /// dep-free [`Palette::ANSI`](crate::color::Palette::ANSI); the host
+    /// supplies its theme-mapped palette via [`with_palette`](Self::with_palette).
+    pub palette: &'model crate::color::Palette,
 }
 
+/// The process-wide default palette so [`ResolveScope::new`] keeps its
+/// signature (every existing caller / test stays unchanged); the host
+/// overrides it per-doc with [`ResolveScope::with_palette`].
+static DEFAULT_PALETTE: crate::color::Palette = crate::color::Palette::ANSI;
+
 impl<'model> ResolveScope<'model> {
-    /// A scope with no repeat, no host functions, and only the built-in
-    /// directive registry — the common top-level case.
+    /// A scope with no repeat, no host functions, the built-in
+    /// directive registry, and the default palette — the common
+    /// top-level case (the host adds its theme via
+    /// [`with_palette`](Self::with_palette)).
     #[must_use]
     pub fn new(
         model: &'model DataModel,
@@ -75,7 +87,16 @@ impl<'model> ResolveScope<'model> {
             repeat: None,
             functions,
             directives,
+            palette: &DEFAULT_PALETTE,
         }
+    }
+
+    /// Re-bind the active theme-token palette (the reducer's mapping of
+    /// its live theme); a chart/`"color"` prop resolves against it.
+    #[must_use]
+    pub fn with_palette(mut self, palette: &'model crate::color::Palette) -> Self {
+        self.palette = palette;
+        self
     }
 
     /// The same scope re-bound to a repeat item (used per child while
@@ -87,6 +108,7 @@ impl<'model> ResolveScope<'model> {
             repeat: Some(repeat),
             functions: self.functions,
             directives: self.directives,
+            palette: self.palette,
         }
     }
 }

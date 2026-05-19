@@ -506,6 +506,17 @@ impl RichDoc {
         }
     }
 
+    /// Set the active theme-token colour palette (the client maps its
+    /// live theme into it) so the doc's `"color"` props and chart
+    /// series render in the user's theme. Pure projection reads it on
+    /// every re-render — set at build and on a theme change.
+    pub fn set_palette(&mut self, palette: rstui_jsonui::color::Palette) {
+        match self {
+            Self::A2ui(surface) => surface.set_palette(palette),
+            Self::Json(doc) => doc.set_palette(palette),
+        }
+    }
+
     /// Re-project the owned (mutated) state to transcript lines — the
     /// renderer calls this every frame (pure projection).
     #[must_use]

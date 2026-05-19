@@ -77,6 +77,11 @@ pub struct JsonRenderDoc {
     stream: SpecStreamCompiler,
     next_id: u64,
     loading: bool,
+    /// The active theme-token colour palette (host-supplied via
+    /// [`set_palette`](JsonRenderDoc::set_palette); default
+    /// [`Palette::ANSI`](crate::color::Palette::ANSI)). `view` resolves
+    /// a `"color"` prop / chart series against it.
+    palette: crate::color::Palette,
 }
 
 impl std::fmt::Debug for JsonRenderDoc {
@@ -109,6 +114,7 @@ impl JsonRenderDoc {
             stream: SpecStreamCompiler::new(),
             next_id: 0,
             loading: true,
+            palette: crate::color::Palette::ANSI,
         }
     }
 
@@ -129,6 +135,7 @@ impl JsonRenderDoc {
             directives: DirectiveRegistry::with_builtins(),
             next_id: 0,
             loading: false,
+            palette: crate::color::Palette::ANSI,
         }
     }
 
@@ -179,6 +186,14 @@ impl JsonRenderDoc {
     /// projection (ADR 0012 §P1).
     pub fn model_mut(&mut self) -> &mut DataModel {
         &mut self.model
+    }
+
+    /// Set the active theme-token colour [`Palette`](crate::color::Palette)
+    /// (the reducer's mapping of its live theme). `view` resolves a
+    /// component's `"color"` prop and chart series against it; the
+    /// default is the dep-free [`Palette::ANSI`](crate::color::Palette::ANSI).
+    pub fn set_palette(&mut self, palette: crate::color::Palette) {
+        self.palette = palette;
     }
 
     /// Whether the spec is still streaming (missing children render
@@ -239,6 +254,7 @@ impl JsonRenderDoc {
     /// and directives — the top-level (no repeat) scope.
     fn scope(&self) -> ResolveScope<'_> {
         ResolveScope::new(&self.model, &self.functions, &self.directives)
+            .with_palette(&self.palette)
     }
 
     /// Projects the current spec+state to a fresh [`UiNode`] (call every
@@ -436,5 +452,45 @@ mod tests {
         // because `z` was never delivered — no panic, no blank crash.
         let _ = doc.view();
         assert_eq!(doc.spec().root, "z");
+    }
+
+    #[test]
+    fn color_prop_resolves_a_theme_token_against_the_host_palette() {
+        // A `"color"` token resolves against the host-supplied palette
+        // (theme-driven, not hardcoded); a raw `#hex` is the fallback.
+        fn fg_of(node: &crate::tree::UiNode) -> Option<rstui_core::Color> {
+            match node {
+                crate::tree::UiNode::Text { spans, .. } => spans.first().and_then(|(_, s)| s.fg),
+                crate::tree::UiNode::Column { children, .. }
+                | crate::tree::UiNode::Row { children, .. } => children.iter().find_map(fg_of),
+                _ => None,
+            }
+        }
+        let spec = serde_json::json!({
+            "root": "c",
+            "elements": {
+                "c": { "type": "Box", "children": ["a", "b"] },
+                "a": { "type": "Text", "props": { "text": "ok", "color": "success" } },
+                "b": { "type": "Text", "props": { "text": "raw", "color": "#0a141e" } }
+            }
+        });
+        let mut doc = JsonRenderDoc::from_flat_value(&spec);
+        let mut palette = crate::color::Palette::ANSI;
+        palette.success = rstui_core::Color::Rgb(1, 2, 3);
+        doc.set_palette(palette);
+        let view = doc.view();
+        let crate::tree::UiNode::Column { children, .. } = &view else {
+            panic!("expected a Box→Column, got {view:?}");
+        };
+        assert_eq!(
+            fg_of(&children[0]),
+            Some(rstui_core::Color::Rgb(1, 2, 3)),
+            "the `success` token resolved against the host palette"
+        );
+        assert_eq!(
+            fg_of(&children[1]),
+            Some(rstui_core::Color::Rgb(10, 20, 30)),
+            "a raw #hex is the fallback"
+        );
     }
 }

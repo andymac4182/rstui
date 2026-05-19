@@ -39,6 +39,12 @@ pub struct AcpTheme {
     pub err: Color,
     /// Informational.
     pub info: Color,
+    /// The five chart data-series colours (`chart_1..=chart_5`).
+    pub chart: [Color; 5],
+    /// Upward / positive financial movement (candlestick etc.).
+    pub bullish: Color,
+    /// Downward / negative financial movement.
+    pub bearish: Color,
 }
 
 impl Default for AcpTheme {
@@ -66,6 +72,30 @@ impl AcpTheme {
             warn: p.warning,
             err: p.danger,
             info: p.info,
+            chart: [p.chart_1, p.chart_2, p.chart_3, p.chart_4, p.chart_5],
+            bullish: p.chart_bullish,
+            bearish: p.chart_bearish,
+        }
+    }
+
+    /// The active theme as an `rstui-jsonui` colour
+    /// [`Palette`](rstui_jsonui::color::Palette), so an agent's
+    /// A2UI/json-render `"color"` tokens and chart series render in the
+    /// client's live theme (faithful: the dedicated `chart_*` tokens).
+    #[must_use]
+    pub fn jsonui_palette(&self) -> rstui_jsonui::color::Palette {
+        rstui_jsonui::color::Palette {
+            accent: self.accent,
+            info: self.info,
+            success: self.ok,
+            warning: self.warn,
+            danger: self.err,
+            muted: self.dim,
+            text: self.fg,
+            border: self.border,
+            chart: self.chart,
+            bullish: self.bullish,
+            bearish: self.bearish,
         }
     }
 

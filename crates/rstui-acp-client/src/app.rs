@@ -952,6 +952,24 @@ impl ChatApp {
     pub fn rich_doc(&self, id: u64) -> Option<&crate::acp::RichDoc> {
         self.rich_docs.get(&id)
     }
+    /// Store a freshly built interactive doc under a new id, skinning
+    /// it with the client's live theme palette first so the agent's
+    /// `"color"` tokens / chart series render in the user's theme.
+    fn store_rich_doc(&mut self, mut doc: crate::acp::RichDoc) -> u64 {
+        doc.set_palette(self.theme().jsonui_palette());
+        let id = self.rich_seq;
+        self.rich_seq = self.rich_seq.wrapping_add(1);
+        self.rich_docs.insert(id, doc);
+        id
+    }
+    /// Re-skin every live interactive doc after a theme change so an
+    /// open pane / inline form repaints in the newly selected theme.
+    fn retheme_rich_docs(&mut self) {
+        let palette = self.theme().jsonui_palette();
+        for doc in self.rich_docs.values_mut() {
+            doc.set_palette(palette.clone());
+        }
+    }
     /// The id of the **active** interactive doc — the most recent
     /// `Role::RichUi` transcript entry that has a live owned
     /// [`crate::acp::RichDoc`] (A2UI/json-render; a static diagram has
@@ -1539,12 +1557,8 @@ impl ChatApp {
                     // clicked checkbox / switched tab persists across
                     // redraws; a static diagram block has no doc and is
                     // rendered from `text` every frame.
-                    let rich = crate::acp::RichDoc::build(&payload).map(|doc| {
-                        let id = self.rich_seq;
-                        self.rich_seq = self.rich_seq.wrapping_add(1);
-                        self.rich_docs.insert(id, doc);
-                        id
-                    });
+                    let rich =
+                        crate::acp::RichDoc::build(&payload).map(|doc| self.store_rich_doc(doc));
                     self.transcript.push(Entry {
                         role: Role::RichUi,
                         text: payload.source,
@@ -2285,6 +2299,7 @@ impl ChatApp {
             .map(crate::theme::AcpTheme::from_theme);
         if let Some(t) = next {
             self.theme = t;
+            self.retheme_rich_docs();
         }
     }
 
@@ -2295,6 +2310,7 @@ impl ChatApp {
             KeyCode::Esc => {
                 if let Some(prev) = self.theme_restore.take() {
                     self.theme = prev;
+                    self.retheme_rich_docs();
                 }
                 self.picking = false;
             }

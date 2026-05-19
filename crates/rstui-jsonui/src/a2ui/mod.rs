@@ -86,6 +86,10 @@ pub struct A2uiSurface {
     model: DataModel,
     selection: SelectionState,
     interaction: InteractionState,
+    /// The active theme-token colour palette (host-supplied via
+    /// [`set_palette`](A2uiSurface::set_palette); default
+    /// [`Palette::ANSI`](crate::color::Palette::ANSI)).
+    palette: crate::color::Palette,
     /// Set once a `deleteSurface` for this surface arrives; the surface
     /// then projects to nothing until a new `createSurface`.
     deleted: bool,
@@ -265,12 +269,22 @@ impl A2uiSurface {
         if !self.is_ready() {
             return UiNode::Placeholder(String::new());
         }
-        catalog::project(
+        catalog::project_with_palette(
             &self.components,
             &self.model,
             &self.selection,
             &self.interaction,
+            &self.palette,
         )
+    }
+
+    /// Set the active theme-token colour
+    /// [`Palette`](crate::color::Palette) (the reducer's mapping of its
+    /// live theme); `project` resolves a component's `"color"` prop and
+    /// chart series against it. Default
+    /// [`Palette::ANSI`](crate::color::Palette::ANSI).
+    pub fn set_palette(&mut self, palette: crate::color::Palette) {
+        self.palette = palette;
     }
 
     /// Resolves a hit [`NodeId`] (from the
