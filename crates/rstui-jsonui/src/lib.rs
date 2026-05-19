@@ -39,6 +39,7 @@
 //! progressive-rendering contract), never a panic or a blanked screen.
 
 pub mod capability;
+pub mod chart;
 pub mod color;
 pub mod tree;
 pub mod value;

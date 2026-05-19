@@ -1126,8 +1126,8 @@ fn acp_initialize_meta_ships_the_full_catalog_for_both_formats() {
     let json_render = &meta["rstuiJsonUi"]["jsonRender"];
     assert_eq!(
         json_render["catalog"].as_object().unwrap().len(),
-        27,
-        "the json-render component catalog is sent"
+        34,
+        "the json-render component catalog is sent (incl. the chart set)"
     );
     assert!(
         json_render["prompt"]

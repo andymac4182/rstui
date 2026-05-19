@@ -31,9 +31,7 @@ use super::expr::{
 };
 use super::spec::Spec;
 use crate::color::{Palette, parse_token};
-use crate::tree::{
-    ChartKind, ChartSeries, CrossAlign, Justify, KeyValueRow, Severity, TextVariant, UiNode,
-};
+use crate::tree::{ChartKind, CrossAlign, Justify, KeyValueRow, Severity, TextVariant, UiNode};
 
 /// Whether the spec is still streaming. When `true`, a child key that is
 /// not yet in the element map renders nothing (the reference suppresses
@@ -539,53 +537,10 @@ fn bound_id(
         .unwrap_or_else(|| node_id.to_owned())
 }
 
-/// Parse a chart data array into `(points, labels)`. Accepts
-/// `[{label,value}|{x,y}|[x,y]|number]` — the LLM-friendly shapes; `x`
-/// defaults to the index, missing labels are empty. Total.
-fn parse_points(data: Option<&Value>) -> (Vec<(f64, f64)>, Vec<String>) {
-    let Some(Value::Array(items)) = data else {
-        return (Vec::new(), Vec::new());
-    };
-    let mut points = Vec::with_capacity(items.len());
-    let mut labels = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        let idx = i as f64;
-        let (x, y, label) = match item {
-            Value::Number(_) => (idx, item.as_f64().unwrap_or(0.0), String::new()),
-            Value::Array(pair) => (
-                pair.first().and_then(Value::as_f64).unwrap_or(idx),
-                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
-                String::new(),
-            ),
-            Value::Object(map) => {
-                let y = map
-                    .get("value")
-                    .or_else(|| map.get("y"))
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0);
-                let x = map.get("x").and_then(Value::as_f64).unwrap_or(idx);
-                let label = map
-                    .get("label")
-                    .or_else(|| map.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                (x, y, label)
-            }
-            _ => continue,
-        };
-        points.push((x, y));
-        labels.push(label);
-    }
-    (points, labels)
-}
-
 /// Project a json-render chart component into a themed
-/// [`UiNode::Chart`]. Accepts either `props.series`
-/// (`[{name,color?,data|points}]`, multi-series) or `props.data`
-/// (`[{label,value}|…]`, single series; `Pie` becomes one cycled-colour
-/// series per slice). A `"color"` token / per-series colour resolves
-/// against `palette`, else the series cycles `chart_1..=chart_5`.
+/// [`UiNode::Chart`] by extracting its props and delegating to the
+/// shared, format-agnostic [`crate::chart::build_chart`] (so A2UI and
+/// json-render parse identical data shapes / palette rules).
 fn chart_node(kind: ChartKind, props: &Value, palette: &Palette) -> UiNode {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let height = prop_f64(props, "height")
@@ -593,61 +548,16 @@ fn chart_node(kind: ChartKind, props: &Value, palette: &Palette) -> UiNode {
         .clamp(3, 40);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let cols = prop_f64(props, "cols").map_or(0, |c| c as usize);
-    let explicit = prop_str(props, "color").and_then(parse_token);
-    let mut series: Vec<ChartSeries> = Vec::new();
-
-    if let Some(Value::Array(arr)) = prop_value(props, "series") {
-        for (i, s) in arr.iter().enumerate() {
-            let color = s
-                .get("color")
-                .and_then(Value::as_str)
-                .and_then(parse_token)
-                .or(explicit)
-                .map_or_else(|| palette.series(i), |token| palette.resolve(token));
-            let (points, labels) = parse_points(s.get("data").or_else(|| s.get("points")));
-            series.push(ChartSeries {
-                name: s
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
-                color,
-                points,
-                labels,
-            });
-        }
-    } else {
-        let (points, labels) = parse_points(prop_value(props, "data"));
-        if matches!(kind, ChartKind::Pie) {
-            // One slice per datum so the palette cycles per slice.
-            for (i, (&(_, y), label)) in points.iter().zip(&labels).enumerate() {
-                series.push(ChartSeries {
-                    name: label.clone(),
-                    color: explicit
-                        .map_or_else(|| palette.series(i), |token| palette.resolve(token)),
-                    points: vec![(i as f64, y)],
-                    labels: vec![label.clone()],
-                });
-            }
-        } else if !points.is_empty() {
-            series.push(ChartSeries {
-                name: prop_str(props, "label").unwrap_or("").to_owned(),
-                color: explicit.map_or_else(|| palette.series(0), |token| palette.resolve(token)),
-                points,
-                labels,
-            });
-        }
-    }
-
-    if series.is_empty() {
-        return UiNode::Placeholder(format!("{kind:?}"));
-    }
-    UiNode::Chart {
+    crate::chart::build_chart(
         kind,
-        series,
-        cols,
+        prop_value(props, "series"),
+        prop_value(props, "data"),
+        prop_str(props, "label"),
+        prop_str(props, "color").and_then(parse_token),
         height,
-    }
+        cols,
+        palette,
+    )
 }
 
 fn table(props: &Value) -> UiNode {

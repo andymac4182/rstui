@@ -41,7 +41,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::tree::{CrossAlign, Justify, KeyValueRow, NodeId, TextVariant, UiNode};
+use crate::tree::{ChartKind, CrossAlign, Justify, KeyValueRow, NodeId, TextVariant, UiNode};
 use crate::value::{DataModel, resolve_scope};
 
 use super::binding::{coerce_text, resolve, resolve_bool, resolve_number, resolve_text, truthy};
@@ -426,9 +426,47 @@ fn project_id(id: &str, scope: &str, walk: &mut Walk<'_>) -> UiNode {
                 label: Some(label),
             }
         }
+        "BarChart" | "Bar" => a2ui_chart(ChartKind::Bar, &properties, walk.palette),
+        "LineChart" | "Line" => a2ui_chart(ChartKind::Line, &properties, walk.palette),
+        "AreaChart" | "Area" => a2ui_chart(ChartKind::Area, &properties, walk.palette),
+        "PieChart" | "Pie" | "DonutChart" | "Donut" => {
+            a2ui_chart(ChartKind::Pie, &properties, walk.palette)
+        }
+        "Sparkline" => a2ui_chart(ChartKind::Sparkline, &properties, walk.palette),
+        "ScatterPlot" | "Scatter" => a2ui_chart(ChartKind::Scatter, &properties, walk.palette),
+        "Histogram" => a2ui_chart(ChartKind::Histogram, &properties, walk.palette),
+        "StackedBarChart" | "StackedBar" => {
+            a2ui_chart(ChartKind::StackedBar, &properties, walk.palette)
+        }
+        "Heatmap" => a2ui_chart(ChartKind::Heatmap, &properties, walk.palette),
         "" => UiNode::Placeholder(format!("untyped:{id}")),
         other => UiNode::Placeholder(other.to_owned()),
     }
+}
+
+/// Project an A2UI chart component (an rstui extension to the basic
+/// catalog) into a themed [`UiNode::Chart`], delegating to the shared
+/// [`crate::chart::build_chart`] so it parses identical data shapes /
+/// palette rules to the json-render path.
+fn a2ui_chart(kind: ChartKind, props: &Value, palette: &crate::color::Palette) -> UiNode {
+    let num = |name: &str| props.as_object().and_then(|map| map.get(name))?.as_f64();
+    let val = |name: &str| props.as_object().and_then(|map| map.get(name));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let height = num("height").map_or(10, |h| h as u16).clamp(3, 40);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let cols = num("cols").map_or(0, |c| c as usize);
+    crate::chart::build_chart(
+        kind,
+        val("series"),
+        val("data"),
+        val("label").and_then(Value::as_str),
+        val("color")
+            .and_then(Value::as_str)
+            .and_then(crate::color::parse_token),
+        height,
+        cols,
+        palette,
+    )
 }
 
 /// Resolves a `ChildList` — a static `["id", …]` array or a
@@ -814,5 +852,31 @@ mod tests {
             ),
             UiNode::Placeholder("Hologram".to_owned())
         );
+    }
+
+    #[test]
+    fn a2ui_chart_component_projects_to_a_themed_chart_node() {
+        let components = map_of(&[json!({
+            "id": "root", "component": "BarChart",
+            "data": [{ "label": "a", "value": 2 }, { "label": "b", "value": 5 }],
+            "color": "chart3"
+        })]);
+        let mut palette = crate::color::Palette::ANSI;
+        palette.chart[2] = rstui_core::Color::Rgb(7, 7, 7); // chart3 (1-based)
+        let node = project_with_palette(
+            &components,
+            &DataModel::new(),
+            &SelectionState::default(),
+            &InteractionState::default(),
+            &palette,
+        );
+        let UiNode::Chart { kind, series, .. } = node else {
+            panic!("A2UI BarChart must project to a Chart node, got {node:?}");
+        };
+        assert_eq!(kind, ChartKind::Bar);
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].color, rstui_core::Color::Rgb(7, 7, 7));
+        assert_eq!(series[0].points, vec![(0.0, 2.0), (1.0, 5.0)]);
+        assert_eq!(series[0].labels, vec!["a".to_owned(), "b".to_owned()]);
     }
 }

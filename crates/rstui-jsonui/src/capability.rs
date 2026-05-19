@@ -258,7 +258,21 @@ declare_json_render_catalog! {
     "Spinner" ("label", "color") [] => "Animated busy indicator.";
     "ProgressBar" ("progress", "label", "color") [] => "Progress bar in 0..1.";
     "Sparkline" ("data", "color", "label") [] => "Compact trend line.";
-    "BarChart" ("data", "showValues") [] => "Labelled horizontal bars.";
+    "BarChart" ("data", "color", "height") [] =>
+        "Bar chart. data:[{label,value}]; color is a theme token.";
+    "LineChart" ("series", "color", "height") [] =>
+        "Multi-series line. series:[{name,color?,points:[[x,y]]}].";
+    "AreaChart" ("series", "color", "height") [] => "Filled line chart (as LineChart).";
+    "PieChart" ("data", "color", "height") [] =>
+        "Pie/share. data:[{label,value}]; slices cycle the theme palette.";
+    "ScatterPlot" ("series", "color", "height") [] =>
+        "XY scatter. series:[{name,color?,points:[[x,y]]}].";
+    "Histogram" ("data", "color", "height") [] =>
+        "Bucket counts. data:[{label,value}].";
+    "StackedBarChart" ("series", "height") [] =>
+        "Stacked bars. series:[{name,color?,data:[value]}] per category.";
+    "Heatmap" ("data", "cols", "height") [] =>
+        "Intensity grid. data:[number]; cols = grid width.";
     "Table" ("columns", "rows") [] => "Column-aligned grid.";
     "List" ("items", "ordered", "bulletChar") [] => "Bulleted/ordered list.";
     "ListItem" ("title", "subtitle", "leading", "trailing") [] => "One list row.";
@@ -394,8 +408,10 @@ mod tests {
     fn json_render_catalog_and_prompt_are_complete() {
         let catalog = json_render_catalog();
         let map = catalog.as_object().unwrap();
-        // The upstream Ink standard set (Box…Markdown).
-        assert_eq!(map.len(), 27, "the standard component set");
+        // The upstream Ink standard set (Box…Markdown) + the rstui
+        // chart extension (Line/Area/Pie/Scatter/Histogram/StackedBar/
+        // Heatmap added alongside the original BarChart/Sparkline).
+        assert_eq!(map.len(), 34, "the standard component set + charts");
         assert!(map.contains_key("Box") && map.contains_key("Markdown"));
         assert!(
             catalog["TextInput"]["events"]
@@ -441,8 +457,13 @@ mod tests {
         // rather than their own total "needs data" placeholder.
         for name in JSON_RENDER_COMPONENT_NAMES {
             let props = match *name {
-                "BarChart" => json!({ "data": [{ "label": "a", "value": 1 }] }),
-                "Sparkline" => json!({ "data": [1, 2, 3] }),
+                "BarChart" | "PieChart" | "Histogram" => {
+                    json!({ "data": [{ "label": "a", "value": 1 }] })
+                }
+                "Sparkline" | "Heatmap" => json!({ "data": [1, 2, 3] }),
+                "LineChart" | "AreaChart" | "ScatterPlot" | "StackedBarChart" => json!({
+                    "series": [{ "name": "s", "points": [[0, 1], [1, 2]] }]
+                }),
                 "Table" => json!({
                     "columns": [{ "header": "H", "key": "k" }],
                     "rows": [{ "k": "v" }]
