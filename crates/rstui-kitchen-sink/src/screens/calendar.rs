@@ -809,6 +809,18 @@ impl State {
             self.drag = Some(Drag { id, at: pos });
             return ScreenOutcome::consumed();
         }
+        // Year shows no event chips to grab, so a press on the year grid
+        // picks up the currently-selected appointment — the drag ghost then
+        // aligns to the mini-month under the pointer (the screen models one
+        // month, so the release is a no-op move, by design).
+        if self.view_mode == YEAR && body.contains(pos) {
+            if let Some(id) = self.selected_event {
+                if self.index_of(id).is_some() {
+                    self.drag = Some(Drag { id, at: pos });
+                    return ScreenOutcome::consumed();
+                }
+            }
+        }
         self.drag = None;
         ScreenOutcome::ignored()
     }
@@ -1303,25 +1315,50 @@ impl State {
         if let Some(d) = self.drag {
             if let Some(i) = self.index_of(d.id) {
                 let label = self.events[i].title.clone();
-                let aligned = if self.view_mode == DAY {
-                    // Same block inset as the rendered day widget (geometry
-                    // depends only on borders/padding, not title/colour).
-                    let dv = self
-                        .day_widget(&evs)
-                        .block(Block::bordered().border_type(BorderType::Rounded));
-                    dv.minute_at(body, d.at).and_then(|start| {
-                        let dur = evs
-                            .iter()
-                            .find(|e| e.id() == d.id)
-                            .map_or(60, |e| e.duration_min())
-                            .max(15);
-                        let end = start.saturating_add(dur).min(MINUTES_PER_DAY);
-                        let r = dv.slot_rect(body, start, end);
-                        (!r.is_empty()).then_some(r)
-                    })
-                } else {
-                    None
+                // Same block inset as the rendered view (inner geometry
+                // depends only on borders/padding, not title/colour), so
+                // every view's ghost is the SAME-SIZE, grid-aligned target
+                // it will land on — a time block (Day/Week), the day cell
+                // (Month), a mini-month (Year), or a list row (Agenda) —
+                // never a floating box. Year is one modelled month so its
+                // drop is a no-op, but the aligned cue is still shown.
+                let gblk = || Block::bordered().border_type(BorderType::Rounded);
+                let dur = || {
+                    evs.iter()
+                        .find(|e| e.id() == d.id)
+                        .map_or(60, |e| e.duration_min())
+                        .max(15)
                 };
+                let aligned = match self.view_mode {
+                    DAY => {
+                        let dv = self.day_widget(&evs).block(gblk());
+                        dv.minute_at(body, d.at).map(|s| {
+                            let e = s.saturating_add(dur()).min(MINUTES_PER_DAY);
+                            dv.slot_rect(body, s, e)
+                        })
+                    }
+                    WEEK => {
+                        let wv = self.week_widget(&evs).block(gblk());
+                        wv.slot_at(body, d.at).map(|(day, s)| {
+                            let e = s.saturating_add(dur()).min(MINUTES_PER_DAY);
+                            wv.slot_rect(body, day, s, e)
+                        })
+                    }
+                    MONTH => {
+                        let mv = self.month_widget(&evs).block(gblk());
+                        mv.day_at(body, d.at).map(|dom| mv.cell_rect(body, dom))
+                    }
+                    YEAR => {
+                        let yv = self.year_widget(&evs).block(gblk());
+                        yv.month_at(body, d.at).map(|m| yv.cell_rect(body, m))
+                    }
+                    AGENDA => {
+                        let r = self.agenda_widget(&evs).block(gblk()).row_rect(body, d.at);
+                        (!r.is_empty()).then_some(r)
+                    }
+                    _ => None,
+                }
+                .filter(|r| !r.is_empty());
                 let grect = aligned.unwrap_or_else(|| {
                     let w = (label.chars().count() as u16 + 4).min(28).min(area.width);
                     let h = 3u16.min(area.height);

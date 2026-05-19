@@ -338,6 +338,39 @@ impl<'a> MonthView<'a> {
         }
     }
 
+    /// The rectangle of the day cell for day-of-month `dom` — the
+    /// **same-size, grid-aligned** target a drag ghost should match so the
+    /// user sees exactly which day the event will move to and that it snaps
+    /// to that cell. A pure function of `area` and the caller-owned config,
+    /// the exact inverse of [`day_at`](Self::day_at) (same private `cell_of`
+    /// layout the render stamps, so the ghost and the paint cannot
+    /// disagree); empty when `dom` is outside the month or
+    /// the area is too small for that cell (never a panic).
+    #[must_use]
+    pub fn cell_rect(&self, area: Rect, dom: u32) -> Rect {
+        if area.is_empty() {
+            return Rect::ZERO;
+        }
+        let inner = self.grid_area(area);
+        let Some(geo) = Geometry::new(inner) else {
+            return Rect::ZERO;
+        };
+        let (_, day_count, _, col_of_first) = self.skeleton();
+        if dom < 1 || dom > day_count {
+            return Rect::ZERO;
+        }
+        let (week, col) = Self::cell_of(dom, col_of_first);
+        if week >= geo.weeks || col >= 7 {
+            return Rect::ZERO;
+        }
+        Rect::new(
+            inner.left() + col * geo.cell_w,
+            geo.grid_top + week * geo.cell_h,
+            geo.cell_w,
+            geo.cell_h,
+        )
+    }
+
     /// The [`CalendarEvent::id`] of the chip or spanning bar under `pos`, or
     /// `None`. Resolves through the *same* per-cell row layout the render
     /// stamps — a click and the paint share one geometry, so they cannot
@@ -1054,5 +1087,25 @@ mod tests {
         let area = Rect::new(0, 0, 35, 20);
         assert_eq!(mv.event_at(area, Position::new(26, 3)), None);
         assert_eq!(mv.event_at(area, Position::new(1, 3)), None);
+    }
+
+    #[test]
+    fn cell_rect_is_the_cell_day_at_inverts_to() {
+        let mv = MonthView::new(2026, 5, 31, 5);
+        let area = Rect::new(0, 0, 35, 20);
+        let r = mv.cell_rect(area, 14);
+        assert!(!r.is_empty());
+        // Every interior point of the day-14 cell maps back to day 14 — the
+        // ghost cell and the click hit-test share one geometry.
+        for dx in [0u16, r.width / 2, r.width.saturating_sub(1)] {
+            for dy in [0u16, r.height / 2, r.height.saturating_sub(1)] {
+                let p = Position::new(r.x + dx, r.y + dy);
+                assert_eq!(mv.day_at(area, p), Some(14), "at {p:?}");
+            }
+        }
+        // Out-of-month / zero day → empty (total, never a panic).
+        assert!(mv.cell_rect(area, 99).is_empty());
+        assert!(mv.cell_rect(area, 0).is_empty());
+        assert!(mv.cell_rect(Rect::new(0, 0, 0, 0), 14).is_empty());
     }
 }

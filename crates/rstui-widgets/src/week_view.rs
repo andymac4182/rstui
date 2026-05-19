@@ -342,6 +342,45 @@ impl<'a> WeekView<'a> {
         Some((self.start_day + col, snapped))
     }
 
+    /// The **full-column-width** rectangle a timed `[start_min, end_min]`
+    /// event on caller-axis `day` occupies — the slot a drag ghost should
+    /// match so it is the same size as the placed block and the user sees
+    /// exactly which day column and hour rows it lands on. A pure function of
+    /// `area` and the window, mirroring [`body`](Self::body) /
+    /// [`slot_at`](Self::slot_at) and the identical `render` row mapping (the
+    /// ghost spans the whole day column, not a tiled lane); empty when `day`
+    /// is outside the visible columns, the span is wholly outside the window,
+    /// or the area is too small (never a panic).
+    #[must_use]
+    pub fn slot_rect(&self, area: Rect, day: i64, start_min: u16, end_min: u16) -> Rect {
+        let body = self.body(area);
+        if body.is_empty() {
+            return Rect::ZERO;
+        }
+        let count = u32::from(self.clamped_count());
+        let col = day - self.start_day;
+        if col < 0 || col as u32 >= count {
+            return Rect::ZERO;
+        }
+        let col = col as u32;
+        let (win_lo, win_hi) = self.window();
+        let (win_lo, win_hi) = (u32::from(win_lo), u32::from(win_hi));
+        let win_min = win_hi - win_lo;
+        let s = u32::from(start_min).clamp(win_lo, win_hi);
+        let e = u32::from(end_min).clamp(win_lo, win_hi);
+        if e <= win_lo || s >= win_hi || e <= s {
+            return Rect::ZERO;
+        }
+        let w = u32::from(body.width);
+        let h = u32::from(body.height);
+        let lx0 = u32::from(body.left()) + col * w / count;
+        let lx1 = u32::from(body.left()) + (col + 1) * w / count;
+        let y0 = u32::from(body.top()) + (s - win_lo) * h / win_min;
+        let y1 = (u32::from(body.top()) + (e - win_lo) * h / win_min).max(y0 + 1);
+        let y1 = y1.min(u32::from(body.bottom()));
+        Rect::new(lx0 as u16, y0 as u16, (lx1 - lx0) as u16, (y1 - y0) as u16)
+    }
+
     /// The caller-owned id of the timed event whose block is under `pos`, or
     /// `None`. Mirrors `render`'s placement (column → tiled lane → minute
     /// span) exactly, so a click resolves to the same block the user sees.
@@ -1039,5 +1078,28 @@ mod tests {
         for cell in buf.cells() {
             assert_ne!(cell.bg, Color::Red);
         }
+    }
+
+    #[test]
+    fn slot_rect_is_a_full_column_block_aligned_with_slot_at() {
+        // A 3-day week, window 08..18, generous area.
+        let wv = WeekView::new(10, 3).hours(8, 18);
+        let area = Rect::new(0, 0, 39, 20);
+        let body = wv.body(area);
+        assert!(!body.is_empty());
+        // Day 11 (column 1), 09:00–10:00.
+        let r = wv.slot_rect(area, 11, 9 * 60, 10 * 60);
+        assert!(!r.is_empty());
+        // Full day-column width (≈ body.width / 3), not a tiled lane.
+        assert!(r.width >= body.width / 3 && r.width <= body.width / 3 + 1);
+        // The slot aligns with where slot_at maps its own middle back to.
+        let mid = Position::new(r.x + r.width / 2, r.y + r.height / 2);
+        let (day, min) = wv.slot_at(area, mid).expect("inside the grid");
+        assert_eq!(day, 11);
+        assert!((9 * 60..10 * 60).contains(&min));
+        // A day outside the visible columns, and a span before the window,
+        // both collapse to empty (total, never a panic).
+        assert!(wv.slot_rect(area, 99, 9 * 60, 10 * 60).is_empty());
+        assert!(wv.slot_rect(area, 11, 0, 30).is_empty());
     }
 }

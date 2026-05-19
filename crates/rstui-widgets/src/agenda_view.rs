@@ -306,6 +306,30 @@ impl<'a> AgendaView<'a> {
     pub fn row_count(&self) -> usize {
         self.rows().len()
     }
+
+    /// The one-row, full-inner-width rectangle of the populated list row
+    /// under `pos` — the **same-size, aligned** band a drag ghost snaps to so
+    /// the user sees which row position the event points at, instead of a
+    /// floating box. A pure function of `area`, the framing
+    /// [`block`](Self::block) and the caller-owned [`offset`](Self::offset)
+    /// (the same inner/row arithmetic [`event_at`](Self::event_at) uses);
+    /// empty over the blank pane past the last row, the empty-state text, or
+    /// outside the list (never a panic).
+    #[must_use]
+    pub fn row_rect(&self, area: Rect, pos: Position) -> Rect {
+        let inner = match &self.block {
+            Some(b) => b.inner(area),
+            None => area,
+        };
+        if inner.is_empty() || !inner.contains(pos) {
+            return Rect::ZERO;
+        }
+        let row_idx = self.offset + usize::from(pos.y - inner.top());
+        if row_idx >= self.rows().len() {
+            return Rect::ZERO;
+        }
+        Rect::new(inner.left(), pos.y, inner.width, 1)
+    }
 }
 
 /// Writes `text` left-to-right from `x0` on row `y`, clipped at `right`.
@@ -703,5 +727,28 @@ mod tests {
             .selected(Some(1))
             .render(Rect::new(0, 0, 0, 0), &mut buf);
         assert!(buf.cells().iter().all(|c| c.symbol == ' '));
+    }
+
+    #[test]
+    fn row_rect_is_a_one_row_band_at_a_populated_row() {
+        let ev = sample();
+        let v = AgendaView::new(&ev);
+        let area = Rect::new(0, 0, 30, 12);
+        let n = v.row_count();
+        assert!(n >= 2);
+        // A populated row: a full-inner-width, one-row-tall aligned band at
+        // the pointer's row (the ghost is the same height as a list row).
+        let r = v.row_rect(area, Position::new(5, area.y + 1));
+        assert_eq!((r.x, r.y, r.width, r.height), (0, area.y + 1, 30, 1));
+        // The blank pane past the last row, and a point outside the list,
+        // both collapse to empty (total, never a panic).
+        assert!(
+            v.row_rect(area, Position::new(5, area.y + n as u16 + 1))
+                .is_empty()
+        );
+        assert!(
+            v.row_rect(area, Position::new(5, area.bottom() + 3))
+                .is_empty()
+        );
     }
 }

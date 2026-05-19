@@ -84,6 +84,7 @@ MonthView::new(year: i32, month: u32, day_count: u32, weekday_of_first: u32)
 .block(Block) .style(Style) .header_style(Style) .weekday_style(Style)
 .selected_style(Style) .today_style(Style) .grid_style(Style)
 .day_at(area: Rect, pos: Position) -> Option<u32>
+.cell_rect(area: Rect, dom: u32) -> Rect            // the day cell — same-size drag-ghost target
 .event_at(area: Rect, pos: Position) -> Option<u64>
 ```
 
@@ -114,6 +115,7 @@ WeekView::new(start_day: i64, day_count: u16)
 .header_style(Style) .all_day_style(Style) .now_style(Style) .selected_style(Style)
 .body(area: Rect) -> Rect .all_day_band(area: Rect) -> Rect
 .slot_at(area: Rect, pos: Position) -> Option<(i64, u16)>   // (day, snapped minute)
+.slot_rect(area: Rect, day: i64, start_min: u16, end_min: u16) -> Rect  // same-size drag-ghost slot
 .event_at(area: Rect, pos: Position) -> Option<u64>
 ```
 
@@ -173,6 +175,7 @@ AgendaView::new(events: &[CalendarEvent])
 .empty_text(impl Into<Cow<str>>)
 .block(Block) .style(Style) .day_header_style(Style) .time_style(Style) .selected_style(Style)
 .event_at(area: Rect, pos: Position) -> Option<u64>
+.row_rect(area: Rect, pos: Position) -> Rect   // the 1-row band — same-size drag-ghost target
 .row_count() -> usize                 // total flattened rows, to clamp `offset`
 ```
 
