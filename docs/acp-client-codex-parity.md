@@ -48,7 +48,7 @@ out of scope per above.
 | Plugin extension surface | Have (8 reference plugins) | — |
 | ~~Input history (↑/↓ recall, persisted)~~ | **Done** (iter 6) | W1-1 ✅ |
 | ~~`/copy` last response to clipboard~~ | **Done** (iter 6) | W1-2 ✅ |
-| **Terminal title** (OSC 0/2: agent · status) | **Gap** | W1-3 |
+| ~~Terminal title (OSC 2: agent · status)~~ | **Done** (iter 6) | W1-3 ✅ |
 | **Bell on turn completion** | **Gap** | W1-4 |
 | **`/init`, `/review` canned prompts** | **Gap** | W1-5 |
 | **Full-screen transcript pager** (Codex `/transcript`) | **Gap** (inline scroll only) | W1-6 |
@@ -81,8 +81,10 @@ docs-updated slice, merged back under the serialized lock
    the system clipboard via OSC 52 (`src/clipboard.rs`, a faithful port of
    the kitchen-sink helper; dependency-free, terminal-gated, best-effort with
    a system-line breadcrumb).
-3. **W1-3 Terminal title** — emit OSC 2 (`agent · status`) so the tab/window
-   reflects session state; restored on exit.
+3. **W1-3 Terminal title** ✅ *(landed, iter 6)* — OSC 2 reflecting the
+   session (`src/title.rs`: pure `session_title` + sanitize, unit-tested;
+   terminal-gated emit; cleared on exit; `● … approval needed` attention
+   cue). Emitted only on change, from the single `update` interception.
 4. **W1-4 Bell** — terminal bell on `TurnEnded` (configurable off), so a
    backgrounded terminal signals "your turn".
 5. **W1-5 `/init` + `/review`** — two built-ins that send Codex's canonical

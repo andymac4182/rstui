@@ -29,6 +29,7 @@ pub mod input;
 pub mod plugin;
 pub mod registry;
 pub mod theme;
+pub(crate) mod title;
 pub mod ui;
 
 use std::io::{self, Stdout};

@@ -321,6 +321,9 @@ pub struct ChatApp {
     history: InputHistory,
     status_line: String,
     agent_label: String,
+    /// The last terminal title emitted via OSC 2; the next refresh only
+    /// emits when the derived title differs (no per-frame escape spam).
+    last_title: String,
     streaming: bool,
     spinner: usize,
     driver: Option<DriverHandle>,
@@ -397,6 +400,7 @@ impl ChatApp {
             history: InputHistory::load(),
             status_line: "starting…".to_owned(),
             agent_label: String::new(),
+            last_title: String::new(),
             streaming: false,
             spinner: 0,
             driver: None,
@@ -484,6 +488,13 @@ impl ChatApp {
     #[must_use]
     pub fn status_line(&self) -> &str {
         &self.status_line
+    }
+    /// The terminal title last emitted via OSC 2 (the pure `session_title`
+    /// of the current session state); empty before the first refresh.
+    /// Exposed so `Harness` tests pin the title without a terminal.
+    #[must_use]
+    pub fn terminal_title(&self) -> &str {
+        &self.last_title
     }
     /// The live render-rate label (`"NNN fps"`, or `"--- fps"` before the
     /// first usable sample / under the synchronous test harness).
@@ -742,6 +753,23 @@ impl ChatApp {
         });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
+        }
+    }
+
+    /// Recomputes the session terminal title and emits it via OSC 2 *only*
+    /// when it changed since the last emit (best-effort, terminal-gated, so a
+    /// no-op under `cargo test`). The `last_title` is still updated headless
+    /// so tests can assert it.
+    fn refresh_terminal_title(&mut self) {
+        let title = crate::title::session_title(
+            self.screen,
+            &self.agent_label,
+            self.streaming,
+            self.pending_permission.is_some(),
+        );
+        if title != self.last_title {
+            crate::title::set(&title);
+            self.last_title = title;
         }
     }
 
@@ -1156,6 +1184,9 @@ impl ChatApp {
 
     fn begin_quit(&mut self) -> Cmd<Msg> {
         self.quitting = true;
+        // Hand the tab title back to the shell rather than leaving a stale
+        // "working…" on exit (best-effort, terminal-gated).
+        crate::title::clear();
         if let Some(driver) = &self.driver {
             driver.send(DriverCmd::Shutdown);
         }
@@ -1871,6 +1902,9 @@ impl App for ChatApp {
         // refreshing the caller-owned markdown cache here is the single
         // total interception point — no per-mutation-site bookkeeping.
         self.refresh_md_cache();
+        // Same total-interception point keeps the terminal title in step
+        // with the session (emits only on an actual change).
+        self.refresh_terminal_title();
         cmd
     }
 

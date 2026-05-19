@@ -1180,3 +1180,34 @@ fn slash_copy_targets_the_last_agent_answer() {
     );
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W1-3: terminal title (OSC 2) tracks the session ----
+
+/// The OSC 2 emit is inert under `cargo test` (no terminal), but the derived
+/// title is tracked headlessly: it must follow the screen and whether the
+/// session needs the user (approval), so a backgrounded tab is informative.
+#[test]
+fn terminal_title_follows_the_session_state() {
+    // Picker screen → "pick an agent".
+    let mut h = booted(100, 30);
+    h.message(Msg::RegistryLoaded(Box::new(Registry::offline_fallback())));
+    assert_eq!(h.app().screen(), Screen::Picker);
+    assert_eq!(h.app().terminal_title(), "rstui-acp — pick an agent");
+
+    // Connected chat (no agent_command set in headless tests → "agent").
+    let mut h = chatting(100, 30);
+    assert_eq!(h.app().terminal_title(), "rstui-acp — agent");
+
+    // A pending permission flips the title to the attention form.
+    h.message(Msg::Acp(AcpEvent::Permission {
+        id: 1,
+        title: "Run `ls`".to_owned(),
+        options: vec![],
+    }));
+    assert_eq!(
+        h.app().terminal_title(),
+        "● rstui-acp — agent — approval needed",
+        "an open approval is surfaced in the tab title"
+    );
+    assert!(h.is_running());
+}
