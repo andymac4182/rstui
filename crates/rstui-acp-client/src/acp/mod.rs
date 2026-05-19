@@ -32,4 +32,5 @@ pub use events::{
 };
 pub use richui::{
     RichUiFormat, RichUiPayload, render_capability_meta, render_source as render_rich_ui,
+    split_message as split_rich_ui,
 };

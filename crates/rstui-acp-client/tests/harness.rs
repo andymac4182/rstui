@@ -1188,6 +1188,46 @@ fn agent_json_render_document_renders_in_the_transcript() {
     assert!(h.is_running());
 }
 
+#[test]
+fn a_streamed_prose_wrapped_agent_document_renders_at_turn_end() {
+    // The real-agent path the bug report hit: the reply is streamed
+    // token-by-token, wrapped in prose, across many `agent_message_chunk`
+    // events. Per-chunk detection cannot see it (each chunk is an
+    // incomplete fragment); it must be detected on the *assembled*
+    // message at turn end and split into [prose] [rendered UI] [prose].
+    let mut h = chatting(120, 40);
+    for chunk in [
+        "Here is your dashboard:\n\n```json-render\n",
+        "{\"root\":\"c\",\"elements\":{\"c\":{\"type\":\"Car",
+        "d\",\"props\":{\"title\":\"Sales\"},\"children\":[\"t\"]},",
+        "\"t\":{\"type\":\"Text\",\"props\":{\"text\":\"Revenue up 12%\"}}}}",
+        "\n```\n\nHope that helps!",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    // Mid-stream it is still raw text (the fence is not closed yet).
+    assert!(
+        h.snapshot().contains("\"root\""),
+        "before turn end the partial doc is raw text"
+    );
+
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("Revenue up 12%"),
+        "the streamed json-render doc is RENDERED at turn end:\n{screen}"
+    );
+    assert!(
+        screen.contains("Here is your dashboard:") && screen.contains("Hope that helps!"),
+        "the surrounding prose is kept (split, not discarded):\n{screen}"
+    );
+    assert!(
+        !screen.contains("\"elements\""),
+        "the raw JSON is no longer shown as text (it is the rendered UI):\n{screen}"
+    );
+    assert!(h.is_running());
+}
+
 // ---- Codex-parity W1-1: composer input history (↑/↓ recall) ----
 
 fn composer_text(h: &Harness<ChatApp>) -> String {

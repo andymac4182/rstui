@@ -1376,6 +1376,54 @@ impl ChatApp {
         }
     }
 
+    /// At turn end, re-scan the just-finalized agent message for an
+    /// embedded A2UI / json-render document. A real agent streams the
+    /// document wrapped in prose across many `agent_message_chunk`s, so
+    /// it accumulated into one `Role::Agent` entry and per-chunk
+    /// detection (each chunk an incomplete fragment) never fired — it
+    /// rendered as raw text. Splitting the *assembled* message into
+    /// `[prose] [rendered UI] [prose]` is what makes a real agent's
+    /// reply actually render. No-op if the last entry is not a finalized
+    /// agent message or carries no document (so prose-only replies and
+    /// the single-shot path that already produced a `Role::RichUi`
+    /// entry are untouched).
+    fn finalize_rich_ui(&mut self) {
+        let Some(last) = self.transcript.last() else {
+            return;
+        };
+        if last.role != Role::Agent {
+            return;
+        }
+        let Some((before, payload, after)) = crate::acp::split_rich_ui(&last.text) else {
+            return;
+        };
+        let idx = self.transcript.len() - 1;
+        if before.is_empty() {
+            self.transcript.remove(idx);
+        } else {
+            let entry = &mut self.transcript[idx];
+            entry.text = before;
+            entry.open = false;
+            entry.md_cache = None;
+        }
+        self.transcript.push(Entry {
+            role: Role::RichUi,
+            text: payload.source,
+            open: false,
+            md_cache: None,
+        });
+        if !after.is_empty() {
+            self.transcript.push(Entry {
+                role: Role::Agent,
+                text: after,
+                open: false,
+                md_cache: None,
+            });
+        }
+        self.follow = true;
+        self.cap_transcript();
+    }
+
     /// UI-1/MD-1: populate the caller-owned markdown parse cache.
     ///
     /// Called once at the end of every `update`. **Only the last transcript
@@ -3158,6 +3206,10 @@ impl ChatApp {
             }
             AcpEvent::TurnEnded(reason) => {
                 self.close_open_entry();
+                // Re-scan the assembled agent message: a streamed,
+                // prose-wrapped UI document is detected here (per-chunk
+                // detection cannot see it) and rendered, not shown raw.
+                self.finalize_rich_ui();
                 self.streaming = false;
                 self.status_line = format!("turn ended: {reason}");
                 if self.bell_enabled {

@@ -9,9 +9,15 @@
 //! classifies it and [`render_lines`] projects it through
 //! [`rstui_jsonui`] into transcript [`Line`]s.
 //!
-//! Detection is **conservative and total**: it only fires on a complete,
-//! parseable document (a half-streamed token chunk fails the JSON parse
-//! and falls through to normal text), and it never panics. Rendering is
+//! Detection is **conservative and total** and never panics. A real
+//! agent streams the document wrapped in prose across many
+//! `agent_message_chunk`s, so per-chunk [`detect`] (each chunk an
+//! incomplete fragment) cannot see it; the reducer instead runs
+//! [`split_message`] on the **assembled** message at turn end, finding
+//! an embedded fenced ` ```json-render ` / ` ```a2ui ` block inside
+//! ordinary prose and splitting it into `[prose] [rendered UI]
+//! [prose]`. A message with no document is left as normal text.
+//! Rendering is
 //! a pure projection (ADR 0012): the parsed document is re-derived from
 //! the stored source every frame — there is no retained UI tree — so it
 //! composes with the existing immediate-mode transcript with no new
@@ -43,15 +49,41 @@ pub struct RichUiPayload {
     pub source: String,
 }
 
-/// Strips a fenced ` ```<tag> … ``` ` wrapper, returning `(tag, body)`
-/// when `text` is exactly one fenced block (the way an agent embeds a UI
-/// doc in a chat message), else `None`.
-fn fenced_block(text: &str) -> Option<(String, &str)> {
-    let trimmed = text.trim();
-    let rest = trimmed.strip_prefix("```")?;
-    let body = rest.strip_suffix("```")?;
-    let (info, content) = body.split_once('\n')?;
-    Some((info.trim().to_ascii_lowercase(), content))
+/// The recognised fenced-block info tags that carry a UI document.
+fn fence_format(tag: &str) -> Option<RichUiFormat> {
+    match tag.trim().to_ascii_lowercase().as_str() {
+        "a2ui" => Some(RichUiFormat::A2ui),
+        "json-render" | "jsonrender" | "jsonui" | "spec" => Some(RichUiFormat::JsonRender),
+        _ => None,
+    }
+}
+
+/// Finds the **first** fenced ` ```<tag> … ``` ` UI-document block
+/// embedded anywhere in `text`, returning `(format, body, fence-byte-
+/// range)`. A real agent wraps the block in prose and streams it
+/// token-by-token (e.g. `"Here is your dashboard:\n```json-render\n…\n```"`),
+/// so requiring the *whole* message to be exactly one fence — the
+/// original bug — meant this never fired in practice. Non-UI fences
+/// (` ```rust ` …) are skipped, not matched. ASCII anchors only, so
+/// byte slicing stays on char boundaries; total.
+fn find_fenced_doc(text: &str) -> Option<(RichUiFormat, String, std::ops::Range<usize>)> {
+    let mut search = 0;
+    while let Some(rel) = text[search..].find("```") {
+        let open = search + rel;
+        let after_ticks = open + 3;
+        let line_end = after_ticks + text[after_ticks..].find('\n')?;
+        let body_start = line_end + 1;
+        let close = body_start + text[body_start..].find("```")?;
+        if let Some(format) = fence_format(&text[after_ticks..line_end]) {
+            return Some((
+                format,
+                text[body_start..close].to_owned(),
+                open..(close + 3).min(text.len()),
+            ));
+        }
+        search = close + 3; // skip this whole (non-UI) fence, keep scanning
+    }
+    None
 }
 
 /// Classifies a content block as an A2UI / json-render document, or
@@ -60,19 +92,13 @@ fn fenced_block(text: &str) -> Option<(String, &str)> {
 /// unaffected.
 #[must_use]
 pub fn detect(text: &str) -> Option<RichUiPayload> {
-    // An explicit fenced block is the unambiguous signal.
-    if let Some((tag, body)) = fenced_block(text) {
-        let format = match tag.as_str() {
-            "a2ui" => Some(RichUiFormat::A2ui),
-            "json-render" | "jsonrender" | "jsonui" | "spec" => Some(RichUiFormat::JsonRender),
-            _ => None,
-        };
-        if let Some(format) = format {
-            return Some(RichUiPayload {
-                format,
-                source: body.to_owned(),
-            });
-        }
+    // An explicit fenced block is the unambiguous signal — found even
+    // when the agent wrapped it in prose.
+    if let Some((format, body, _)) = find_fenced_doc(text) {
+        return Some(RichUiPayload {
+            format,
+            source: body,
+        });
     }
 
     let trimmed = text.trim();
@@ -124,6 +150,34 @@ pub fn detect(text: &str) -> Option<RichUiPayload> {
         });
     }
     None
+}
+
+/// Splits an **assembled** (post-stream) agent message into
+/// `(before, payload, after)` — the prose before the embedded UI
+/// document, the document, and the prose after — or `None` when there
+/// is no document.
+///
+/// This is what the reducer runs at *turn end* on the full assembled
+/// agent message. Per-chunk `detect` cannot see a streamed document
+/// (a real agent emits `"Here is your dashboard:\n```json-render\n…"`
+/// across many `agent_message_chunk`s, each an incomplete fragment), so
+/// the streamed reply rendered as raw text. Scanning the assembled
+/// message for an embedded fence — keeping the surrounding prose —
+/// fixes that. A whole-message bare doc (single-shot, no prose) maps to
+/// `("", payload, "")`.
+#[must_use]
+pub fn split_message(text: &str) -> Option<(String, RichUiPayload, String)> {
+    if let Some((format, body, range)) = find_fenced_doc(text) {
+        return Some((
+            text[..range.start].trim().to_owned(),
+            RichUiPayload {
+                format,
+                source: body,
+            },
+            text[range.end..].trim().to_owned(),
+        ));
+    }
+    detect(text).map(|payload| (String::new(), payload, String::new()))
 }
 
 /// Projects a detected payload to transcript [`Line`]s, `width` columns
@@ -241,6 +295,36 @@ mod tests {
             detect(fenced).map(|p| p.format),
             Some(RichUiFormat::JsonRender)
         );
+    }
+
+    #[test]
+    fn split_message_extracts_an_embedded_fenced_doc_from_prose() {
+        // What a real agent actually sends: prose, the fenced doc, prose.
+        let msg = "Here is your dashboard:\n\n\
+                   ```json-render\n\
+                   {\"root\":\"a\",\"elements\":{\"a\":{\"type\":\"Text\",\
+                   \"props\":{\"text\":\"hi\"}}}}\n\
+                   ```\n\nHope that helps!";
+        let (before, payload, after) = split_message(msg).expect("embedded doc found");
+        assert_eq!(before, "Here is your dashboard:");
+        assert_eq!(after, "Hope that helps!");
+        assert_eq!(payload.format, RichUiFormat::JsonRender);
+        assert!(payload.source.contains("\"root\":\"a\""));
+        // The old whole-string-only `fenced_block` would have missed this.
+
+        // A non-UI fence is skipped; a later UI fence still matches.
+        let mixed = "```rust\nfn main() {}\n```\nand:\n```a2ui\n\
+                     {\"version\":\"v0.10\",\"createSurface\":{}}\n```";
+        let (_, p, _) = split_message(mixed).expect("a2ui fence after a rust fence");
+        assert_eq!(p.format, RichUiFormat::A2ui);
+
+        // A whole-message bare doc (single-shot, no prose) → no prose.
+        let bare = r#"{"root":"a","elements":{}}"#;
+        let (b, _, a) = split_message(bare).expect("bare doc");
+        assert!(b.is_empty() && a.is_empty());
+
+        // Prose with no document is left alone.
+        assert!(split_message("just a normal answer, no UI here").is_none());
     }
 
     #[test]
