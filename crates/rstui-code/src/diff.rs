@@ -289,6 +289,7 @@ pub struct Diff<'a> {
     tree_sitter: bool,
     language: Language,
     tab_width: usize,
+    min_number_width: usize,
 }
 
 impl<'a> Diff<'a> {
@@ -306,6 +307,7 @@ impl<'a> Diff<'a> {
             tree_sitter: false,
             language: Language::Unknown,
             tab_width: 4,
+            min_number_width: 0,
         }
     }
 
@@ -496,6 +498,21 @@ impl<'a> Diff<'a> {
         self
     }
 
+    /// Floors the line-number column to at least `w` digits wide (default
+    /// `0` = exactly the digit count of the largest line number, the
+    /// historical render — **byte-identical**).
+    ///
+    /// Parity with [`LineNumberGutter::min_number_width`](crate::LineNumberGutter::min_number_width):
+    /// an app that shows a code editor *and* this diff (e.g. `git-review`)
+    /// can set the same floor on both so the gutter's left edge does not
+    /// shift when switching panes. Both number columns of a side-by-side /
+    /// the old+new columns of a unified diff use the floor.
+    #[must_use]
+    pub fn min_number_width(mut self, w: u16) -> Self {
+        self.min_number_width = w as usize;
+        self
+    }
+
     /// Parses the source and lays it out to display rows for a content area
     /// `width` columns wide, honouring the active [`DiffLayout`]. Public so a
     /// host can measure a patch (its row count) for scroll math or a
@@ -564,6 +581,7 @@ impl<'a> Diff<'a> {
             // A 0 tab width would make a tab a zero-width column; clamp to 1
             // so the render path stays total.
             tab_width: self.tab_width.max(1),
+            min_number_width: self.min_number_width,
             tier1: tier1.as_ref(),
         };
         match self.layout {
@@ -779,6 +797,9 @@ struct RenderOpts<'t> {
     /// Cells a literal tab expands to, advancing to the next multiple (gap
     /// D); already clamped to `>= 1`.
     tab_width: usize,
+    /// Minimum line-number column width (`Diff::min_number_width`); `0` =
+    /// exactly the digit count (byte-identical historical render).
+    min_number_width: usize,
     /// The precomputed per-file Tier-1 (tree-sitter) overlay map, when
     /// [`Diff::tree_sitter`] is on; `None` ⇒ Tier-0 only. Resolved by the
     /// layout callers (which track the current file path + each row's side /
@@ -1240,7 +1261,7 @@ fn layout_rows(
     opts: &RenderOpts<'_>,
     row_cap: usize,
 ) -> Vec<Line<'static>> {
-    let num_w = number_width(rows);
+    let num_w = number_width(rows).max(opts.min_number_width);
     // The widest body sign gutter: 1 for ordinary hunks, the parent count for
     // a combined merge hunk. Sized once so every body row's content aligns.
     let sign_w = sign_width(rows);
@@ -1651,7 +1672,7 @@ fn layout_rows_split(
     opts: &RenderOpts<'_>,
     row_cap: usize,
 ) -> Vec<Line<'static>> {
-    let num_w = number_width(rows);
+    let num_w = number_width(rows).max(opts.min_number_width);
     let sign_w = sign_width(rows);
 
     // Per side: `<num_w> <sign_w> ` gutter + at least one content column. Two
@@ -3402,5 +3423,34 @@ HcmV?d00001
         assert_eq!(ss.type_, t.syntax_type);
         assert_eq!(ss.namespace, t.syntax_namespace);
         assert_eq!(ss.keyword, t.syntax_keyword); // legacy still mapped
+    }
+
+    #[test]
+    fn min_number_width_floors_the_gutter_and_default_is_byte_identical() {
+        let patch = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+        let (w, h) = (40, 6);
+        let bare = lines(Diff::new(patch).syntax(true), w, h);
+        let zero = lines(Diff::new(patch).syntax(true).min_number_width(0), w, h);
+        let floored = lines(Diff::new(patch).syntax(true).min_number_width(6), w, h);
+        assert_eq!(
+            bare, zero,
+            "min_number_width(0) must be the byte-identical historical render"
+        );
+        assert_ne!(
+            bare, floored,
+            "a positive min_number_width must widen the number column"
+        );
+        // The invariant a >=6-wide right-aligned old+new gutter guarantees:
+        // a body row's single-digit line number is padded far right, so
+        // column 0 is never a digit (header/meta rows — `─…`, `@@…` — are
+        // full-width and exempt). This is the parity the editor's
+        // `LineNumberGutter` `min_number_width` gives, now on `Diff` too.
+        for row in floored.lines() {
+            let c0 = row.chars().next().unwrap_or(' ');
+            assert!(
+                !c0.is_ascii_digit(),
+                "wide gutter ⇒ no row starts with a digit in col 0: {row:?}"
+            );
+        }
     }
 }

@@ -1770,7 +1770,12 @@ impl GitReview {
                 // built-in tinter.
                 .language(self.diff_lang())
                 .scroll(self.diff_scroll)
-                .col(self.diff_col);
+                .col(self.diff_col)
+                // Same gutter floor as the edit-mode `LineNumberGutter`
+                // (`.min_number_width(3)`), so the line-number column does
+                // not shift width when switching between the editor and the
+                // review pane.
+                .min_number_width(3);
             let d = if self.diff_split { d.side_by_side() } else { d };
             frame.render_widget(d.block(block), content);
         }
