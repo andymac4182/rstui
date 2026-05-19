@@ -250,6 +250,48 @@ pub struct Toast {
     pub age: usize,
 }
 
+/// The full-screen transcript pager (Codex's `/transcript`): a scrollable,
+/// searchable projection of the whole rendered transcript. The reducer owns
+/// these few fields; the renderer is a pure projection that clamps `scroll`
+/// to the wrapped content and applies `query` as a line filter — so this is
+/// the entire testable surface.
+#[derive(Debug, Default)]
+pub struct PagerState {
+    open: bool,
+    scroll: u16,
+    follow: bool,
+    query: String,
+    searching: bool,
+}
+
+impl PagerState {
+    /// Whether the pager overlay is visible.
+    #[must_use]
+    pub fn open(&self) -> bool {
+        self.open
+    }
+    /// Top scroll offset (wrapped rows); the renderer clamps to content.
+    #[must_use]
+    pub fn scroll(&self) -> u16 {
+        self.scroll
+    }
+    /// Sticking to the bottom (latest) — set on open and `G`/`End`.
+    #[must_use]
+    pub fn follows(&self) -> bool {
+        self.follow
+    }
+    /// The case-insensitive substring filter (empty = show everything).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+    /// `true` while the search query line is being typed (after `/`).
+    #[must_use]
+    pub fn searching(&self) -> bool {
+        self.searching
+    }
+}
+
 /// Where a slash command comes from (drives its autocomplete tag/colour).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSource {
@@ -291,6 +333,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("details", "Show/hide completed tool-call output"),
     ("plugins", "Show loaded plugins, commands & status"),
     ("log", "Toggle the diagnostic log"),
+    (
+        "transcript",
+        "Open the full-screen transcript pager (search with /)",
+    ),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -353,6 +399,8 @@ pub struct ChatApp {
     transcript: Vec<Entry>,
     scroll: u16,
     follow: bool,
+    /// The full-screen `/transcript` pager (scroll + search) overlay state.
+    pager: PagerState,
     composer: TextArea,
     /// Submitted-prompt history, recalled with ↑/↓ on the composer and
     /// persisted across runs (readline / Codex-CLI ergonomics).
@@ -438,6 +486,7 @@ impl ChatApp {
             transcript: Vec::new(),
             scroll: 0,
             follow: true,
+            pager: PagerState::default(),
             composer: TextArea::new(),
             history: InputHistory::load(),
             status_line: "starting…".to_owned(),
@@ -781,6 +830,11 @@ impl ChatApp {
     pub fn scroll(&self) -> u16 {
         self.scroll
     }
+    /// The full-screen `/transcript` pager state (scroll + search).
+    #[must_use]
+    pub fn pager(&self) -> &PagerState {
+        &self.pager
+    }
 
     // ---- internal helpers ----
 
@@ -1033,6 +1087,14 @@ impl ChatApp {
             }
             "log" => {
                 self.show_log = !self.show_log;
+                Cmd::none()
+            }
+            "transcript" => {
+                self.pager = PagerState {
+                    open: true,
+                    follow: true,
+                    ..PagerState::default()
+                };
                 Cmd::none()
             }
             "theme" => {
@@ -1427,6 +1489,79 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Key handling for the full-screen transcript pager. Two sub-modes: a
+    /// search-entry line (after `/`, vim/less style) and plain navigation.
+    /// Mirrors the chat's accepted scroll model (raw offset + `follow`; the
+    /// renderer clamps), so behaviour is consistent across the two views.
+    fn pager_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let page = self.last_size.height.saturating_sub(4).max(1);
+        if self.pager.searching {
+            match key.code {
+                KeyCode::Enter => self.pager.searching = false,
+                KeyCode::Esc => {
+                    self.pager.searching = false;
+                    self.pager.query.clear();
+                    self.pager.follow = true;
+                    self.pager.scroll = 0;
+                }
+                KeyCode::Backspace => {
+                    self.pager.query.pop();
+                    self.pager.follow = false;
+                    self.pager.scroll = 0;
+                }
+                KeyCode::Char(c) => {
+                    self.pager.query.push(c);
+                    self.pager.follow = false;
+                    self.pager.scroll = 0;
+                }
+                _ => {}
+            }
+            return Cmd::none();
+        }
+        match key.code {
+            // Esc clears an active filter first, then closes (less/pager UX).
+            KeyCode::Esc => {
+                if self.pager.query.is_empty() {
+                    self.pager.open = false;
+                } else {
+                    self.pager.query.clear();
+                    self.pager.follow = true;
+                    self.pager.scroll = 0;
+                }
+            }
+            KeyCode::Char('q') => self.pager.open = false,
+            KeyCode::Char('/') => {
+                self.pager.searching = true;
+                self.pager.query.clear();
+                self.pager.follow = false;
+                self.pager.scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.pager.follow = false;
+                self.pager.scroll = self.pager.scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.pager.follow = false;
+                self.pager.scroll = self.pager.scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                self.pager.follow = false;
+                self.pager.scroll = self.pager.scroll.saturating_sub(page);
+            }
+            KeyCode::PageDown => {
+                self.pager.follow = false;
+                self.pager.scroll = self.pager.scroll.saturating_add(page);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.pager.follow = false;
+                self.pager.scroll = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => self.pager.follow = true,
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         if self.picking {
@@ -1452,6 +1587,9 @@ impl ChatApp {
         if self.show_plugins && matches!(key.code, KeyCode::Esc | KeyCode::F(1)) {
             self.show_plugins = false;
             return Cmd::none();
+        }
+        if self.pager.open {
+            return self.pager_key(key);
         }
         if self.keymap_panel {
             return self.keymap_panel_key(key);

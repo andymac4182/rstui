@@ -36,7 +36,9 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
     }
     render_footer(app, frame, footer);
 
-    if app.help_visible() {
+    if app.pager().open() {
+        render_transcript_pager(app, frame, area);
+    } else if app.help_visible() {
         render_help(app, frame, area);
     } else if app.log_visible() {
         render_log(app, frame, area);
@@ -931,6 +933,75 @@ fn render_log(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         .map(|l| Line::styled(l.clone(), Style::new().fg(Color::Gray)))
         .collect();
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The plain text of a styled line (its spans concatenated) — used by the
+/// pager's case-insensitive substring filter.
+fn line_plain(line: &Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// The full-screen `/transcript` pager (Codex's pager overlay): the whole
+/// rendered transcript, scrollable, with an incremental substring filter.
+/// A pure projection — it reuses [`transcript_lines`] verbatim (so what you
+/// search is exactly what the chat shows) and the chat's clamp-on-render
+/// scroll model; the reducer owns only the few [`PagerState`] fields.
+///
+/// [`PagerState`]: crate::app::PagerState
+fn render_transcript_pager(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let p = app.pager();
+
+    let mut lines = transcript_lines(app);
+    let total_lines = lines.len();
+    let q = p.query().to_lowercase();
+    if !q.is_empty() {
+        lines.retain(|l| line_plain(l).to_lowercase().contains(&q));
+    }
+    let matched = lines.len();
+    if !q.is_empty() && lines.is_empty() {
+        lines.push(Line::styled(
+            format!("(no lines match {:?})", p.query()),
+            t.dim_text(),
+        ));
+    }
+
+    let title = if p.searching() {
+        format!(" Transcript — search: {}▏ ", p.query())
+    } else if q.is_empty() {
+        format!(" Transcript — {total_lines} lines ")
+    } else {
+        format!(
+            " Transcript — {matched}/{total_lines} match {:?} ",
+            p.query()
+        )
+    };
+    let block = Block::bordered()
+        .title(title)
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(area);
+    clear(frame, area);
+    frame.render_widget(block, area);
+
+    let [body, hint] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
+
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total = para.line_count(body.width.max(1)) as u16;
+    let max_scroll = total.saturating_sub(body.height);
+    let scroll = if p.follows() {
+        max_scroll
+    } else {
+        p.scroll().min(max_scroll)
+    };
+    frame.render_widget(para.scroll((0, scroll)), body);
+
+    let footer = if p.searching() {
+        "type to filter · Enter apply · Esc cancel".to_owned()
+    } else {
+        "↑↓/jk PgUp/Dn scroll · g/G top/bottom · / search · Esc/q close".to_owned()
+    };
+    frame.render_widget(Paragraph::new(Line::styled(footer, t.dim_text())), hint);
 }
 
 fn render_toasts(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {

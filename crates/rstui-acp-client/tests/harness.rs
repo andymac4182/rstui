@@ -1287,3 +1287,65 @@ fn slash_init_and_review_are_builtins_wired_to_the_prompt_path() {
     assert!(last.contains("not connected") && !last.contains("unknown command"));
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W1-6: full-screen transcript pager ----
+
+fn open_pager(h: &mut Harness<ChatApp>) {
+    typ(h, "/transcript");
+    key(h, KeyCode::Enter);
+    assert!(h.app().pager().open(), "/transcript opens the pager");
+}
+
+/// `/transcript` opens a full-screen pager; navigation uses the chat's
+/// scroll model (`follow` + clamped offset); `/` runs an incremental
+/// substring filter; Esc clears the filter first, then closes.
+#[test]
+fn transcript_pager_opens_scrolls_searches_and_closes() {
+    let mut h = chatting(120, 30);
+    h.message(Msg::Acp(AcpEvent::AgentText(
+        "PAGERALPHA then PAGERBETA on the next idea".to_owned(),
+    )));
+
+    open_pager(&mut h);
+    assert!(h.app().pager().follows(), "opens stuck to the latest");
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("Transcript"),
+        "pager chrome drawn:\n{screen}"
+    );
+
+    // Navigation: Down unsticks from the bottom and advances the offset; G
+    // re-sticks; g goes to the top.
+    key(&mut h, KeyCode::Down);
+    assert!(!h.app().pager().follows());
+    assert_eq!(h.app().pager().scroll(), 1);
+    key(&mut h, KeyCode::Char('G'));
+    assert!(h.app().pager().follows(), "G jumps back to the latest");
+    key(&mut h, KeyCode::Char('g'));
+    assert!(!h.app().pager().follows());
+    assert_eq!(h.app().pager().scroll(), 0, "g goes to the top");
+
+    // Incremental search: '/' enters search mode, chars build the query,
+    // Enter applies it.
+    key(&mut h, KeyCode::Char('/'));
+    assert!(h.app().pager().searching());
+    for c in "PAGERBETA".chars() {
+        key(&mut h, KeyCode::Char(c));
+    }
+    assert_eq!(h.app().pager().query(), "PAGERBETA");
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().pager().searching(), "Enter applies the filter");
+    assert!(
+        h.snapshot().contains("match"),
+        "the title reports the match count"
+    );
+
+    // Esc clears the active filter but keeps the pager open…
+    key(&mut h, KeyCode::Esc);
+    assert!(h.app().pager().open());
+    assert!(h.app().pager().query().is_empty(), "Esc cleared the filter");
+    // …a second Esc closes it.
+    key(&mut h, KeyCode::Esc);
+    assert!(!h.app().pager().open(), "Esc on a clean pager closes it");
+    assert!(h.is_running());
+}

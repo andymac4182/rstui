@@ -51,7 +51,7 @@ out of scope per above.
 | ~~Terminal title (OSC 2: agent · status)~~ | **Done** (iter 6) | W1-3 ✅ |
 | ~~Bell on turn completion~~ | **Done** (iter 6) | W1-4 ✅ |
 | ~~`/init`, `/review` canned prompts~~ | **Done** (iter 6) | W1-5 ✅ |
-| **Full-screen transcript pager** (Codex `/transcript`) | **Gap** (inline scroll only) | W1-6 |
+| ~~Full-screen transcript pager (Codex `/transcript`)~~ | **Done** (iter 6) | W1-6 ✅ |
 | **`/status`** session + token usage | **Gap** | W2-1 |
 | **`/model`** picker (model + reasoning effort) | **Gap** | W2-2 |
 | **`/mode`** session-mode switch (covers `/plan`, approval modes) | **Gap** | W2-3 |
@@ -92,8 +92,13 @@ docs-updated slice, merged back under the serialized lock
    agent-agnostic "create/improve AGENTS.md" / "review my uncommitted
    changes" prompts through a new shared `send_user_prompt` (also de-duped
    the composer's own send path).
-6. **W1-6 Transcript pager** — a full-screen scrollable transcript overlay
-   (Codex's `/transcript`) with search, reusing the existing scroll model.
+6. **W1-6 Transcript pager** ✅ *(landed, iter 6)* — `/transcript`
+   full-screen overlay: scroll (`jk`/arrows/PgUp-Dn/`g`/`G`) + incremental
+   `/` substring filter, a pure projection reusing `transcript_lines`
+   verbatim and the chat's clamp-on-render scroll model (`PagerState` is the
+   whole reducer surface).
+
+**Wave 1 complete.**
 
 **Wave 2 — ACP-wired:**
 
