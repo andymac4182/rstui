@@ -13,17 +13,20 @@
 //! instances) and emitting a fresh `UiNode` tree every frame — there is
 //! no retained widget tree (ADR 0012).
 //!
-//! # All 18 basic-catalog components
+//! # The 18 basic-catalog components + the rstui chart extension
 //!
 //! `Text`, `Image`, `Icon`, `Video`, `AudioPlayer`, `Row`, `Column`,
 //! `List`, `Card`, `Tabs`, `Modal`, `Divider`, `Button`, `TextField`,
 //! `CheckBox`, `ChoicePicker`, `Slider`, `DateTimeInput`
-//! (`basic_catalog.json`). Each maps to the closest
-//! [`UiNode`]; a component a terminal cannot
-//! represent (`Image`/`Video`/`AudioPlayer`) becomes
-//! [`UiNode::Media`], and an unknown/missing component or a dangling
-//! child reference becomes [`UiNode::Placeholder`] — the
-//! progressive-rendering contract, never a panic.
+//! (`basic_catalog.json`), plus the rstui chart extension
+//! (`BarChart`/`LineChart`/`PieChart`/`Sparkline`/`ScatterPlot`/
+//! `Histogram`/`StackedBarChart`/`Heatmap`) projecting to a themed
+//! [`UiNode::Chart`] via the shared [`crate::chart`] builder. `Tabs`
+//! headers are interactive `Button`s (`<id>#tab:<n>`); a `"color"`
+//! prop is a theme token (raw `#hex` fallback). A terminal-incapable
+//! component (`Image`/`Video`/`AudioPlayer`) becomes
+//! [`UiNode::Media`], an unknown/missing one [`UiNode::Placeholder`] —
+//! the progressive-rendering contract, never a panic.
 //!
 //! # `ChildList`
 //!

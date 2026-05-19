@@ -1455,6 +1455,69 @@ fn agent_form_opens_in_the_right_pane_and_keyboard_fills_then_submits() {
 }
 
 #[test]
+fn agent_followup_updates_the_open_pane_in_place_closing_the_loop() {
+    // The full two-way loop: a submitted action's *response* (an A2UI
+    // `updateDataModel` for the same surface, no `createSurface`) folds
+    // into the already-open live doc — the pane updates in place, no
+    // duplicate entry — so the agent can drive the form back.
+    let mut h = chatting(160, 44);
+    h.message(Msg::Resize(Size::new(160, 44)));
+    for chunk in [
+        "Here:\n\n```a2ui\n",
+        r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"c"}}"#,
+        "\n",
+        r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":["#,
+        r#"{"id":"root","component":"Column","children":["who"]},"#,
+        r#"{"id":"who","component":"TextField","label":"Who","value":{"path":"/who"}}]}}"#,
+        "\n```\n",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned())));
+    assert!(h.app().form_open(), "the form opened");
+    let rich_entries = |h: &Harness<ChatApp>| {
+        h.app()
+            .transcript()
+            .iter()
+            .filter(|e| e.rich.is_some())
+            .count()
+    };
+    assert_eq!(rich_entries(&h), 1, "one live doc");
+
+    // The agent responds with an update to the SAME surface (no
+    // createSurface) — the spec's response shape.
+    for chunk in [
+        "Thanks!\n\n```a2ui\n",
+        r#"{"version":"v0.10","updateDataModel":{"surfaceId":"s1","path":"/who","value":"Echoed"}}"#,
+        "\n```\n",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned())));
+
+    assert_eq!(
+        rich_entries(&h),
+        1,
+        "the follow-up merged into the live doc — no duplicate entry"
+    );
+    assert!(
+        h.app()
+            .transcript()
+            .iter()
+            .any(|e| e.text.contains("the agent updated the form")),
+        "a breadcrumb notes the in-place update"
+    );
+    assert!(
+        h.snapshot().contains("Echoed"),
+        "the open pane reflects the agent's update (loop closed):\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}
+
+#[test]
 fn clicking_a_rendered_json_render_control_persists_state_across_redraws() {
     // The same Phase-2 proof for the *other* interactive format: a
     // json-render `ConfirmInput` whose Yes button `setState`s `/done`,

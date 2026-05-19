@@ -16,10 +16,12 @@
 //! breaking.
 //!
 //! `safeColor`/`safeBoxProps` are honoured: a `flexDirection`/justify maps
-//! onto [`Justify`]/[`CrossAlign`], and colours invisible on a dark
-//! terminal (`black`/`#000`) are dropped. The component set that has no
-//! terminal analogue (`Sparkline`/`BarChart` exact charts) degrades to a
-//! block-glyph `Text` or a `Placeholder`, never a panic.
+//! onto [`Justify`]/[`CrossAlign`]. A `"color"` prop is a theme token
+//! (`success`, `chart2`, …) resolved against the active palette with a
+//! raw `#hex`/named fallback. The chart components
+//! (`BarChart`/`LineChart`/`PieChart`/`Sparkline`/…) project to a real
+//! themed [`UiNode::Chart`] via the shared [`crate::chart`] builder; an
+//! unknown component is a `Placeholder`, never a panic.
 
 use serde_json::Value;
 

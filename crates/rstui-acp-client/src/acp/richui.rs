@@ -517,6 +517,30 @@ impl RichDoc {
         }
     }
 
+    /// Close the interactive loop: fold an agent **follow-up** message
+    /// into this *live* doc instead of spawning a new transcript entry,
+    /// so the agent's response to a submitted action updates the open
+    /// pane in place. Accepts only an A2UI update stream — one with no
+    /// `createSurface` (an `updateComponents`/`updateDataModel`/
+    /// `actionResponse`, the spec's response shape; `A2uiSurface`
+    /// itself ignores any message not addressed to its surface).
+    /// Returns `true` when it was absorbed (the caller then adds no new
+    /// entry). A `createSurface` (a brand-new UI) or a json-render
+    /// payload returns `false` — a fresh doc.
+    #[must_use]
+    pub fn merge_followup(&mut self, payload: &RichUiPayload) -> bool {
+        match self {
+            Self::A2ui(surface)
+                if payload.format == RichUiFormat::A2ui
+                    && !payload.source.contains("createSurface") =>
+            {
+                surface.apply_stream(&payload.source);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Re-project the owned (mutated) state to transcript lines — the
     /// renderer calls this every frame (pure projection).
     #[must_use]

@@ -1552,8 +1552,28 @@ impl ChatApp {
                     });
                 }
                 crate::acp::MessageSegment::Rich(payload) => {
-                    // Build a caller-owned **stateful** doc for the
-                    // interactive formats (A2UI / json-render) so a
+                    // Close the loop: an A2UI follow-up (a response to a
+                    // submitted action — `updateDataModel`/
+                    // `updateComponents`/`actionResponse`, no
+                    // `createSurface`) folds into the already-open live
+                    // doc so the pane updates in place, instead of
+                    // stacking a duplicate entry.
+                    let merged = self
+                        .active_rich()
+                        .and_then(|id| self.rich_docs.get_mut(&id))
+                        .is_some_and(|doc| doc.merge_followup(&payload));
+                    if merged {
+                        self.transcript.push(Entry {
+                            role: Role::System,
+                            text: "↻ the agent updated the form".to_owned(),
+                            open: false,
+                            md_cache: None,
+                            rich: None,
+                        });
+                        continue;
+                    }
+                    // Otherwise a fresh caller-owned **stateful** doc for
+                    // the interactive formats (A2UI / json-render) so a
                     // clicked checkbox / switched tab persists across
                     // redraws; a static diagram block has no doc and is
                     // rendered from `text` every frame.

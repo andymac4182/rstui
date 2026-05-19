@@ -97,6 +97,40 @@ To AI apps what `rstui-widgets` is to general TUIs:
   transcript (`cap_transcript` evicts dropped ids), so this stays
   within the pure-projection model — the owned state *is* the
   caller-owned state the projection reads, never a retained UI tree.
+- An interactive doc **opens in a live pane on the right**, next to the
+  chat (the shared pure `ui::body_split` — the pane takes priority over
+  the read-only sidebar; it needs a wide enough terminal to keep a
+  usable chat column). `Tab` moves keyboard focus from the composer
+  into the pane; `Tab`/`⇧Tab`/`↑`/`↓` walk the focus ring (the
+  `HitMap::entries()` draw order), a printable char / `Backspace` edits
+  the focused text field with **spec-correct two-way write-back** (A2UI
+  `text_binding` → the bound `{path}`; json-render's projected field id
+  *is* the `$bindState` pointer), `Enter`/`Space` activates, `Esc`
+  returns to the composer. A mouse click in the pane does the same. So
+  a **form with a submit button** gathers the typed values and sends
+  the exact spec envelope: A2UI `{version,action:{name,surfaceId,
+  sourceComponentId,timestamp,context}}` with `context` resolved from
+  the now-updated model; json-render a host `{action,params}` with
+  params resolved from state. The loop **closes**: an agent follow-up
+  for the same surface (an A2UI `updateDataModel`/`updateComponents`/
+  `actionResponse` with no `createSurface`) folds into the open live
+  doc (`RichDoc::merge_followup`) so the pane updates in place rather
+  than stacking a duplicate.
+- **Charts/graphs are first-class** in both formats. `BarChart`,
+  `LineChart`, `AreaChart`, `PieChart`, `Sparkline`, `ScatterPlot`,
+  `Histogram`, `StackedBarChart`, `Heatmap` project to a real themed
+  `UiNode::Chart` (backed 1:1 by the `rstui-widgets` chart suite) via
+  the shared format-agnostic `rstui_jsonui::chart::build_chart`, so an
+  A2UI surface and a json-render spec draw identical graphs from
+  `data:[{label,value}]` or `series:[{name,color?,points:[[x,y]]}]`.
+- **Colours are theme tokens.** A component/series `"color"` is a
+  semantic token (`accent`/`success`/`warning`/`danger`/`info`/`muted`),
+  a chart series (`chart1`…`chart5`, auto-cycled), `bullish`/`bearish`,
+  or a raw `#rrggbb`/named fallback — resolved against the active theme
+  via `rstui_jsonui::color` (`Palette`/`parse_token`). The ACP client
+  maps its live theme (the dedicated `chart_*` tokens) into the doc and
+  re-skins it on a theme change; `rstui-jsonui` itself stays
+  theme-system-agnostic (the dep-free `Palette::ANSI` default).
 - The **`/render`** slash command makes this work with **any** agent,
   not just one that reads the `initialize` `_meta`: it sends the
   json-render authoring instructions + the component catalog (the same
