@@ -566,6 +566,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
+    (
+        "render",
+        "Teach the agent the json-render UI format (e.g. /render a dashboard)",
+    ),
     ("copy", "Copy the last agent answer to the clipboard"),
     ("bell", "Toggle the turn-completion bell"),
     ("cancel", "Interrupt the streaming turn"),
@@ -588,6 +592,34 @@ pub const REVIEW_PROMPT: &str = "Review my current uncommitted changes (the \
 git diff, including untracked files). Identify bugs, regressions, missing \
 tests, and anything that should change before this is committed. Be specific \
 and cite files and lines.";
+
+/// The `/render` canned prompt — teaches **any** ACP agent the
+/// json-render format this client live-renders, so it works without the
+/// agent reading the `initialize` capability `_meta` (a generic LLM
+/// agent never sees that metadata). It embeds the same authoring
+/// instructions + component catalog the client advertises
+/// ([`rstui_jsonui::capability::json_render_prompt`]); `request` is the
+/// optional slash argument (the thing to build right now).
+#[must_use]
+pub fn render_prompt(request: &str) -> String {
+    let mut prompt = String::from(
+        "This terminal chat client can render a live UI directly from your \
+         reply. When a dashboard, form, table, status panel, or other \
+         structured answer would help, reply with a json-render document \
+         inside a fenced ```json-render code block (a short sentence of \
+         prose before it is fine). ",
+    );
+    prompt.push_str(&rstui_jsonui::capability::json_render_prompt());
+    let request = request.trim();
+    if !request.is_empty() {
+        prompt.push_str(
+            "\n\nDo this now, replying with such a fenced ```json-render \
+             document: ",
+        );
+        prompt.push_str(request);
+    }
+    prompt
+}
 
 /// Messages the reducer folds. Input is normalized to [`Msg::Key`] /
 /// [`Msg::Resize`] in `on_event` so all focus routing lives in `update`.
@@ -1625,6 +1657,10 @@ impl ChatApp {
             }
             "review" => {
                 self.send_user_prompt(REVIEW_PROMPT.to_owned());
+                Cmd::none()
+            }
+            "render" | "ui" => {
+                self.send_user_prompt(render_prompt(&args));
                 Cmd::none()
             }
             "bell" => {
@@ -3355,7 +3391,7 @@ mod mention_rank_tests {
 
 #[cfg(test)]
 mod canned_prompt_tests {
-    use super::{INIT_PROMPT, REVIEW_PROMPT};
+    use super::{INIT_PROMPT, REVIEW_PROMPT, render_prompt};
 
     #[test]
     fn canned_prompts_are_substantial_and_on_topic() {
@@ -3374,5 +3410,38 @@ mod canned_prompt_tests {
             let l = p.to_ascii_lowercase();
             assert!(!l.contains("codex") && !l.contains("claude"));
         }
+    }
+
+    #[test]
+    fn render_prompt_teaches_the_json_render_format_to_any_agent() {
+        let bare = render_prompt("");
+        // It embeds the real authoring instructions + component catalog
+        // the client advertises (so a non-capability-aware agent learns
+        // the format from the conversation, not the `initialize` _meta).
+        assert!(bare.contains("```json-render"), "names the fenced block");
+        assert!(
+            bare.contains("flat element map") && bare.contains("\"root\""),
+            "embeds json_render_prompt()'s format description"
+        );
+        // The component catalog travels in it (it is generated from the
+        // single macro source via `json_render_prompt`).
+        assert!(
+            bare.contains("Card") && bare.contains("Markdown"),
+            "lists available components"
+        );
+        // Agent-agnostic: no vendor name baked in.
+        let lower = bare.to_ascii_lowercase();
+        assert!(!lower.contains("codex") && !lower.contains("claude"));
+
+        // The optional slash argument is appended as the concrete task.
+        let with_request = render_prompt("  a sales dashboard  ");
+        assert!(
+            with_request.contains("Do this now") && with_request.contains("a sales dashboard"),
+            "the request is appended (trimmed):\n{with_request}"
+        );
+        assert!(
+            !bare.contains("Do this now"),
+            "no request → just the priming instructions, no task line"
+        );
     }
 }

@@ -486,6 +486,41 @@ fn typing_slash_opens_the_autocomplete_with_builtins() {
 }
 
 #[test]
+fn render_is_a_builtin_command_that_primes_the_agent() {
+    // `/render` is offered in the autocomplete (a registered built-in,
+    // alongside the other canned-prompt commands).
+    let mut h = chatting(100, 30);
+    typ(&mut h, "/render");
+    let comp = h.app().completion().expect("'/' opens the popup");
+    assert!(
+        comp.items.iter().any(|c| c.name == "render"),
+        "/render is a built-in command"
+    );
+
+    // Running it is *handled* — it reaches the canned-prompt path
+    // (`send_user_prompt`), it is NOT an "unknown command". In the
+    // headless harness there is no live agent, so the deterministic
+    // breadcrumb is the not-connected notice (same as /init, /review).
+    typ(&mut h, " a dashboard");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    let last = &h
+        .app()
+        .transcript()
+        .last()
+        .expect("a system breadcrumb")
+        .text;
+    assert!(
+        !last.contains("unknown command"),
+        "/render is wired (not the unknown-command arm): {last:?}"
+    );
+    assert!(
+        last.contains("not connected"),
+        "headless: /render reached send_user_prompt: {last:?}"
+    );
+    assert!(h.is_running());
+}
+
+#[test]
 fn autocomplete_filters_as_you_type_and_navigates_and_wraps() {
     let mut h = chatting(100, 30);
     typ(&mut h, "/he");

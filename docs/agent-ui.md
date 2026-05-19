@@ -77,6 +77,14 @@ To AI apps what `rstui-widgets` is to general TUIs:
   streamed chunk stays prose), folds it into the transcript as a
   `Role::RichUi` entry, and the view re-projects it through
   `rstui-jsonui` every frame.
+- The **`/render`** slash command makes this work with **any** agent,
+  not just one that reads the `initialize` `_meta`: it sends the
+  json-render authoring instructions + the component catalog (the same
+  `rstui_jsonui::capability::json_render_prompt()` the client
+  advertises) as a normal prompt turn, so a generic LLM agent learns
+  the format from the conversation. `/render <request>` also appends a
+  concrete task (e.g. `/render a sales dashboard`) — the agent replies
+  with a ` ```json-render ` document the client renders live.
 
 See [ACP client](acp-client.md) for the full client.
 
