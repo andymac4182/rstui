@@ -692,6 +692,15 @@ impl DataTableState {
         self.collapsed.iter().any(|k| k == key)
     }
 
+    /// The collapsed-group keys (insertion order) — the projection-affecting
+    /// collapse state, the [`sort_keys`](Self::sort_keys)/[`filter`](Self::filter)
+    /// sibling accessor a [`ProjectionCache`](crate::ProjectionCache)
+    /// fingerprints on.
+    #[must_use]
+    pub fn collapsed(&self) -> &[String] {
+        &self.collapsed
+    }
+
     /// Collapses an expanded group / expands a collapsed one.
     pub fn toggle_collapse(&mut self, key: impl Into<String>) {
         let key = key.into();
@@ -865,17 +874,40 @@ pub fn project(columns: &[DataColumn], rows: &[DataRow], state: &DataTableState)
         })
         .collect();
 
+    // DT-OPT-1: precompute each row's sort-key cell text **once**. The
+    // comparator otherwise re-derives `line_text` — a `String` allocation —
+    // *twice per comparison*, i.e. ~N·logN allocations: the millions-row
+    // sort wall measured in `docs/perf-datatable-scale.md` (see
+    // `docs/datatable-optimization-roadmap.md` DT-OPT-1). Built only for the
+    // sort columns and indexed by source-row index, so it is
+    // O(rows × sort-keys) allocations *once* and the comparator is
+    // allocation-free — byte-identical ordering (same text, same compare,
+    // same stable sort).
+    let sort_keys = state.sort_keys();
+    let row_sort_text: Vec<Vec<String>> = if sort_keys.is_empty() {
+        Vec::new()
+    } else {
+        rows.iter()
+            .map(|r| {
+                sort_keys
+                    .iter()
+                    .map(|&(col, _)| r.cell(col).map(line_text).unwrap_or_default())
+                    .collect()
+            })
+            .collect()
+    };
+
     // The multi-key row comparator (tier 2): each `(col, dir)` in priority
     // order; the first non-equal column decides. Stable, so equal rows keep
     // their source order. An out-of-range column compares as empty (a
     // no-op key), so it is total.
     let cmp_keys = |&a: &usize, &b: &usize| -> std::cmp::Ordering {
-        for &(col, dir) in state.sort_keys() {
-            let ka = rows[a].cell(col).map(line_text).unwrap_or_default();
-            let kb = rows[b].cell(col).map(line_text).unwrap_or_default();
+        for (ki, &(_, dir)) in sort_keys.iter().enumerate() {
+            let ka = &row_sort_text[a][ki];
+            let kb = &row_sort_text[b][ki];
             let ord = match dir {
-                SortDirection::Ascending => ka.cmp(&kb),
-                SortDirection::Descending => kb.cmp(&ka),
+                SortDirection::Ascending => ka.cmp(kb),
+                SortDirection::Descending => kb.cmp(ka),
             };
             if ord != std::cmp::Ordering::Equal {
                 return ord;
@@ -941,6 +973,27 @@ fn group_key(row: &DataRow, col: usize) -> String {
         Some(k) => k.as_ref().to_string(),
         None => row.cell(col).map(line_text).unwrap_or_default(),
     }
+}
+
+/// [`project`] read through a caller-owned [`ProjectionCache`] — DT-OPT-1,
+/// the ADR 0012 §P1 / ADR 0025 caller-owned-cache seam. With unchanged
+/// inputs (the cache fingerprints every one [`project`] reads) this is an
+/// `O(1)` slot read instead of re-running the whole filter → group → sort →
+/// collapse pipeline; on a miss it is exactly [`project`] (byte-identical).
+///
+/// The contract is [`MarkdownCache`](crate::MarkdownCache)'s: an in-place
+/// edit of a row's contents does not change the slice identity, so the
+/// caller [`clear`](ProjectionCache::clear)s the cache where it writes a
+/// cell back (its single re-project chokepoint). See
+/// [`ProjectionCache`](crate::ProjectionCache).
+#[must_use]
+pub fn project_cached(
+    columns: &[DataColumn],
+    rows: &[DataRow],
+    state: &DataTableState,
+    cache: &crate::ProjectionCache,
+) -> Vec<VisualRow> {
+    cache.resolve(columns, rows, state)
 }
 
 /// A comprehensive, sortable/filterable/groupable, mouse-hit-testable,

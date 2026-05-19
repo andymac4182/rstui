@@ -361,6 +361,7 @@ pub mod modal;
 pub mod pagination;
 pub mod paragraph;
 pub mod pie_chart;
+pub mod projection_cache;
 pub mod popover;
 pub mod radar_chart;
 pub mod radio;
@@ -421,6 +422,7 @@ pub use list::{List, ListItem};
 pub use markdown::{LinkRegion, Markdown, MarkdownTheme};
 pub use markdown_cache::MarkdownCache;
 pub use menu::{Menu, MenuItem};
+pub use projection_cache::ProjectionCache;
 // The Mermaid AST types (`Direction`, `Node`, `Edge`, `EdgeKind`, `Shape`,
 // `MermaidGraph`) are intentionally reached via `mermaid::` rather than
 // re-exported at the crate root: `Direction`/`Node`/`Edge` are generic enough
