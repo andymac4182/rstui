@@ -292,6 +292,8 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("plugins", "Show loaded plugins, commands & status"),
     ("log", "Toggle the diagnostic log"),
     ("theme", "Pick a colour theme (browse + preview live)"),
+    ("init", "Ask the agent to create/improve AGENTS.md"),
+    ("review", "Ask the agent to review your uncommitted changes"),
     ("copy", "Copy the last agent answer to the clipboard"),
     ("bell", "Toggle the turn-completion bell"),
     ("cancel", "Interrupt the streaming turn"),
@@ -300,6 +302,20 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
 
 /// Max rows shown in the autocomplete popup (opencode parity).
 pub const COMPLETION_MAX: usize = 10;
+
+/// The `/init` canned prompt — agent-agnostic (works with any ACP agent),
+/// the same task Codex's `/init` performs.
+pub const INIT_PROMPT: &str = "Explore this repository and create an AGENTS.md \
+file at its root with concise, accurate instructions for AI coding agents \
+working here: how to build, test and lint; the project conventions; and \
+anything non-obvious an agent must know. If an AGENTS.md already exists, \
+review and improve it instead of duplicating it.";
+
+/// The `/review` canned prompt — Codex's "review current changes".
+pub const REVIEW_PROMPT: &str = "Review my current uncommitted changes (the \
+git diff, including untracked files). Identify bugs, regressions, missing \
+tests, and anything that should change before this is committed. Be specific \
+and cite files and lines.";
 
 /// Messages the reducer folds. Input is normalized to [`Msg::Key`] /
 /// [`Msg::Resize`] in `on_event` so all focus routing lives in `update`.
@@ -945,9 +961,18 @@ impl ChatApp {
             return self.run_slash(rest);
         }
 
+        self.send_user_prompt(text);
+        Cmd::none()
+    }
+
+    /// Sends `text` as a user turn: a transcript entry, the ACP prompt, and
+    /// the plugin `UserPrompt` broadcast — the one place that lives, shared
+    /// by the composer and the canned-prompt builtins (`/init`, `/review`).
+    /// A no-op (with a system breadcrumb) when no agent is connected.
+    fn send_user_prompt(&mut self, text: String) {
         if self.driver.is_none() {
             self.push_system("not connected — pick an agent with /agents");
-            return Cmd::none();
+            return;
         }
         self.transcript.push(Entry {
             role: Role::User,
@@ -963,7 +988,6 @@ impl ChatApp {
         if let Some(host) = &self.plugins {
             host.broadcast(&HostEvent::UserPrompt { text });
         }
-        Cmd::none()
     }
 
     fn run_slash(&mut self, rest: &str) -> Cmd<Msg> {
@@ -1036,6 +1060,14 @@ impl ChatApp {
                     }
                     None => self.push_system("nothing to copy yet (no agent response)"),
                 }
+                Cmd::none()
+            }
+            "init" => {
+                self.send_user_prompt(INIT_PROMPT.to_owned());
+                Cmd::none()
+            }
+            "review" => {
+                self.send_user_prompt(REVIEW_PROMPT.to_owned());
                 Cmd::none()
             }
             "bell" => {
@@ -2246,6 +2278,30 @@ mod bell_env_tests {
         assert!(bell_from_env(Some("anything")));
         for off in ["0", "false", "no", "off", "OFF", " Off "] {
             assert!(!bell_from_env(Some(off)), "{off:?} → off");
+        }
+    }
+}
+
+#[cfg(test)]
+mod canned_prompt_tests {
+    use super::{INIT_PROMPT, REVIEW_PROMPT};
+
+    #[test]
+    fn canned_prompts_are_substantial_and_on_topic() {
+        assert!(
+            INIT_PROMPT.contains("AGENTS.md"),
+            "/init asks for AGENTS.md"
+        );
+        assert!(
+            REVIEW_PROMPT.to_ascii_lowercase().contains("review")
+                && REVIEW_PROMPT.contains("git diff"),
+            "/review asks for a diff review"
+        );
+        // Agent-agnostic: no vendor name baked in (works with any ACP agent).
+        for p in [INIT_PROMPT, REVIEW_PROMPT] {
+            assert!(p.len() > 80);
+            let l = p.to_ascii_lowercase();
+            assert!(!l.contains("codex") && !l.contains("claude"));
         }
     }
 }

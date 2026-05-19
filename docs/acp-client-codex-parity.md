@@ -50,7 +50,7 @@ out of scope per above.
 | ~~`/copy` last response to clipboard~~ | **Done** (iter 6) | W1-2 ✅ |
 | ~~Terminal title (OSC 2: agent · status)~~ | **Done** (iter 6) | W1-3 ✅ |
 | ~~Bell on turn completion~~ | **Done** (iter 6) | W1-4 ✅ |
-| **`/init`, `/review` canned prompts** | **Gap** | W1-5 |
+| ~~`/init`, `/review` canned prompts~~ | **Done** (iter 6) | W1-5 ✅ |
 | **Full-screen transcript pager** (Codex `/transcript`) | **Gap** (inline scroll only) | W1-6 |
 | **`/status`** session + token usage | **Gap** | W2-1 |
 | **`/model`** picker (model + reasoning effort) | **Gap** | W2-2 |
@@ -88,9 +88,10 @@ docs-updated slice, merged back under the serialized lock
 4. **W1-4 Bell** ✅ *(landed, iter 6)* — BEL on `TurnEnded` (the "your turn"
    cue), `/bell` toggles per session, `RSTUI_ACP_BELL=0|false|no|off` sets
    the startup default; terminal-gated emit reusing `src/title.rs`.
-5. **W1-5 `/init` + `/review`** — two built-ins that send Codex's canonical
-   "write an AGENTS.md" / "review my changes" prompts to whatever agent is
-   connected.
+5. **W1-5 `/init` + `/review`** ✅ *(landed, iter 6)* — two built-ins sending
+   agent-agnostic "create/improve AGENTS.md" / "review my uncommitted
+   changes" prompts through a new shared `send_user_prompt` (also de-duped
+   the composer's own send path).
 6. **W1-6 Transcript pager** — a full-screen scrollable transcript overlay
    (Codex's `/transcript`) with search, reusing the existing scroll model.
 

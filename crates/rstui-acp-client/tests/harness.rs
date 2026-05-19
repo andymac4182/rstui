@@ -1244,3 +1244,46 @@ fn slash_bell_toggles_and_turn_end_is_handled() {
     assert!(!h.app().is_streaming());
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W1-5: /init + /review canned prompts ----
+
+/// `/init` and `/review` are first-class built-ins (so autocomplete offers
+/// them) and route to the shared prompt path — disconnected they hit the
+/// "not connected" guard, *not* "unknown command", which is what proves the
+/// wiring (the connected send is the async side, out of `Harness` by
+/// ADR 0011, exactly as for a typed prompt).
+#[test]
+fn slash_init_and_review_are_builtins_wired_to_the_prompt_path() {
+    let mut h = chatting(100, 30);
+
+    let specs = h.app().command_specs();
+    for name in ["init", "review"] {
+        let spec = specs
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("/{name} is offered in autocomplete"));
+        assert_eq!(
+            spec.source,
+            CommandSource::Builtin,
+            "/{name} is a client built-in"
+        );
+    }
+
+    typ(&mut h, "/init");
+    key(&mut h, KeyCode::Enter);
+    let last = &h.app().transcript().last().unwrap().text;
+    assert!(
+        last.contains("not connected"),
+        "/init routed to the prompt path (got {last:?})"
+    );
+    assert!(
+        !last.contains("unknown command"),
+        "/init is recognised, not an unknown command"
+    );
+
+    typ(&mut h, "/review");
+    key(&mut h, KeyCode::Enter);
+    let last = &h.app().transcript().last().unwrap().text;
+    assert!(last.contains("not connected") && !last.contains("unknown command"));
+    assert!(h.is_running());
+}
