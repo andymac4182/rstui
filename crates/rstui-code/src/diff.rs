@@ -101,8 +101,10 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::changeset::Changeset;
+use crate::diff_syntax_cache::DiffSyntaxCache;
 use crate::syntax::{self, Language, LexState, SyntaxStyles};
 use crate::treesitter::{Analyzer, TsLanguage};
 use rstui_core::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
@@ -290,6 +292,11 @@ pub struct Diff<'a> {
     language: Language,
     tab_width: usize,
     min_number_width: usize,
+    /// An optional caller-owned [`DiffSyntaxCache`] (ADR 0025). When set
+    /// *and* [`tree_sitter`](Diff::tree_sitter) is on, the per-frame
+    /// whole-patch Tier-1 parse is read through it; `None` ⇒ the historical
+    /// every-frame parse (byte-identical).
+    syntax_cache: Option<&'a DiffSyntaxCache>,
 }
 
 impl<'a> Diff<'a> {
@@ -308,6 +315,7 @@ impl<'a> Diff<'a> {
             language: Language::Unknown,
             tab_width: 4,
             min_number_width: 0,
+            syntax_cache: None,
         }
     }
 
@@ -498,6 +506,34 @@ impl<'a> Diff<'a> {
         self
     }
 
+    /// Attaches a caller-owned [`DiffSyntaxCache`] so the Tier-1
+    /// (tree-sitter) overlay is parsed **once per `(patch source, theme)`**
+    /// instead of every frame.
+    ///
+    /// With [`tree_sitter(true)`](Self::tree_sitter) every layout pass runs a
+    /// `Changeset::parse` plus a full tree-sitter parse + highlight of
+    /// **every file** in the patch (`build_tier1_map`) — a heavy pre-pass the
+    /// DIFF-1 `row_cap` windowing does **not** bound. A [`Diff`] owns nothing
+    /// across frames, so an immediate-mode review pane re-parsed the whole
+    /// patch on every scroll keystroke (the "really really slow" git-review
+    /// regression — a multi-file commit dropped to single-digit fps). The map
+    /// is a pure function of `(source, theme)` — scroll-, width- and
+    /// column-independent — so the cache memoises exactly that: the first
+    /// frame for a patch misses and parses on the unchanged path; every later
+    /// frame is an `O(1)` lookup. A hit and a miss produce **byte-identical**
+    /// [`lines`](Self::lines) (gate-enforced), and with no cache attached the
+    /// widget is exactly as before — the caller-owned-cache model
+    /// ([ADR 0025](https://github.com/andymac4182/rstui/blob/main/docs/adr/0025-caller-owned-line-cache.md)
+    /// / ADR 0012 §P1), the [`diff_syntax_cache`](crate::diff_syntax_cache)
+    /// module. No effect unless [`tree_sitter(true)`](Self::tree_sitter) is
+    /// also set; the cache must be owned by the app's model (the
+    /// [`ScrollState`](rstui_core::ScrollState) seam).
+    #[must_use]
+    pub fn syntax_cache(mut self, cache: &'a DiffSyntaxCache) -> Self {
+        self.syntax_cache = Some(cache);
+        self
+    }
+
     /// Floors the line-number column to at least `w` digits wide (default
     /// `0` = exactly the digit count of the largest line number, the
     /// historical render — **byte-identical**).
@@ -563,13 +599,23 @@ impl<'a> Diff<'a> {
         }
         let rows = parse_rows(self.source.as_ref());
         let width = width as usize;
-        // Tier-1 (ADR 0024): only when opted in. The map is built once per
-        // layout pass (the same `parse → layout` cadence the rest of the
-        // widget uses) and is purely additive — with `tree_sitter == false`
-        // it is `None` and every code path below is exactly the historical
-        // Tier-0 one (gate-enforced byte-identical).
-        let tier1 = if self.tree_sitter {
-            Some(build_tier1_map(self.source.as_ref(), &self.theme))
+        // Tier-1 (ADR 0024): only when opted in. The map is a pure function
+        // of `(source, theme)` (scroll/width/column-independent), so with a
+        // caller-owned `DiffSyntaxCache` attached (ADR 0025) it is parsed
+        // once per patch and every later frame is an `O(1)` `Rc` clone;
+        // without one it is the historical every-frame parse. Either way the
+        // value is the *same* `Tier1Map` — `RenderOpts.tier1` borrows it for
+        // this `laid_out` pass and the resolver lookups below are unchanged,
+        // so with `tree_sitter == false` (`None`) or with no cache the render
+        // is exactly the historical Tier-0 / Tier-1 one (gate-enforced
+        // byte-identical). The `Rc` outlives `opts`.
+        let tier1: Option<Rc<Tier1Map>> = if self.tree_sitter {
+            Some(match self.syntax_cache {
+                Some(cache) => cache.resolve(self.source.as_ref(), &self.theme, || {
+                    build_tier1_map(self.source.as_ref(), &self.theme)
+                }),
+                None => Rc::new(build_tier1_map(self.source.as_ref(), &self.theme)),
+            })
         } else {
             None
         };
@@ -582,7 +628,10 @@ impl<'a> Diff<'a> {
             // so the render path stays total.
             tab_width: self.tab_width.max(1),
             min_number_width: self.min_number_width,
-            tier1: tier1.as_ref(),
+            // Borrow the map out of the `Rc` (which lives to the end of this
+            // call) — `&Tier1Map`, exactly the type the resolver expected
+            // before, so its lookups are byte-identical.
+            tier1: tier1.as_deref(),
         };
         match self.layout {
             DiffLayout::Unified => layout_rows(&rows, width, &opts, row_cap),
@@ -601,13 +650,21 @@ impl<'a> Diff<'a> {
 /// trailing `'\n'`) — exactly `content.chars().count()` long, so it patches
 /// straight onto a [`DiffRow::Body`]'s `content` the same way the Tier-0
 /// `line_overlay` slice does.
-type FileTier1 = (HashMap<u32, Vec<Style>>, HashMap<u32, Vec<Style>>);
+///
+/// `pub(crate)` only so [`DiffSyntaxCache`](crate::DiffSyntaxCache) can name
+/// the [`Tier1Map`] it memoises; not part of the public API.
+pub(crate) type FileTier1 = (HashMap<u32, Vec<Style>>, HashMap<u32, Vec<Style>>);
 
 /// Per-file Tier-1 overlay map, keyed by the file's
 /// [`DiffFile::path`](crate::DiffFile) (the same cleaned path a
 /// [`DiffRow::File`] carries). Absent path / side / line ⇒ the caller falls
 /// back to Tier-0.
-type Tier1Map = HashMap<String, FileTier1>;
+///
+/// `pub(crate)` (not `pub`) only so [`DiffSyntaxCache`](crate::DiffSyntaxCache)
+/// — the caller-owned read-through memo that elides this whole-patch parse
+/// per frame (ADR 0025) — can name the value it stores. The map shape stays
+/// an internal detail; the cache hands `Diff` back an `Rc<Tier1Map>`.
+pub(crate) type Tier1Map = HashMap<String, FileTier1>;
 
 /// Precomputes the per-file Tier-1 (tree-sitter) overlay map for `source`.
 ///
@@ -3336,6 +3393,113 @@ HcmV?d00001
             with_default().render(b.area(), &mut b);
             assert_eq!(a, b, "Tier-0 cells must be identical (split={split})");
         }
+    }
+
+    /// The [`DiffSyntaxCache`] exactness contract (the gate): a multi-file
+    /// Rust patch rendered with `.tree_sitter(true)` and **no** cache vs the
+    /// same with `.syntax_cache(&cache)` produces byte-identical `lines(w)` —
+    /// a cache miss *and* a cache hit are both byte-identical to the
+    /// no-cache path (the `DiagramCache` hit≡miss contract, ADR 0025), in
+    /// both layouts. Without a cache attached the behaviour is unchanged.
+    #[cfg(feature = "rust")]
+    #[test]
+    fn syntax_cache_is_byte_identical_with_and_without_a_cache() {
+        // A genuinely multi-file patch so the per-file Tier-1 parse loop
+        // (the per-frame cost the cache removes) actually runs over >1 file.
+        let patch = "\
+--- a/lib.rs
++++ b/lib.rs
+@@ -1,2 +1,3 @@
+ struct Foo {}
++struct Bar {}
+ fn keep() {}
+@@ -10,1 +11,2 @@
+ fn other() {}
++fn do_thing() -> Foo { Foo {} }
+--- a/main.rs
++++ b/main.rs
+@@ -1 +1,2 @@
+-fn old() {}
++const N: u32 = 1;
++fn new() -> Foo { Foo {} }
+";
+        // Helpers with an explicit lifetime so the returned `Diff<'c>`
+        // borrows the cache / source for as long as it lives.
+        fn bare(patch: &str, split: bool) -> Diff<'_> {
+            let d = Diff::new(patch).syntax(true).tree_sitter(true);
+            if split { d.side_by_side() } else { d }
+        }
+        fn cached<'c>(c: &'c DiffSyntaxCache, patch: &'c str, split: bool) -> Diff<'c> {
+            let d = Diff::new(patch)
+                .syntax(true)
+                .tree_sitter(true)
+                .syntax_cache(c);
+            if split { d.side_by_side() } else { d }
+        }
+        for split in [false, true] {
+            let cache = DiffSyntaxCache::new();
+            let uncached = bare(patch, split).lines(60);
+            // First render through the cache = all misses (computes on the
+            // unchanged path); second = all hits. Both must equal the
+            // no-cache path exactly.
+            let miss = cached(&cache, patch, split).lines(60);
+            let hit = cached(&cache, patch, split).lines(60);
+            assert_eq!(
+                miss, uncached,
+                "cache miss is byte-identical (split={split})"
+            );
+            assert_eq!(
+                hit, uncached,
+                "cache hit is byte-identical too (split={split})"
+            );
+            // …and the rendered cells, style included, not just glyphs.
+            let mut a = Buffer::empty(Rect::new(0, 0, 60, 12));
+            let mut b = Buffer::empty(Rect::new(0, 0, 60, 12));
+            bare(patch, split).render(a.area(), &mut a);
+            cached(&cache, patch, split).render(b.area(), &mut b);
+            assert_eq!(a, b, "cached cells must be identical (split={split})");
+        }
+    }
+
+    /// The "9 fps → 60 fps" proof: rendering the *same* `Diff` 60× with a
+    /// cache attached runs the heavy whole-patch tree-sitter parse **once**
+    /// (the cache holds a single `(source, theme)` slot, reused 59×). This is
+    /// exactly the git-review scroll path — every keystroke is a frame, the
+    /// patch is unchanged, so every frame after the first is an `O(1)` hit
+    /// instead of a full multi-file re-parse.
+    #[cfg(feature = "rust")]
+    #[test]
+    fn rendering_a_diff_60x_with_a_cache_parses_once() {
+        let patch = "\
+--- a/lib.rs
++++ b/lib.rs
+@@ -1,2 +1,3 @@
+ struct Foo {}
++struct Bar {}
+ fn keep() {}
+--- a/main.rs
++++ b/main.rs
+@@ -1 +1 @@
+-fn old() -> Foo {}
++fn new() -> Foo {}
+";
+        let cache = DiffSyntaxCache::new();
+        assert!(cache.is_empty());
+        for _ in 0..60 {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 48, 10));
+            Diff::new(patch)
+                .syntax(true)
+                .tree_sitter(true)
+                .syntax_cache(&cache)
+                .render(buf.area(), &mut buf);
+        }
+        // One `(source, theme)` slot, computed on the first frame and reused
+        // by the other 59 — the per-frame whole-patch parse is gone.
+        assert_eq!(
+            cache.len(),
+            1,
+            "60 frames ⇒ one Tier-1 parse, then O(1) hits"
+        );
     }
 
     /// An unknown extension (no grammar) with `tree_sitter(true)` transparently

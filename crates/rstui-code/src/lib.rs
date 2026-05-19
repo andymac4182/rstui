@@ -32,6 +32,13 @@
 //!   view (hunk headers, +/- gutters, line numbers, word-level intra-line
 //!   highlight, an optional language-aware syntax tint under the diff
 //!   colours), the document analogue of `Paragraph` for code-review panes.
+//! - [`diff_syntax_cache`]: [`DiffSyntaxCache`] — the caller-owned,
+//!   bounded `(patch source, theme)` read-through memo of [`Diff`]'s Tier-1
+//!   (tree-sitter) overlay (ADR 0025 / ADR 0012 §P1, the
+//!   `rstui_widgets::DiagramCache` precedent). Opt-in via
+//!   [`Diff::syntax_cache`]; byte-identical with/without it (gate-enforced).
+//!   Elides the per-frame whole-patch tree-sitter parse a scrolling
+//!   `git-review` review pane otherwise pays.
 //! - [`syntax`]: [`Language`] / [`LexState`] / [`SyntaxStyles`] /
 //!   [`line_overlay`] — the dependency-free, language-aware lexical tinter
 //!   shared by [`Diff`] and [`Editor`], carrying an end-of-line [`LexState`]
@@ -71,6 +78,7 @@
 
 pub mod changeset;
 pub mod diff;
+pub mod diff_syntax_cache;
 pub mod editor;
 pub mod line_number_gutter;
 pub mod outline;
@@ -79,6 +87,7 @@ pub mod treesitter;
 
 pub use changeset::{Changeset, DiffFile, FileStatus, HunkRef};
 pub use diff::{Diff, DiffLayout, DiffTheme};
+pub use diff_syntax_cache::DiffSyntaxCache;
 pub use editor::Editor;
 pub use line_number_gutter::LineNumberGutter;
 pub use outline::{Outline, Symbol, SymbolKind};

@@ -20,7 +20,8 @@ use rstui_runtime::{App, Cmd};
 // chrome stays in `rstui-widgets`. git-review's behaviour is unchanged — it
 // keeps lexing with the dependency-free Tier-0 `syntax::line_overlay`.
 use rstui_code::{
-    Changeset, Diff, Editor, Language, LineNumberGutter, Outline, SymbolKind, outline, syntax,
+    Changeset, Diff, DiffSyntaxCache, Editor, Language, LineNumberGutter, Outline, SymbolKind,
+    outline, syntax,
 };
 use rstui_widgets::{
     Block, BorderType, HelpEntry, HelpOverlay, KeymapRow, KeymapView, List, Paragraph, RowState,
@@ -180,6 +181,15 @@ pub struct GitReview {
     branch: String,
     /// The selected commit's patch text (empty while a load is in flight).
     diff: String,
+    /// Caller-owned read-through memo of the review pane's Tier-1
+    /// (tree-sitter) overlay (ADR 0025 / ADR 0012 §P1). The review `Diff` is
+    /// rebuilt every frame with `.tree_sitter(true)`, which otherwise
+    /// re-parses the *whole patch* with tree-sitter on every scroll
+    /// keystroke; the map is a pure function of `(self.diff, theme)`, so this
+    /// makes the first frame for a commit a miss and every later scroll frame
+    /// an `O(1)` hit. Cleared when `self.diff` is replaced (commit change /
+    /// reload) to stay strictly bounded across a long review session.
+    diff_syntax_cache: DiffSyntaxCache,
     /// The sha `diff`/`files` belong to, so a stale async result is ignored.
     detail_for: Option<String>,
     /// Vertical scroll of the diff (now `usize`: `Diff::scroll` widened so
@@ -328,6 +338,7 @@ impl GitReview {
             sel: 0,
             branch: "?".to_owned(),
             diff: String::new(),
+            diff_syntax_cache: DiffSyntaxCache::new(),
             detail_for: None,
             diff_scroll: 0,
             diff_col: 0,
@@ -430,6 +441,12 @@ impl GitReview {
     /// loop. Cleared eagerly so the UI shows "loading" until results arrive.
     fn reload_detail(&mut self) -> Cmd<Msg> {
         self.diff.clear();
+        // The reviewed patch is being replaced wholesale (commit change /
+        // reload): drop the memoised Tier-1 slot so the cache stays strictly
+        // bounded across a long session (mirrors `DiagramCache::clear()` on
+        // wholesale content replacement — the key alone already guarantees
+        // correctness, this just frees the old patch's overlays).
+        self.diff_syntax_cache.clear();
         self.files.clear();
         self.diff_scroll = 0;
         let Some(sha) = self.current().map(|c| c.sha.clone()) else {
@@ -1763,6 +1780,16 @@ impl GitReview {
                 // falls back to the Tier-0 lexer below. Tier-0 stays the
                 // always-present floor.
                 .tree_sitter(true)
+                // Caller-owned read-through memo of the whole-patch Tier-1
+                // parse (ADR 0025): this `Diff` is rebuilt every frame, and
+                // `tree_sitter(true)` re-parses every file in the patch each
+                // time — the cost the DIFF-1 row windowing does not bound.
+                // Keyed on `(self.diff, theme)`, so the selected commit's
+                // patch is parsed once and every subsequent scroll frame is
+                // an O(1) hit (the "really really slow" review-pane fix); a
+                // `Ctrl+T` theme switch invalidates it (the key's theme
+                // fingerprint changes). Byte-identical to no cache.
+                .syntax_cache(&self.diff_syntax_cache)
                 // Language-aware Tier-0 fallback colour (gap G): resolved
                 // best-effort from the first `+++ b/<path>` in the patch (the
                 // git Cmd seam — the widget stays pure). No header ⇒
@@ -1898,6 +1925,11 @@ impl App for GitReview {
             Msg::Diff { sha, res } => {
                 if self.detail_for.as_deref() == Some(sha.as_str()) {
                     self.diff = res.unwrap_or_else(|e| format!("(patch unavailable: {e})"));
+                    // The patch text was just replaced wholesale; drop any
+                    // memoised slot for the prior content so the cache stays
+                    // bounded (the next render is a miss that warms the new
+                    // patch once, then every scroll frame is an O(1) hit).
+                    self.diff_syntax_cache.clear();
                     self.diff_scroll = 0;
                 }
                 Cmd::none()
