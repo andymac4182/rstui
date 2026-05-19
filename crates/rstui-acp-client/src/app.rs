@@ -12,8 +12,8 @@ use rstui_widgets::Markdown;
 
 use crate::Config;
 use crate::acp::{
-    AcpEvent, DriverCmd, DriverHandle, ModelOption, PermissionChoice, PermissionOption, TodoEntry,
-    TodoStatus, ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
+    AcpEvent, DriverCmd, DriverHandle, ModeOption, ModelOption, PermissionChoice, PermissionOption,
+    TodoEntry, TodoStatus, ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
 };
 use crate::history::InputHistory;
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
@@ -339,6 +339,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ),
     ("status", "Show session info & token usage"),
     ("model", "Choose the model (if the agent offers a choice)"),
+    ("mode", "Switch the session mode (plan / approval / …)"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -458,6 +459,13 @@ pub struct ChatApp {
     /// `/model` picker overlay open + its highlighted row.
     model_picker_open: bool,
     model_sel: usize,
+    /// The agent's session modes (ACP `SessionModeState`, ungated) and the
+    /// active mode id — how Codex's plan/approval modes reach the client.
+    modes: Vec<ModeOption>,
+    current_mode: Option<String>,
+    /// `/mode` picker overlay open + its highlighted row.
+    mode_picker_open: bool,
+    mode_sel: usize,
     last_size: Size,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
@@ -537,6 +545,10 @@ impl ChatApp {
             current_model: None,
             model_picker_open: false,
             model_sel: 0,
+            modes: Vec::new(),
+            current_mode: None,
+            mode_picker_open: false,
+            mode_sel: 0,
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
@@ -747,6 +759,38 @@ impl ChatApp {
     #[must_use]
     pub fn model_sel(&self) -> usize {
         self.model_sel
+    }
+    /// The agent's advertised session modes (empty if it advertised none).
+    #[must_use]
+    pub fn modes(&self) -> &[ModeOption] {
+        &self.modes
+    }
+    /// The active mode's id, if known.
+    #[must_use]
+    pub fn current_mode(&self) -> Option<&str> {
+        self.current_mode.as_deref()
+    }
+    /// The active mode's display name (falls back to its id, then `—`).
+    #[must_use]
+    pub fn current_mode_name(&self) -> String {
+        match self.current_mode.as_deref() {
+            Some(id) => self
+                .modes
+                .iter()
+                .find(|m| m.id == id)
+                .map_or_else(|| id.to_owned(), |m| m.name.clone()),
+            None => "—".to_owned(),
+        }
+    }
+    /// Whether the `/mode` picker overlay is open.
+    #[must_use]
+    pub fn mode_picker_open(&self) -> bool {
+        self.mode_picker_open
+    }
+    /// The highlighted row in the `/mode` picker.
+    #[must_use]
+    pub fn mode_sel(&self) -> usize {
+        self.mode_sel
     }
     /// The launch command of the connected agent (empty before connect).
     #[must_use]
@@ -1186,6 +1230,19 @@ impl ChatApp {
                         .and_then(|id| self.models.iter().position(|m| m.id == id))
                         .unwrap_or(0);
                     self.model_picker_open = true;
+                }
+                Cmd::none()
+            }
+            "mode" => {
+                if self.modes.is_empty() {
+                    self.push_system("this agent did not advertise session modes");
+                } else {
+                    self.mode_sel = self
+                        .current_mode
+                        .as_deref()
+                        .and_then(|id| self.modes.iter().position(|m| m.id == id))
+                        .unwrap_or(0);
+                    self.mode_picker_open = true;
                 }
                 Cmd::none()
             }
@@ -1683,6 +1740,35 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Key handling for the `/mode` picker (mirrors the model picker):
+    /// ↑/↓ (or `j`/`k`) move, Enter switches the session mode via the
+    /// driver (`session/set_mode`), Esc cancels.
+    fn mode_picker_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let last = self.modes.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => self.mode_picker_open = false,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.mode_sel = self.mode_sel.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.mode_sel = (self.mode_sel + 1).min(last);
+            }
+            KeyCode::Enter => {
+                if let Some(m) = self.modes.get(self.mode_sel) {
+                    let id = m.id.clone();
+                    if self.driver.is_none() {
+                        self.push_system("not connected — cannot switch mode");
+                    } else if let Some(driver) = &self.driver {
+                        driver.send(DriverCmd::SetMode(id));
+                    }
+                }
+                self.mode_picker_open = false;
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         if self.picking {
@@ -1718,6 +1804,9 @@ impl ChatApp {
         }
         if self.model_picker_open {
             return self.model_picker_key(key);
+        }
+        if self.mode_picker_open {
+            return self.mode_picker_key(key);
         }
         if self.keymap_panel {
             return self.keymap_panel_key(key);
@@ -2380,6 +2469,20 @@ impl ChatApp {
                     .map_or_else(|| id.clone(), |m| m.name.clone());
                 self.current_model = Some(id);
                 self.push_system(format!("model → {name}"));
+            }
+            AcpEvent::Modes { current, available } => {
+                self.modes = available;
+                self.mode_sel = self.modes.iter().position(|m| m.id == current).unwrap_or(0);
+                self.current_mode = Some(current);
+            }
+            AcpEvent::ModeChanged(id) => {
+                let name = self
+                    .modes
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map_or_else(|| id.clone(), |m| m.name.clone());
+                self.current_mode = Some(id);
+                self.push_system(format!("mode → {name}"));
             }
             AcpEvent::Usage { used, size } => {
                 self.usage = Some((used, size));

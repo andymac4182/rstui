@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use sacp::schema::{
     ClientCapabilities, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
     PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
-    TextContent,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionModeId, SessionNotification,
+    SessionUpdate, SetSessionModeRequest, TextContent,
 };
 use sacp::{Agent, Client, ConnectionTo};
 use tokio::io::AsyncBufReadExt;
@@ -160,7 +160,24 @@ async fn run(
                 .await?;
             let session_id = new_session.session_id.clone();
             let model_state = new_session.models.clone();
+            let mode_state = new_session.modes.clone();
             let _ = loop_tx.send(AcpEvent::Status("session ready".to_owned()));
+            // Surface the agent's session modes (if any) so `/mode` can
+            // offer them — how Codex's plan/approval modes reach the client.
+            if let Some(ms) = mode_state {
+                let _ = loop_tx.send(AcpEvent::Modes {
+                    current: ms.current_mode_id.0.to_string(),
+                    available: ms
+                        .available_modes
+                        .iter()
+                        .map(|m| super::events::ModeOption {
+                            id: m.id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone().unwrap_or_default(),
+                        })
+                        .collect(),
+                });
+            }
             // Surface the agent's model catalogue (if any) so `/model` can
             // offer it; the ids round-trip back via `session/set_model`.
             if let Some(ms) = model_state {
@@ -228,6 +245,21 @@ async fn run(
                                     let _ = loop_tx.send(AcpEvent::Error(err.to_string()));
                                 }
                             },
+                            Err(err) => {
+                                let _ = loop_tx.send(AcpEvent::Error(err.to_string()));
+                            }
+                        }
+                    }
+                    DriverCmd::SetMode(mode_id) => {
+                        // sacp 11 *does* type `session/set_mode`.
+                        let req = SetSessionModeRequest::new(
+                            session_id.clone(),
+                            SessionModeId::new(mode_id.clone()),
+                        );
+                        match connection.send_request(req).block_task().await {
+                            Ok(_) => {
+                                let _ = loop_tx.send(AcpEvent::ModeChanged(mode_id));
+                            }
                             Err(err) => {
                                 let _ = loop_tx.send(AcpEvent::Error(err.to_string()));
                             }
@@ -459,6 +491,12 @@ fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
                 _ => Vec::new(),
             }
         }
+        "current_mode_update" => obj
+            .get("currentModeId")
+            .and_then(|v| v.as_str())
+            .map(|id| AcpEvent::ModeChanged(id.to_owned()))
+            .into_iter()
+            .collect(),
         other => content_text
             .map(AcpEvent::AgentText)
             .into_iter()

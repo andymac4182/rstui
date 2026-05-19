@@ -1458,3 +1458,76 @@ fn model_catalogue_drives_the_model_picker() {
     );
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W2-3: /mode session-mode switch ----
+
+use rstui_acp_client::acp::ModeOption;
+
+fn mode_opt(id: &str, name: &str) -> ModeOption {
+    ModeOption {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        description: String::new(),
+    }
+}
+
+/// The agent's `NewSessionResponse.modes` feeds `/mode`; an agent-initiated
+/// `current_mode_update` (delivered as `AcpEvent::ModeChanged`) and our own
+/// `session/set_mode` both update the active mode + breadcrumb it.
+#[test]
+fn session_modes_drive_the_mode_picker() {
+    let mut h = chatting(110, 30);
+
+    typ(&mut h, "/mode");
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().mode_picker_open());
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("did not advertise session modes")
+    );
+
+    h.message(Msg::Acp(AcpEvent::Modes {
+        current: "default".to_owned(),
+        available: vec![mode_opt("default", "Default"), mode_opt("plan", "Plan")],
+    }));
+    assert_eq!(h.app().current_mode(), Some("default"));
+    assert_eq!(h.app().current_mode_name(), "Default");
+
+    typ(&mut h, "/mode");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().mode_picker_open());
+    assert_eq!(h.app().mode_sel(), 0, "starts on the current mode");
+    let screen = h.snapshot();
+    assert!(screen.contains("Default") && screen.contains("Plan"));
+
+    key(&mut h, KeyCode::Down);
+    assert_eq!(h.app().mode_sel(), 1);
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().mode_picker_open(), "Enter closes the picker");
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("not connected")
+    );
+
+    // The agent switching mode itself (current_mode_update) is authoritative.
+    h.message(Msg::Acp(AcpEvent::ModeChanged("plan".to_owned())));
+    assert_eq!(h.app().current_mode(), Some("plan"));
+    assert_eq!(h.app().current_mode_name(), "Plan");
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("mode → Plan")
+    );
+    assert!(h.is_running());
+}

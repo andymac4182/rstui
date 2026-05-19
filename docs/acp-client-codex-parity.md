@@ -54,7 +54,7 @@ out of scope per above.
 | ~~Full-screen transcript pager (Codex `/transcript`)~~ | **Done** (iter 6) | W1-6 ✅ |
 | ~~`/status` session + token usage~~ | **Done** (iter 7) | W2-1 ✅ |
 | ~~`/model`~~ picker (model selection) | **Done** (iter 7) | W2-2 ✅ |
-| **`/mode`** session-mode switch (covers `/plan`, approval modes) | **Gap** | W2-3 |
+| ~~`/mode`~~ session-mode switch (covers `/plan`, approval modes) | **Done** (iter 7) | W2-3 ✅ |
 | **`/resume`** list & load prior sessions | **Gap** | W2-4 |
 | **`@`-file mentions** with fuzzy completion | **Gap** | W2-5 |
 | **Sign-in** when the agent requires auth | **Gap** | W2-6 |
@@ -114,9 +114,12 @@ docs-updated slice, merged back under the serialized lock
    (also shown in `/status`). *Reasoning-effort* is not a separate ACP axis —
    agents expose it either as distinct models here or as session
    modes/config (W2-3).
-9. **W2-3 `/mode`** — capture `SessionModeState`; a picker that issues
-   `session/set_mode` (this is how Codex's plan/approval modes reach a
-   generic client).
+9. **W2-3 `/mode`** ✅ *(landed, iter 7)* — `NewSessionResponse.modes`
+   (ungated `SessionModeState`) → `AcpEvent::Modes`; a `/mode` picker issues
+   the **typed** `SetSessionModeRequest` (`session/set_mode`), and an
+   agent-initiated `current_mode_update` notification is reflected back
+   (`AcpEvent::ModeChanged`). Shown in `/status`. This is how Codex's
+   plan/approval modes reach a generic client.
 10. **W2-4 `/resume`** — list resumable sessions and `session/load` one,
     gated on `SessionResumeCapabilities`.
 11. **W2-5 `@`-mentions** — fuzzy file completion in the composer; selected

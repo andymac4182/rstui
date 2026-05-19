@@ -41,6 +41,18 @@ pub enum AcpEvent {
     },
     /// The agent confirmed a `session/set_model`; the new current model id.
     ModelSelected(String),
+    /// The agent's session modes (from `NewSessionResponse.modes`): the
+    /// current mode id and the catalogue, surfaced by `/mode`. This is how
+    /// Codex's plan/approval modes reach a generic ACP client.
+    Modes {
+        /// The currently-active mode id.
+        current: String,
+        /// The modes the agent offers.
+        available: Vec<ModeOption>,
+    },
+    /// The session mode changed (ACP `current_mode_update`, or our own
+    /// `session/set_mode` ack): the new current mode id.
+    ModeChanged(String),
     /// A context-window usage update (ACP `usage_update`): tokens currently
     /// in context and the total window size, surfaced in `/status`.
     Usage {
@@ -251,6 +263,18 @@ pub struct ModelOption {
     pub description: String,
 }
 
+/// One agent-advertised session mode (ACP `SessionMode`), shown in the
+/// `/mode` picker.
+#[derive(Debug, Clone)]
+pub struct ModeOption {
+    /// Opaque mode id, echoed back in `session/set_mode`.
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Optional one-line description (empty if the agent gave none).
+    pub description: String,
+}
+
 /// One selectable answer to a [`AcpEvent::Permission`] request.
 #[derive(Debug, Clone)]
 pub struct PermissionOption {
@@ -278,6 +302,8 @@ pub enum DriverCmd {
     Cancel,
     /// Switch the session model (`session/set_model`) to this model id.
     SetModel(String),
+    /// Switch the session mode (`session/set_mode`) to this mode id.
+    SetMode(String),
     /// Answer a pending [`AcpEvent::Permission`].
     Permission {
         /// The id from the request being answered.
