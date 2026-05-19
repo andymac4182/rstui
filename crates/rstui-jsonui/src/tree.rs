@@ -362,6 +362,51 @@ pub struct ChartSeries {
     pub labels: Vec<String>,
 }
 
+/// Build an interactive slider as a `[−] label: value [+]` row of
+/// hit-testable [`UiNode::Button`]s around a value label — so a bounded
+/// numeric input is keyboard-focusable (it joins the focus ring) and
+/// click/Enter-steppable, with **no new node variant** (the reducer
+/// decodes the stepper ids). The decrement/increment buttons carry
+/// `"<ptr>#slider:<±step>:<min>:<max>"`; the reducer reads the current
+/// value at `ptr`, clamps `value ± step` to `min..=max`, and writes it
+/// back (two-way), identically for A2UI and json-render. Shared so both
+/// format layers project a slider the same way.
+#[must_use]
+pub fn slider_row(ptr: &str, label: &str, value: f64, min: f64, max: f64, step: f64) -> UiNode {
+    let step = if step > 0.0 { step } else { 1.0 };
+    let caption = if label.is_empty() {
+        format!("{value}")
+    } else {
+        format!("{label}: {value}")
+    };
+    UiNode::Row {
+        children: vec![
+            UiNode::Button {
+                id: format!("{ptr}#slider:{}:{min}:{max}", -step),
+                label: "[−]".to_owned(),
+                primary: false,
+                disabled: false,
+                focused: false,
+            },
+            UiNode::Text {
+                spans: vec![(format!(" {caption} "), Style::new())],
+                variant: TextVariant::Body,
+                align: Alignment::Left,
+                wrap: false,
+            },
+            UiNode::Button {
+                id: format!("{ptr}#slider:{step}:{min}:{max}"),
+                label: "[+]".to_owned(),
+                primary: false,
+                disabled: false,
+                focused: false,
+            },
+        ],
+        justify: Justify::Start,
+        align: CrossAlign::Center,
+    }
+}
+
 impl Default for UiNode {
     fn default() -> Self {
         Self::Placeholder(String::new())

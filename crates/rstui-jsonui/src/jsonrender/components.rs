@@ -487,6 +487,20 @@ fn map_component(
             masked: prop_str(props, "mask").is_some_and(|mask| !mask.is_empty()),
             focused: false,
         },
+        "Checkbox" | "Switch" | "Toggle" => UiNode::Checkbox {
+            id: bound_id(node_id, bindings, "value"),
+            label: prop_str(props, "label").unwrap_or("").to_owned(),
+            checked: prop_bool(props, "value") || prop_bool(props, "checked"),
+            focused: false,
+        },
+        "Slider" | "Range" => crate::tree::slider_row(
+            &bound_id(node_id, bindings, "value"),
+            prop_str(props, "label").unwrap_or(""),
+            prop_f64(props, "value").unwrap_or(0.0),
+            prop_f64(props, "min").unwrap_or(0.0),
+            prop_f64(props, "max").unwrap_or(100.0),
+            prop_f64(props, "step").unwrap_or(1.0),
+        ),
         "Select" | "MultiSelect" => select(props, node_id, on),
         "ConfirmInput" => {
             let yes = prop_str(props, "yesLabel").unwrap_or("Yes").to_owned();

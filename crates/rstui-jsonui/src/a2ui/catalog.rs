@@ -408,26 +408,23 @@ fn project_id(id: &str, scope: &str, walk: &mut Walk<'_>) -> UiNode {
         },
         "ChoicePicker" => project_choice_picker(id, &properties, scope, model, interaction),
         "Slider" => {
+            // Interactive (was a read-only Gauge): a `[−] value [+]`
+            // stepper bound two-way to the `{path}` so a Slider is a
+            // submittable form element. The reducer steps + writes back.
             let value = prop("value")
                 .and_then(|raw| resolve_number(raw, model, scope))
                 .unwrap_or(0.0);
             let min = prop("min").and_then(Value::as_f64).unwrap_or(0.0);
-            let max = prop("max").and_then(Value::as_f64).unwrap_or(1.0);
-            let span = max - min;
-            let ratio = if span.abs() < f64::EPSILON {
-                0.0
-            } else {
-                ((value - min) / span).clamp(0.0, 1.0)
-            };
+            let max = prop("max").and_then(Value::as_f64).unwrap_or(100.0);
+            let step = prop("step").and_then(Value::as_f64).unwrap_or(1.0);
             let label = prop("label")
                 .map(|raw| resolve_text(raw, model, scope))
-                .filter(|text| !text.is_empty())
-                .map(|text| format!("{text}: {value}"))
-                .unwrap_or_else(|| value.to_string());
-            UiNode::Gauge {
-                ratio,
-                label: Some(label),
-            }
+                .unwrap_or_default();
+            let ptr = prop("value")
+                .and_then(|v| v.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or(id);
+            crate::tree::slider_row(ptr, &label, value, min, max, step)
         }
         "BarChart" | "Bar" => a2ui_chart(ChartKind::Bar, &properties, walk.palette),
         "LineChart" | "Line" => a2ui_chart(ChartKind::Line, &properties, walk.palette),

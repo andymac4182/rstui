@@ -627,6 +627,18 @@ impl RichDoc {
     pub fn act_node(&mut self, node_id: &str, timestamp: &str) -> Option<RichAction> {
         match self {
             Self::A2ui(surface) => {
+                // Slider stepper `"<ptr>#slider:<±step>:<min>:<max>"`:
+                // clamp `value ± step` and write it back two-way.
+                if let Some((ptr, delta, min, max)) = parse_slider_id(node_id) {
+                    let cur = surface
+                        .model()
+                        .get(ptr)
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
+                    let next = (cur + delta).clamp(min, max);
+                    surface.model_mut().set(ptr, json!(next));
+                    return Some(RichAction::Local(format!("{ptr} = {next}")));
+                }
                 // A2UI `Tabs` header: `"<tabsId>#tab:<index>"` switches
                 // the reducer-owned active tab (selection state, not the
                 // data model) — the spec's tab model.
@@ -651,6 +663,19 @@ impl RichDoc {
                 }
             }
             Self::Json(doc) => {
+                // Slider stepper: clamp + two-way write-back.
+                if let Some((ptr, delta, min, max)) = parse_slider_id(node_id) {
+                    let cur = doc.model().get(ptr).and_then(Value::as_f64).unwrap_or(0.0);
+                    let next = (cur + delta).clamp(min, max);
+                    doc.write_binding(ptr, json!(next));
+                    return Some(RichAction::Local(format!("{ptr} = {next}")));
+                }
+                // A `Checkbox`/`Switch` is two-way (no `on.press`): its
+                // id is the `$bindState` pointer — flip the bound bool.
+                if let Some(checked) = find_checkbox(&doc.view(), node_id) {
+                    doc.write_binding(node_id, Value::Bool(!checked));
+                    return Some(RichAction::Local(format!("{node_id} = {}", !checked)));
+                }
                 // `dispatch` mutates the owned data model in place, so a
                 // `setState`/`pushState` persists and re-renders.
                 let mut to_agent = None;
@@ -683,6 +708,37 @@ impl RichDoc {
 fn parse_tab_id(node_id: &str) -> Option<(&str, usize)> {
     let (base, rest) = node_id.split_once("#tab:")?;
     Some((base, rest.parse::<usize>().ok()?))
+}
+
+/// Parses a slider-stepper id `"<ptr>#slider:<±step>:<min>:<max>"` into
+/// `(ptr, delta, min, max)`. `None` for any other id (total) — the
+/// shared format ([`rstui_jsonui::tree::slider_row`]) both A2UI and
+/// json-render sliders emit.
+fn parse_slider_id(node_id: &str) -> Option<(&str, f64, f64, f64)> {
+    let (ptr, rest) = node_id.split_once("#slider:")?;
+    let mut it = rest.split(':');
+    let delta = it.next()?.parse::<f64>().ok()?;
+    let min = it.next()?.parse::<f64>().ok()?;
+    let max = it.next()?.parse::<f64>().ok()?;
+    Some((ptr, delta, min, max))
+}
+
+/// Depth-first search for a `Checkbox` with `id`, returning its current
+/// `checked`. Total over the projected tree (mirrors [`find_field`]);
+/// used to two-way-toggle a json-render `Checkbox`/`Switch` (its id is
+/// the `$bindState` pointer; it has no `on.press`).
+fn find_checkbox(node: &UiNode, id: &str) -> Option<bool> {
+    match node {
+        UiNode::Checkbox {
+            id: cid, checked, ..
+        } if cid == id => Some(*checked),
+        UiNode::Column { children, .. } | UiNode::Row { children, .. } => {
+            children.iter().find_map(|child| find_checkbox(child, id))
+        }
+        UiNode::Stack(children) => children.iter().find_map(|child| find_checkbox(child, id)),
+        UiNode::Card { child, .. } | UiNode::Scroll { child, .. } => find_checkbox(child, id),
+        _ => None,
+    }
 }
 
 /// Depth-first search for an editable `TextField` with `id`, returning
@@ -1083,6 +1139,99 @@ mod tests {
         assert!(
             matches!(d2.act_node("b", "t"), Some(RichAction::Local(_))),
             "a builtin-action Button stays local, not a round-trip"
+        );
+    }
+
+    /// The projected interactive node ids (the focus ring) — proves a
+    /// form element is actually hit-testable, and lets a test find the
+    /// real stepper ids without re-deriving the `#slider:` format.
+    fn ring_ids(doc: &RichDoc) -> Vec<String> {
+        let (_, hits) = doc.render_pane(80, 24);
+        hits.entries().iter().map(|h| h.id.clone()).collect()
+    }
+
+    #[test]
+    fn json_render_checkbox_and_slider_are_interactive_and_submit() {
+        // Every form element must be usable + reach the agent: a
+        // Checkbox toggles two-way, a Slider steps within bounds, and a
+        // submit Button's params resolve the live state.
+        let spec = r#"{"root":"f","elements":{
+            "f":{"type":"Box","children":["a","q","go"]},
+            "a":{"type":"Checkbox","props":{"label":"Agree","value":{"$bindState":"/agree"}}},
+            "q":{"type":"Slider","props":{"label":"Qty","value":{"$bindState":"/qty"},"min":0,"max":10,"step":2}},
+            "go":{"type":"Button","props":{"label":"Go"},"on":{"press":{"action":"submit","params":{"agree":{"$state":"/agree"},"qty":{"$state":"/qty"}}}}}
+        },"state":{"agree":false,"qty":4}}"#;
+        let mut doc = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::JsonRender,
+            source: spec.to_owned(),
+        })
+        .expect("builds");
+
+        let ids = ring_ids(&doc);
+        assert!(
+            ids.iter().any(|i| i == "/agree"),
+            "the Checkbox is hit-testable (focus ring): {ids:?}"
+        );
+        let inc = ids
+            .iter()
+            .find(|i| i.contains("#slider:") && !i.contains("#slider:-"))
+            .cloned()
+            .expect("the Slider [+] stepper is hit-testable");
+
+        // Checkbox: false → true.
+        assert!(matches!(
+            doc.act_node("/agree", "t"),
+            Some(RichAction::Local(_))
+        ));
+        // Slider: 4 → 6 → 8 → 10 → 10 (clamped at max).
+        for _ in 0..4 {
+            let _ = doc.act_node(&inc, "t");
+        }
+
+        let RichAction::ToAgent(json) = doc.act_node("go", "t").expect("submit") else {
+            panic!("submit must round-trip");
+        };
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["params"]["agree"], true, "checkbox toggled into submit");
+        assert_eq!(
+            v["params"]["qty"], 10.0,
+            "slider stepped + clamped into submit: {json}"
+        );
+    }
+
+    #[test]
+    fn a2ui_slider_steps_and_a_button_event_submits_it() {
+        let a2ui = concat!(
+            r#"{"version":"v0.10","createSurface":{"surfaceId":"s","catalogId":"c"}}"#,
+            "\n",
+            r#"{"version":"v0.10","updateComponents":{"surfaceId":"s","components":["#,
+            r#"{"id":"root","component":"Column","children":["n","ok"]},"#,
+            r#"{"id":"n","component":"Slider","value":{"path":"/n"},"min":0,"max":9,"step":3,"label":"N"},"#,
+            r#"{"id":"ok","component":"Button","child":"l","action":{"event":{"name":"save","context":{"n":{"path":"/n"}}}}},"#,
+            r#"{"id":"l","component":"Text","text":"OK"}"#,
+            r#"]}}"#,
+        );
+        let mut doc = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::A2ui,
+            source: a2ui.to_owned(),
+        })
+        .expect("A2UI builds");
+        let inc = ring_ids(&doc)
+            .into_iter()
+            .find(|i| i.contains("#slider:") && !i.contains("#slider:-"))
+            .expect("A2UI Slider is interactive (focus ring)");
+        // 0 → 3 → 6 → 9 → 9 (clamp at max=9).
+        for _ in 0..4 {
+            let _ = doc.act_node(&inc, "t");
+        }
+        let RichAction::ToAgent(json) = doc.act_node("ok", "2026-01-01T00:00:00Z").expect("submit")
+        else {
+            panic!("the Button event must round-trip");
+        };
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["action"]["context"]["n"], 9.0,
+            "the stepped slider value is in the submitted A2UI context: {json}"
         );
     }
 
