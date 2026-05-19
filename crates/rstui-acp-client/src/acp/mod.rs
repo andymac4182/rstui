@@ -31,6 +31,7 @@ pub use events::{
     ToolStatus, WireDir,
 };
 pub use richui::{
-    MessageSegment, RichUiFormat, RichUiPayload, render_capability_meta,
-    render_source as render_rich_ui, segments as message_segments, split_message as split_rich_ui,
+    MessageSegment, RichAction, RichUiFormat, RichUiPayload, click as rich_click,
+    render_capability_meta, render_source as render_rich_ui, segments as message_segments,
+    split_message as split_rich_ui,
 };

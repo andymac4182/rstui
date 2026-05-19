@@ -25,12 +25,12 @@
 //! composes with the existing immediate-mode transcript with no new
 //! lifecycle.
 
-use rstui_core::{Buffer, Line, Rect, Span, Style, Widget};
-use rstui_jsonui::a2ui::A2uiSurface;
-use rstui_jsonui::jsonrender::JsonRenderDoc;
+use rstui_core::{Buffer, Line, Position, Rect, Span, Style, Widget};
+use rstui_jsonui::a2ui::{A2uiClientAction, A2uiSurface};
+use rstui_jsonui::jsonrender::{ActionEffect, JsonRenderDoc};
 use rstui_jsonui::tree::HitMap;
 use rstui_widgets::{JsonCanvas, Mermaid, Structurizr};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Which renderable format an agent block is. The two declarative-UI
 /// engines, plus the three diagram DSLs the client already advertises
@@ -121,10 +121,8 @@ pub fn detect(text: &str) -> Option<RichUiPayload> {
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
         return None;
     }
-    let parsed: Value = serde_json::from_str(trimmed).ok()?;
 
-    // A2UI: an envelope object/array carrying a `version` + one of the
-    // six message keys (or a `messages` wrapper).
+    // An A2UI envelope: `version` + one of the six message keys.
     let is_a2ui_envelope = |entry: &Value| {
         entry.get("version").and_then(Value::as_str).is_some()
             && [
@@ -138,34 +136,54 @@ pub fn detect(text: &str) -> Option<RichUiPayload> {
             .iter()
             .any(|key| entry.get(*key).is_some())
     };
-    let a2ui = match &parsed {
-        Value::Array(items) => items.iter().any(&is_a2ui_envelope),
-        Value::Object(map) => {
-            is_a2ui_envelope(&parsed)
-                || map
-                    .get("messages")
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| items.iter().any(&is_a2ui_envelope))
+
+    // Single JSON value: a json-render flat spec, or a one-shot A2UI
+    // object / array / `{messages:[…]}` wrapper.
+    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+        let a2ui = match &parsed {
+            Value::Array(items) => items.iter().any(&is_a2ui_envelope),
+            Value::Object(map) => {
+                is_a2ui_envelope(&parsed)
+                    || map
+                        .get("messages")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| items.iter().any(&is_a2ui_envelope))
+            }
+            _ => false,
+        };
+        if a2ui {
+            return Some(RichUiPayload {
+                format: RichUiFormat::A2ui,
+                source: trimmed.to_owned(),
+            });
         }
-        _ => false,
-    };
-    if a2ui {
-        return Some(RichUiPayload {
-            format: RichUiFormat::A2ui,
-            source: trimmed.to_owned(),
-        });
+        // json-render: a flat spec — a `root` string + `elements` object.
+        if parsed.get("root").and_then(Value::as_str).is_some()
+            && parsed.get("elements").map(Value::is_object) == Some(true)
+        {
+            return Some(RichUiPayload {
+                format: RichUiFormat::JsonRender,
+                source: trimmed.to_owned(),
+            });
+        }
+        return None;
     }
 
-    // json-render: a flat spec — a `root` string + an `elements` object.
-    if parsed.get("root").and_then(Value::as_str).is_some()
-        && parsed.get("elements").map(Value::is_object) == Some(true)
-    {
-        return Some(RichUiPayload {
-            format: RichUiFormat::JsonRender,
-            source: trimmed.to_owned(),
-        });
-    }
-    None
+    // Not a single value — A2UI is **JSONL** (one server→client envelope
+    // per line). `serde_json::from_str` rejects multi-object input, so a
+    // raw/fence-stripped A2UI stream was never detected and fell back to
+    // raw text. Recognise it line-by-line; `A2uiSurface::apply_stream`
+    // consumes the whole stream.
+    let is_a2ui_stream = trimmed.lines().any(|line| {
+        serde_json::from_str::<Value>(line.trim())
+            .ok()
+            .as_ref()
+            .is_some_and(&is_a2ui_envelope)
+    });
+    is_a2ui_stream.then(|| RichUiPayload {
+        format: RichUiFormat::A2ui,
+        source: trimmed.to_owned(),
+    })
 }
 
 /// Splits an **assembled** (post-stream) agent message into
@@ -253,21 +271,24 @@ pub fn segments(text: &str) -> Vec<MessageSegment> {
 /// uses for diagrams). Always total: a malformed document degrades to
 /// the engine's own placeholder, never a panic.
 #[must_use]
-pub fn render_lines(payload: &RichUiPayload, width: u16, max_height: u16) -> Vec<Line<'static>> {
+/// Paints `payload` into a scratch [`Buffer`] (the exact projection the
+/// transcript draws) and returns it with the interactive-node
+/// [`HitMap`]. `None` only for an unparseable json-render document.
+/// Shared by [`render_lines`] (ignores the hit map) and [`click`] (uses
+/// it) so what is drawn and what a click resolves to cannot drift.
+fn paint(payload: &RichUiPayload, width: u16, max_height: u16) -> Option<(Buffer, HitMap)> {
     let width = width.max(1);
     let cap = max_height.max(1);
-    let mut scratch;
-    match payload.format {
+    let mut hits = HitMap::new();
+    let scratch = match payload.format {
         RichUiFormat::A2ui | RichUiFormat::JsonRender => {
             let node = if payload.format == RichUiFormat::A2ui {
                 let mut surface = A2uiSurface::new();
                 surface.apply_stream(&payload.source);
                 surface.project()
             } else {
-                match serde_json::from_str::<Value>(&payload.source) {
-                    Ok(spec) => JsonRenderDoc::from_flat_value(&spec).view(),
-                    Err(_) => return vec![Line::raw("[invalid json-render document]")],
-                }
+                let spec = serde_json::from_str::<Value>(&payload.source).ok()?;
+                JsonRenderDoc::from_flat_value(&spec).view()
             };
             // Size the scratch to the document's *content* height
             // (clamped by the caller's cap), not the cap itself —
@@ -275,27 +296,40 @@ pub fn render_lines(payload: &RichUiPayload, width: u16, max_height: u16) -> Vec
             // `max_height` and, with the transcript's sticky-bottom
             // autoscroll, the content scrolls out of view.
             let height = node.measure_height(width).clamp(1, cap);
-            scratch = Buffer::empty(Rect::new(0, 0, width, height));
-            node.render(scratch.area(), &mut scratch, &mut HitMap::new());
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+            node.render(buffer.area(), &mut buffer, &mut hits);
+            buffer
         }
         // The diagram DSLs: render the *same* widget the kitchen-sink
         // Rich Text screen uses, into a capped scratch (trailing blank
         // rows are trimmed below, so a small diagram stays small). Each
         // widget is total — invalid/streaming-truncated source degrades
-        // to its own placeholder, never a panic.
+        // to its own placeholder, never a panic. Diagrams are static
+        // (no hit map).
         RichUiFormat::Mermaid => {
-            scratch = Buffer::empty(Rect::new(0, 0, width, cap));
-            Mermaid::new(payload.source.as_str()).render(scratch.area(), &mut scratch);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, cap));
+            Mermaid::new(payload.source.as_str()).render(buffer.area(), &mut buffer);
+            buffer
         }
         RichUiFormat::Structurizr => {
-            scratch = Buffer::empty(Rect::new(0, 0, width, cap));
-            Structurizr::new(payload.source.as_str()).render(scratch.area(), &mut scratch);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, cap));
+            Structurizr::new(payload.source.as_str()).render(buffer.area(), &mut buffer);
+            buffer
         }
         RichUiFormat::JsonCanvas => {
-            scratch = Buffer::empty(Rect::new(0, 0, width, cap));
-            JsonCanvas::new(payload.source.as_str()).render(scratch.area(), &mut scratch);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, cap));
+            JsonCanvas::new(payload.source.as_str()).render(buffer.area(), &mut buffer);
+            buffer
         }
-    }
+    };
+    Some((scratch, hits))
+}
+
+pub fn render_lines(payload: &RichUiPayload, width: u16, max_height: u16) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let Some((scratch, _hits)) = paint(payload, width, max_height) else {
+        return vec![Line::raw("[invalid json-render document]")];
+    };
 
     // Convert painted rows to owned Lines, trimming the trailing blank
     // rows so an over-tall scratch does not pad the transcript.
@@ -335,6 +369,85 @@ pub fn render_source(source: &str, width: u16, max_height: u16) -> Vec<Line<'sta
             .lines()
             .map(|raw| Line::from(vec![Span::raw("  "), Span::raw(raw.to_owned())]))
             .collect(),
+    }
+}
+
+/// What a click on a rendered block resolves to — the reducer performs
+/// it (no callback; ADR 0012 §P1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RichAction {
+    /// Send this text to the agent as a turn: an A2UI client-action
+    /// envelope (`{"version":…,"action":{name,context,…}}`) or a
+    /// json-render custom-action `{action,params}` — so the agent can
+    /// react and stream the next surface.
+    ToAgent(String),
+    /// Open this URL (an A2UI `openUrl` function-call / a `Link`).
+    OpenUrl(String),
+    /// A local-only effect (a two-way input / `setState`); carries a
+    /// short human description for a transcript breadcrumb. Persisting
+    /// local UI state across redraws is a separate follow-up; the agent
+    /// round-trip — the common, asked-for case — is unaffected.
+    Local(String),
+}
+
+/// Resolves a click at **block-local** `pos` on the rendered `source`
+/// to a [`RichAction`], or `None` when the click is not on an
+/// interactive node. Re-derives the exact projection the transcript
+/// drew (via `paint`) so the hit map matches pixel-for-pixel. The
+/// A2UI client-action envelope is stamped with the surface's own id
+/// (parsed from the document) and `timestamp`.
+#[must_use]
+pub fn click(
+    source: &str,
+    width: u16,
+    max_height: u16,
+    pos: Position,
+    timestamp: &str,
+) -> Option<RichAction> {
+    let payload = detect(source)?;
+    let (_, hits) = paint(&payload, width.max(1), max_height)?;
+    let node_id = hits.at(pos)?.to_owned();
+    match payload.format {
+        RichUiFormat::A2ui => {
+            let mut surface = A2uiSurface::new();
+            surface.apply_stream(&payload.source);
+            let surface_id = surface.surface_id().unwrap_or_default().to_owned();
+            match surface.action_for(&node_id)? {
+                A2uiClientAction::OpenUrl(url) => Some(RichAction::OpenUrl(url)),
+                A2uiClientAction::SetData { pointer, .. } => {
+                    Some(RichAction::Local(format!("set {pointer}")))
+                }
+                // The server `event` variant — the agent round-trip.
+                event => event
+                    .to_client_json(&surface_id, timestamp)
+                    .map(|value| RichAction::ToAgent(value.to_string())),
+            }
+        }
+        RichUiFormat::JsonRender => {
+            let spec = serde_json::from_str::<Value>(&payload.source).ok()?;
+            let mut doc = JsonRenderDoc::from_flat_value(&spec);
+            let mut to_agent: Option<String> = None;
+            let mut local: Option<String> = None;
+            for effect in doc.dispatch(&node_id, "press") {
+                match effect {
+                    ActionEffect::Unhandled(action) => {
+                        to_agent = Some(
+                            json!({ "action": action.action, "params": action.params }).to_string(),
+                        );
+                    }
+                    ActionEffect::StateChanged => {
+                        local = local.or_else(|| Some("updated".to_owned()));
+                    }
+                    ActionEffect::Log(message) => local = Some(message),
+                    ActionEffect::Exit(_) => {}
+                }
+            }
+            to_agent
+                .map(RichAction::ToAgent)
+                .or(local.map(RichAction::Local))
+        }
+        // Diagrams (Mermaid/Structurizr/JSON-Canvas) are static.
+        RichUiFormat::Mermaid | RichUiFormat::Structurizr | RichUiFormat::JsonCanvas => None,
     }
 }
 
@@ -502,5 +615,49 @@ mod tests {
         // Whole-message bare doc → a single Rich segment.
         let bare = segments(r#"{"root":"a","elements":{}}"#);
         assert!(matches!(bare.as_slice(), [MessageSegment::Rich(_)]));
+    }
+
+    #[test]
+    fn click_resolves_a_button_to_an_agent_round_trip() {
+        // An A2UI surface whose root is a Button with a server event.
+        let a2ui = concat!(
+            r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"c"}}"#,
+            "\n",
+            r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":["#,
+            r#"{"id":"root","component":"Button","child":"l","action":{"event":{"name":"signup"}}},"#,
+            r#"{"id":"l","component":"Text","text":"Sign up"}"#,
+            r#"]}}"#,
+        );
+        // A click on the button → the client→server `action` envelope.
+        let hit =
+            (0..6).find_map(|x| click(a2ui, 40, 12, Position::new(x, 0), "2026-05-19T00:00:00Z"));
+        match hit {
+            Some(RichAction::ToAgent(json)) => {
+                assert!(json.contains("\"action\"") || json.contains("signup"));
+                assert!(json.contains("signup"), "carries the event name: {json}");
+                assert!(json.contains("s1"), "carries the surfaceId: {json}");
+            }
+            other => panic!("button click should round-trip to the agent, got {other:?}"),
+        }
+        // A click far outside any node resolves to nothing.
+        assert!(click(a2ui, 40, 12, Position::new(39, 11), "t").is_none());
+
+        // An A2UI link `openUrl` → OpenUrl (local, not the agent).
+        let url_doc = concat!(
+            r#"{"version":"v0.10","createSurface":{"surfaceId":"s","catalogId":"c"}}"#,
+            "\n",
+            r#"{"version":"v0.10","updateComponents":{"surfaceId":"s","components":["#,
+            r#"{"id":"root","component":"Button","child":"l","action":{"functionCall":{"call":"openUrl","args":{"url":"https://example.com"}}}},"#,
+            r#"{"id":"l","component":"Text","text":"Docs"}"#,
+            r#"]}}"#,
+        );
+        let url_hit = (0..6).find_map(|x| click(url_doc, 40, 12, Position::new(x, 0), "t"));
+        assert!(
+            matches!(url_hit, Some(RichAction::OpenUrl(ref u)) if u.contains("example.com")),
+            "openUrl resolves to OpenUrl, got {url_hit:?}"
+        );
+
+        // Prose / non-doc never resolves.
+        assert!(click("just text", 40, 12, Position::new(0, 0), "t").is_none());
     }
 }

@@ -10,7 +10,7 @@
 use rstui_acp_client::Config;
 use rstui_acp_client::app::{ChatApp, Msg, Screen};
 use rstui_acp_client::registry::Registry;
-use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Size};
+use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Position, Size};
 use rstui_runtime::Harness;
 
 /// Builds a harness over a freshly constructed `ChatApp`. `Harness::new` runs
@@ -1261,6 +1261,65 @@ fn a_message_with_markdown_and_several_blocks_renders_each_inline() {
         "no raw fenced blocks shown as code (they became widgets):\n{s}"
     );
     assert!(h.is_running());
+}
+
+#[test]
+fn clicking_a_rendered_button_round_trips_an_action_to_the_agent() {
+    // The end-to-end interactive path: an agent streams an A2UI form
+    // wrapped in prose; it renders as a real UI; clicking its button
+    // resolves the action and routes it back to the agent. (Headless
+    // has no live agent, so the deterministic proof the whole pipeline
+    // — rich_hit → rich_click → send_agent_action — fired is the
+    // not-connected breadcrumb, same convention as /render.)
+    let mut h = chatting(140, 44);
+    h.message(Msg::Resize(Size::new(140, 44)));
+    for chunk in [
+        "Here is the form:\n\n```a2ui\n",
+        r#"{"version":"v0.10","createSurface":{"surfaceId":"s1","catalogId":"c"}}"#,
+        "\n",
+        r#"{"version":"v0.10","updateComponents":{"surfaceId":"s1","components":["#,
+        r#"{"id":"root","component":"Column","children":["t","b"]},"#,
+        r#"{"id":"t","component":"Text","text":"Ready?"},"#,
+        r#"{"id":"b","component":"Button","child":"bl","action":{"event":{"name":"confirm"}}},"#,
+        r#"{"id":"bl","component":"Text","text":"Confirm"}]}}"#,
+        "\n```\n\nClick it when ready.",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+
+    let screen = h.snapshot();
+    // The A2UI JSONL stream actually RENDERED (the detect-JSONL fix):
+    // the button label is on screen, not raw `"updateComponents"` JSON.
+    assert!(
+        screen.contains("Confirm") && !screen.contains("\"updateComponents\""),
+        "the streamed A2UI form rendered as a UI:\n{screen}"
+    );
+
+    // Find the button label on screen and click it.
+    let (bx, by) = screen
+        .lines()
+        .enumerate()
+        .find_map(|(y, line)| line.find("Confirm").map(|cx| (cx as u16, y as u16)))
+        .expect("button label is on screen");
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned()))); // keep Chat
+    h.message(Msg::RichClick(Position::new(bx + 1, by)));
+
+    let after = h.snapshot();
+    assert!(
+        after.contains("not connected") || after.contains("UI action sent"),
+        "clicking the button resolved + routed the action (round-trip \
+         pipeline fired):\n{after}"
+    );
+
+    // A click on empty space below everything resolves to nothing new.
+    let mut h2 = chatting(140, 44);
+    h2.message(Msg::Resize(Size::new(140, 44)));
+    h2.message(Msg::RichClick(Position::new(2, 40)));
+    assert!(
+        h2.is_running() && !h2.snapshot().contains("UI action sent"),
+        "an off-target click does nothing"
+    );
 }
 
 // ---- Codex-parity W1-1: composer input history (↑/↓ recall) ----

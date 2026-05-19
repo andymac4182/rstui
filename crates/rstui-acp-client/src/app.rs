@@ -5,7 +5,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Line, Size, TextArea};
+use rstui_core::{
+    Event, KeyCode, KeyEvent, KeyModifiers, Line, MouseButton, MouseEventKind, Position, Size,
+    TextArea,
+};
 use rstui_keymap::{Action, Chord, Dispatch, Keymap, Keymaps};
 use rstui_runtime::{App, Cmd, Frame};
 use rstui_widgets::Markdown;
@@ -621,6 +624,32 @@ pub fn render_prompt(request: &str) -> String {
     prompt
 }
 
+/// A best-effort RFC-3339 UTC timestamp (seconds precision) for the
+/// A2UI client-action envelope's `timestamp` field — std-only (no
+/// `chrono`), via Howard Hinnant's civil-from-days. Agents key on the
+/// action name + context; the exact stamp is informational.
+#[must_use]
+pub fn iso8601_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = year + i64::from(month <= 2);
+    let (hour, minute, second) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
 /// Messages the reducer folds. Input is normalized to [`Msg::Key`] /
 /// [`Msg::Resize`] in `on_event` so all focus routing lives in `update`.
 #[derive(Debug, Clone)]
@@ -633,6 +662,10 @@ pub enum Msg {
     Resize(Size),
     /// Mouse wheel (positive = up / back in history).
     Scroll(i32),
+    /// Left-click at a screen position — used to activate a control in a
+    /// rendered `Role::RichUi` block (button/link → round-trip to the
+    /// agent; ADR 0017).
+    RichClick(Position),
     /// Bracketed-paste text into the composer.
     Paste(String),
     /// The registry finished loading.
@@ -1551,6 +1584,27 @@ impl ChatApp {
         }
         if let Some(host) = &self.plugins {
             host.broadcast(&HostEvent::UserPrompt { text });
+        }
+    }
+
+    /// Sends a rendered-UI action back to the agent (an A2UI client
+    /// envelope / a json-render custom action — ADR 0017). Unlike
+    /// [`send_user_prompt`](Self::send_user_prompt) it leaves a concise
+    /// `Role::System` breadcrumb instead of a giant user bubble (the
+    /// payload is machine JSON, not prose). No-op breadcrumb when no
+    /// agent is connected.
+    fn send_agent_action(&mut self, payload: String) {
+        if self.driver.is_none() {
+            self.push_system("not connected — pick an agent with /agents");
+            return;
+        }
+        self.push_system("↳ UI action sent to the agent");
+        self.streaming = true;
+        if let Some(driver) = &self.driver {
+            driver.send(DriverCmd::Prompt(payload.clone()));
+        }
+        if let Some(host) = &self.plugins {
+            host.broadcast(&HostEvent::UserPrompt { text: payload });
         }
     }
 
@@ -2908,6 +2962,7 @@ impl App for ChatApp {
             Event::Mouse(m) => match m.kind {
                 rstui_core::MouseEventKind::ScrollUp => Some(Msg::Scroll(3)),
                 rstui_core::MouseEventKind::ScrollDown => Some(Msg::Scroll(-3)),
+                MouseEventKind::Down(MouseButton::Left) => Some(Msg::RichClick(m.position)),
                 _ => None,
             },
             _ => None,
@@ -2993,6 +3048,41 @@ impl App for ChatApp {
                     self.scroll = self.scroll.saturating_sub(delta as u16);
                 } else {
                     self.scroll = self.scroll.saturating_add((-delta) as u16);
+                }
+                Cmd::none()
+            }
+            Msg::RichClick(pos) => {
+                // Map the click to a control in a rendered RichUi block,
+                // resolve its action, and round-trip it to the agent
+                // (ADR 0017). `rich_hit` re-derives the exact geometry
+                // the renderer drew (pure — no stored layout).
+                if let Some((entry_idx, local)) = crate::ui::rich_hit(self, self.last_size, pos) {
+                    let source = self
+                        .transcript
+                        .get(entry_idx)
+                        .filter(|entry| entry.role == Role::RichUi)
+                        .map(|entry| entry.text.clone());
+                    if let Some(source) = source {
+                        let timestamp = iso8601_now();
+                        if let Some(action) =
+                            crate::acp::rich_click(&source, MD_WIDTH, 40, local, &timestamp)
+                        {
+                            match action {
+                                crate::acp::RichAction::ToAgent(payload) => {
+                                    self.send_agent_action(payload);
+                                }
+                                crate::acp::RichAction::OpenUrl(url) => {
+                                    self.push_system(format!("↗ open: {url}"));
+                                }
+                                crate::acp::RichAction::Local(desc) => {
+                                    self.push_system(format!(
+                                        "· {desc} — local UI state is not kept \
+                                         across redraws yet"
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
                 Cmd::none()
             }

@@ -281,18 +281,15 @@ fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
 
 fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     // Dock the todo sidebar on the right when there is room for it.
-    let main = if app.sidebar_visible() && area.width >= 60 {
-        let sidebar_w = area.width / 4;
-        let [m, side] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(sidebar_w.clamp(24, 40)),
-        ])
-        .areas(area);
+    // `transcript_main_rect` is the shared, pure split so the click
+    // hit-test (`rich_hit`) and this renderer agree exactly.
+    if app.sidebar_visible() && area.width >= 60 {
+        let sidebar_w = (area.width / 4).clamp(24, 40);
+        let [_m, side] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(sidebar_w)]).areas(area);
         render_sidebar(app, frame, side);
-        m
-    } else {
-        area
-    };
+    }
+    let main = transcript_main_rect(app, area);
     let [transcript_area, composer_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
 
@@ -605,12 +602,31 @@ fn composer_title(app: &ChatApp) -> String {
     }
 }
 
+/// A `Role::RichUi` block's place in the wrapped transcript line list:
+/// which transcript entry it is, the line index its rendered rows start
+/// at, and how many rows it occupies — enough to map a click back to a
+/// node (see [`rich_hit`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RichRegion {
+    pub(crate) entry: usize,
+    pub(crate) start: usize,
+    pub(crate) height: usize,
+}
+
 fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
+    transcript_layout(app).0
+}
+
+/// The transcript as wrapped [`Line`]s **plus** the [`RichRegion`]s —
+/// the single builder both the renderer and the click hit-test use, so
+/// what is drawn and what a click resolves to cannot drift.
+fn transcript_layout(app: &ChatApp) -> (Vec<Line<'static>>, Vec<RichRegion>) {
     let ascii = std::env::var("RSTUI_ACP_TOOL_ICONS")
         .map(|v| v == "ascii")
         .unwrap_or(false);
     let mut out: Vec<Line<'static>> = Vec::new();
-    for entry in app.transcript() {
+    let mut regions: Vec<RichRegion> = Vec::new();
+    for (entry_idx, entry) in app.transcript().iter().enumerate() {
         if entry.role == Role::Tool {
             if let Some(tool) = app.tool_call(&entry.text) {
                 tool_card_lines(tool, app.details(), app.spinner_frame(), ascii, &mut out);
@@ -642,10 +658,17 @@ fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
             // ADR 0017: re-project the agent's declarative UI document
             // from its verbatim source every frame (pure projection — no
             // retained tree), bounded so one document cannot dominate the
-            // transcript.
+            // transcript. Record the row span so a click maps back to a
+            // node (`rich_hit`).
+            let start = out.len();
             for line in crate::acp::render_rich_ui(&entry.text, MD_WIDTH, 40) {
                 out.push(line);
             }
+            regions.push(RichRegion {
+                entry: entry_idx,
+                start,
+                height: out.len() - start,
+            });
         } else if entry.role == Role::Agent {
             let fresh;
             let md_lines: &[Line<'static>] = match &entry.md_cache {
@@ -677,7 +700,100 @@ fn transcript_lines(app: &ChatApp) -> Vec<Line<'static>> {
             Style::new().fg(Color::DarkGray),
         ));
     }
-    out
+    (out, regions)
+}
+
+/// The transcript's `main` rect (the body minus the right todo/plugin
+/// sidebar when it is docked) — the *pure* half of [`render_chat`]'s
+/// split, shared so the click hit-test and the renderer agree exactly.
+fn transcript_main_rect(app: &ChatApp, body: Rect) -> Rect {
+    if app.sidebar_visible() && body.width >= 60 {
+        let sidebar_w = (body.width / 4).clamp(24, 40);
+        let [main, _side] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(sidebar_w)]).areas(body);
+        main
+    } else {
+        body
+    }
+}
+
+/// The bordered transcript content rect inside `main` (above the
+/// 5-row composer) — the other half of the shared split.
+fn transcript_inner_for_main(main: Rect) -> Rect {
+    let [transcript_area, _composer] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
+    Block::bordered().inner(transcript_area)
+}
+
+/// Maps a screen click to `(transcript entry index, block-local
+/// position)` when it lands on a rendered `Role::RichUi` block.
+///
+/// Re-derives the exact geometry [`render_chat`] drew: the header/body
+/// split, the sidebar split, the bordered inner, the same wrapped-row
+/// scroll, and each block's start row via `Paragraph::line_count` (the
+/// renderer's own wrap measure — no drift). RichUi rows are ≤
+/// `MD_WIDTH`, so each is one screen row; on a terminal too narrow for
+/// that it bails (returns `None`) rather than mis-hit. Pure: the reducer
+/// re-runs this in `update` (no stored geometry, ADR 0012).
+pub(crate) fn rich_hit(
+    app: &ChatApp,
+    frame: rstui_core::Size,
+    pos: Position,
+) -> Option<(usize, Position)> {
+    let area = Rect::new(0, 0, frame.width, frame.height);
+    if area.width < 4 || area.height < 4 {
+        return None;
+    }
+    let [_header, body, _footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    let main = transcript_main_rect(app, body);
+    let inner = transcript_inner_for_main(main);
+    if inner.width < MD_WIDTH + 2 || inner.width == 0 || inner.height == 0 {
+        return None; // too narrow — RichUi rows would wrap; don't mis-hit
+    }
+    if pos.x < inner.x
+        || pos.x >= inner.x + inner.width
+        || pos.y < inner.y
+        || pos.y >= inner.y + inner.height
+    {
+        return None;
+    }
+
+    let (lines, regions) = transcript_layout(app);
+    if regions.is_empty() {
+        return None;
+    }
+    let para = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
+    let total = para.line_count(inner.width.max(1)) as u16;
+    let max_scroll = total.saturating_sub(inner.height);
+    let scroll = if app_follows(app) {
+        max_scroll
+    } else {
+        app.scroll().min(max_scroll)
+    };
+    // Absolute wrapped row the click is on.
+    let want = (pos.y - inner.y) as usize + scroll as usize;
+
+    for region in regions {
+        // Wrapped rows before this block (the renderer's own measure).
+        let before = Paragraph::new(lines[..region.start].to_vec())
+            .wrap(Wrap { trim: false })
+            .line_count(inner.width.max(1));
+        // RichUi rows are ≤ MD_WIDTH ≤ inner.width, so each is exactly
+        // one wrapped row: the block spans `before .. before+height`.
+        if want >= before && want < before + region.height {
+            let local_row = (want - before) as u16;
+            // Each line is `Span::raw("  ")` + content, so the rendered
+            // doc starts at inner.x + 2.
+            let local_col = (pos.x - inner.x).checked_sub(2)?;
+            return Some((region.entry, Position::new(local_col, local_row)));
+        }
+    }
+    None
 }
 
 /// The per-kind glyph (opencode-inspired); ASCII set via
