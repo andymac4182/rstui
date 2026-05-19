@@ -603,6 +603,13 @@ pub struct DataTableState {
     collapsed: Vec<String>,
     selected: Option<usize>,
     vertical: ScrollState,
+    /// DT-OPT-3: the horizontal column window offset, in **column** units
+    /// (the first visible column index). Default `0` = every column laid
+    /// across the full width exactly as before (byte-identical). It does
+    /// **not** affect [`project`] — it is a pure render-time window — so it
+    /// is deliberately absent from the [`ProjectionCache`](crate::ProjectionCache)
+    /// fingerprint.
+    horizontal: ScrollState,
     editing: Option<(usize, usize)>,
 }
 
@@ -882,6 +889,41 @@ impl DataTableState {
         if let Some(sel) = self.selected {
             self.vertical.show(sel, 1, viewport_len, visual_len);
         }
+    }
+
+    // ---- horizontal column window (DT-OPT-3) ----
+
+    /// The first visible **column** index (the horizontal scroll offset).
+    /// `0` (the default) lays every column across the full width exactly as
+    /// before; a positive offset windows the columns — the widget's
+    /// `cell_w == 0` render/​hit early-out then skips the off-screen ones,
+    /// which *is* the column virtualization
+    /// (`docs/datatable-optimization-roadmap.md` DT-OPT-3).
+    #[must_use]
+    pub fn col_offset(&self) -> usize {
+        self.horizontal.offset()
+    }
+
+    /// The composed horizontal [`ScrollState`] (e.g. to drive a paired
+    /// horizontal [`Scrollbar`](crate::Scrollbar) — DT-OPT-4).
+    #[must_use]
+    pub fn horizontal(&self) -> ScrollState {
+        self.horizontal
+    }
+
+    /// Scrolls the column window by `delta` columns (clamped to
+    /// `0..column_count`, parking the last column visible) — the horizontal
+    /// sibling of [`scroll_by`](Self::scroll_by). `viewport_cols` is how
+    /// many columns fit; pass `1` if unknown (still total and clamped).
+    pub fn scroll_columns_by(&mut self, delta: isize, column_count: usize, viewport_cols: usize) {
+        self.horizontal
+            .scroll_by(delta, column_count, viewport_cols.max(1));
+    }
+
+    /// Clamps the column offset into `0..column_count` (call after the
+    /// column set changes). Total.
+    pub fn clamp_columns(&mut self, column_count: usize, viewport_cols: usize) {
+        self.horizontal.clamp(column_count, viewport_cols.max(1));
     }
 
     // ---- editing ----
@@ -1309,12 +1351,36 @@ impl<'a> DataTable<'a> {
         } else {
             self.columns.iter().map(|c| c.width).collect()
         };
-        let columns = if constraints.is_empty() {
+        let solved = if constraints.is_empty() {
             Vec::new()
         } else {
             Layout::horizontal(constraints)
                 .spacing(self.column_spacing)
                 .split(Rect::new(inner.x, inner.y, inner.width, 1))
+        };
+        // DT-OPT-3 horizontal column window: shift the solved rects so the
+        // first visible column (`state.col_offset()`) starts at `inner.x`;
+        // columns before it collapse to zero width so the render/`hit`
+        // `cell_w == 0` early-out skips them — that early-out *is* the
+        // column virtualization. At offset 0 the shift is 0 and every rect
+        // is returned unchanged, so this is byte-identical to before.
+        let off = self.state.col_offset();
+        let columns = if solved.is_empty() || off == 0 {
+            solved
+        } else {
+            let off = off.min(solved.len() - 1);
+            let shift = solved[off].x.saturating_sub(inner.x);
+            solved
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    if i < off {
+                        Rect::new(inner.x, r.y, 0, r.height)
+                    } else {
+                        Rect::new(r.x.saturating_sub(shift), r.y, r.width, r.height)
+                    }
+                })
+                .collect()
         };
         (inner, header, body, columns)
     }
@@ -1666,22 +1732,28 @@ impl Widget for DataTable<'_> {
                         } else {
                             row_base
                         };
-                        let text = row.cell_text(ci).map(Cow::into_owned).unwrap_or_default();
-
                         match column.map(DataColumn::cell_field) {
                             // The cell *is* a checkbox/switch on every row —
                             // value parsed from its text (the reducer flips
-                            // that text on a Cell hit).
+                            // that text on a Cell hit). Only these two arms
+                            // need the cell *text*, so it is read here, not
+                            // once per visible cell every frame (the smaller
+                            // win folded into DT-OPT-3): a plain Text column
+                            // no longer allocates a `String` per cell/frame.
                             Some(CellField::Checkbox) => {
                                 Checkbox::new("")
-                                    .checked(cell_truthy(&text))
+                                    .checked(cell_truthy(
+                                        row.cell_text(ci).as_deref().unwrap_or_default(),
+                                    ))
                                     .focused(editing_here)
                                     .style(base)
                                     .render(cell_area, buf);
                             }
                             Some(CellField::Switch) => {
                                 Switch::new()
-                                    .on(cell_truthy(&text))
+                                    .on(cell_truthy(
+                                        row.cell_text(ci).as_deref().unwrap_or_default(),
+                                    ))
                                     .focused(editing_here)
                                     .style(base)
                                     .render(cell_area, buf);
@@ -2942,5 +3014,39 @@ mod tests {
                 "render identical for both cell representations"
             );
         }
+    }
+
+    /// DT-OPT-3: a positive `col_offset` windows the columns — leading
+    /// columns vanish and the offset column starts at the left edge — while
+    /// offset 0 is byte-identical (every other render test already pins
+    /// that, since they never scroll horizontally).
+    #[test]
+    fn a_column_offset_windows_the_columns_left() {
+        let cols: Vec<DataColumn> = (0..6)
+            .map(|i| DataColumn::new(format!("h{i}")).width(Constraint::Length(4)))
+            .collect();
+        let rows = [DataRow::new([
+            "AAAA", "BBBB", "CCCC", "DDDD", "EEEE", "FFFF",
+        ])];
+
+        let mut s0 = DataTableState::new();
+        let v = project(&cols, &rows, &s0);
+        // 40 cols wide: 6×Length(4)+5 spacing = 29 ⇒ every column fits at
+        // offset 0 (no clipping), isolating the window behaviour.
+        let at0 = grid(DataTable::new(&cols, &rows, &v, &s0), 40, 3);
+        assert!(at0.contains("AAAA"), "offset 0 shows the first column");
+
+        s0.scroll_columns_by(2, 6, 3); // window now starts at column 2
+        let at2 = grid(DataTable::new(&cols, &rows, &v, &s0), 40, 3);
+        assert!(
+            !at2.contains("AAAA") && !at2.contains("BBBB"),
+            "windowed columns 0–1 are not drawn (cell_w==0 ⇒ skipped)"
+        );
+        assert!(
+            at2.contains("CCCC") && at2.contains("DDDD"),
+            "the window starts at the offset column"
+        );
+        // Body and header track the same window (header zips the same rects).
+        assert!(at2.contains("h2") && !at2.contains("h0"));
     }
 }
