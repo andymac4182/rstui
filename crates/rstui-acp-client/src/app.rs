@@ -171,6 +171,57 @@ fn rank_paths(candidates: &[String], query: &str, max: usize) -> Vec<String> {
     scored.into_iter().take(max).map(|(_, _, p)| p).collect()
 }
 
+/// Captures `git diff HEAD` (staged + unstaged vs the last commit — what
+/// the agent changed) in `cwd`, plus any untracked files. Blocking; called
+/// only inside a `Cmd::perform` (the registry/curl pattern), so the
+/// subprocess is correct and adds no dependency. Never fails — a non-repo /
+/// missing `git` becomes a readable message.
+#[must_use]
+fn run_git_diff(cwd: &std::path::Path) -> String {
+    let diff = std::process::Command::new("git")
+        .args(["--no-pager", "diff", "HEAD"])
+        .current_dir(cwd)
+        .output();
+    let mut out = match diff {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Ok(o) => {
+            // No HEAD yet (fresh repo) — fall back to the index/worktree diff.
+            std::process::Command::new("git")
+                .args(["--no-pager", "diff"])
+                .current_dir(cwd)
+                .output()
+                .ok()
+                .filter(|o2| o2.status.success())
+                .map(|o2| String::from_utf8_lossy(&o2.stdout).into_owned())
+                .unwrap_or_else(|| {
+                    format!("git diff failed: {}", String::from_utf8_lossy(&o.stderr))
+                })
+        }
+        Err(e) => return format!("could not run git: {e}"),
+    };
+    if let Ok(o) = std::process::Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(cwd)
+        .output()
+    {
+        let untracked = String::from_utf8_lossy(&o.stdout);
+        let untracked = untracked.trim();
+        if !untracked.is_empty() {
+            out.push_str("\n\nUntracked files:\n");
+            for f in untracked.lines() {
+                out.push_str("  ");
+                out.push_str(f);
+                out.push('\n');
+            }
+        }
+    }
+    if out.trim().is_empty() {
+        "(no changes)".to_owned()
+    } else {
+        out
+    }
+}
+
 /// Unix seconds now (0 before the epoch — impossible in practice; only the
 /// relative ordering of `/resume` entries matters anyway).
 #[must_use]
@@ -397,6 +448,27 @@ impl PagerState {
     }
 }
 
+/// The `/diff` overlay: a captured `git diff HEAD` plus the scroll offset
+/// (clamp-on-render, the pager's model).
+#[derive(Debug, Clone)]
+pub struct DiffView {
+    text: String,
+    scroll: u16,
+}
+
+impl DiffView {
+    /// The captured diff text (`(no changes)` when the tree is clean).
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    /// The scroll offset in wrapped rows (renderer clamps to content).
+    #[must_use]
+    pub fn scroll(&self) -> u16 {
+        self.scroll
+    }
+}
+
 /// Where a slash command comes from (drives its autocomplete tag/colour).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSource {
@@ -464,6 +536,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("mode", "Switch the session mode (plan / approval / …)"),
     ("resume", "Resume a previous session (session/load)"),
     ("login", "Sign in to the agent (if it requires auth)"),
+    ("diff", "Show the working-tree git diff"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -506,6 +579,8 @@ pub enum Msg {
     Paste(String),
     /// The registry finished loading.
     RegistryLoaded(Box<Registry>),
+    /// `git diff` finished (the `/diff` overlay payload).
+    DiffLoaded(String),
     /// A driver event (re-arms the drain unless terminal).
     Acp(AcpEvent),
     /// A plugin action (re-arms the drain).
@@ -602,6 +677,8 @@ pub struct ChatApp {
     auth_methods: Vec<AuthOption>,
     auth_picker_open: bool,
     auth_sel: usize,
+    /// The `/diff` overlay (a captured `git diff`), if open.
+    diff: Option<DiffView>,
     last_size: Size,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
@@ -692,6 +769,7 @@ impl ChatApp {
             auth_methods: Vec::new(),
             auth_picker_open: false,
             auth_sel: 0,
+            diff: None,
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
@@ -964,6 +1042,11 @@ impl ChatApp {
     #[must_use]
     pub fn auth_sel(&self) -> usize {
         self.auth_sel
+    }
+    /// The `/diff` overlay (a captured `git diff`), if open.
+    #[must_use]
+    pub fn diff(&self) -> Option<&DiffView> {
+        self.diff.as_ref()
     }
     /// The launch command of the connected agent (empty before connect).
     #[must_use]
@@ -1410,6 +1493,11 @@ impl ChatApp {
                     self.model_picker_open = true;
                 }
                 Cmd::none()
+            }
+            "diff" => {
+                self.push_system("running git diff…");
+                let cwd = self.cwd.clone();
+                Cmd::perform(move || Msg::DiffLoaded(run_git_diff(&cwd)))
             }
             "login" => {
                 if self.auth_methods.is_empty() {
@@ -2133,6 +2221,27 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Key handling for the `/diff` overlay: scroll (arrows/`jk`,
+    /// PgUp/Dn, `g`/`G`), Esc/`q` close. Raw offset + clamp-on-render,
+    /// the pager's model.
+    fn diff_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let page = self.last_size.height.saturating_sub(4).max(1);
+        let Some(d) = self.diff.as_mut() else {
+            return Cmd::none();
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.diff = None,
+            KeyCode::Up | KeyCode::Char('k') => d.scroll = d.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => d.scroll = d.scroll.saturating_add(1),
+            KeyCode::PageUp => d.scroll = d.scroll.saturating_sub(page),
+            KeyCode::PageDown => d.scroll = d.scroll.saturating_add(page),
+            KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => d.scroll = u16::MAX,
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         if self.picking {
@@ -2177,6 +2286,9 @@ impl ChatApp {
         }
         if self.auth_picker_open {
             return self.auth_picker_key(key);
+        }
+        if self.diff.is_some() {
+            return self.diff_key(key);
         }
         if self.keymap_panel {
             return self.keymap_panel_key(key);
@@ -2675,6 +2787,10 @@ impl App for ChatApp {
                         self.registry.agents.len()
                     )
                 };
+                Cmd::none()
+            }
+            Msg::DiffLoaded(text) => {
+                self.diff = Some(DiffView { text, scroll: 0 });
                 Cmd::none()
             }
             Msg::Key(key) => self.on_key(key),

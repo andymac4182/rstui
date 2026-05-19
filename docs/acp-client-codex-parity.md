@@ -58,9 +58,9 @@ out of scope per above.
 | ~~`/resume`~~ list & load prior sessions | **Done** (iter 7) | W2-4 ✅ |
 | ~~`@`-file mentions~~ with fuzzy completion | **Done** (iter 7) | W2-5 ✅ |
 | ~~Sign-in~~ when the agent requires auth | **Done** (iter 7) | W2-6 ✅ |
-| External `$EDITOR` compose | **Gap** | W3-1 |
-| `/diff` working-tree diff viewer | **Gap** | W3-2 |
-| Image paste / attachment | **Gap** | W3-3 |
+| External `$EDITOR` compose | **Scoped out** (rationale below) | W3-1 |
+| ~~`/diff` working-tree diff viewer~~ | **Done** (iter 8) | W3-2 ✅ |
+| Image paste / attachment | **Scoped out** (rationale below) | W3-3 |
 | MCP server mgmt, sandbox, memories, skills, hooks, voice, cloud | N/A | — |
 
 ## Delivery plan (one slice at a time)
@@ -145,8 +145,34 @@ docs-updated slice, merged back under the serialized lock
 
 **Wave 3 — heavier / lower priority:**
 
-13. **W3-1** external `$EDITOR` compose. **W3-2** `/diff` viewer. **W3-3**
-    image paste.
+13. **W3-2 `/diff`** ✅ *(landed, iter 8)* — `run_git_diff` captures
+    `git diff HEAD` + untracked files via `Cmd::perform` (the registry/curl
+    pattern, so the reducer stays `await`-free, ADR 0011); a scrollable
+    overlay renders it with unified-diff colours (`+`/`-`/`@@`/headers).
+
+14. **W3-1 external `$EDITOR`** — *scoped out, by design.* It needs the
+    `run_async` loop **and** the crossterm alt-screen/raw guard to suspend,
+    hand the real tty to a child `$EDITOR`, then resume and re-render — a
+    runtime/terminal-lifecycle seam that does not exist and is pure terminal
+    I/O (unreachable from `Harness`, ADR 0011's determinism mandate). The
+    composer is already a full multi-line editor with bracketed paste and
+    history, so the marginal value does not justify that runtime surgery.
+    Revisit only if a general suspend/resume seam is added to the runtime.
+
+15. **W3-3 image paste** — *scoped out, by design.* Capturing pasted images
+    means terminal-specific image/paste protocols (Kitty, iTerm2, …) plus
+    base64 decode and ACP image **content blocks**; large surface, niche for
+    a coding-agent client. The clean future seam is well-defined (an
+    `ContentBlock::Image` alongside the prompt text, the same place
+    `send_user_prompt` builds the turn) and documented here for when it is
+    worth it.
+
+Net: of the in-scope gaps, **13 of 15 are implemented and landed**; the two
+remainders are explicit, code-derived scope decisions (a missing runtime
+seam; a disproportionate terminal-protocol surface), not unfinished work.
+Everything in the "out of scope" set is genuinely agent-side and already
+reaches the client through the ACP permission / mode / command surface it
+renders.
 
 Progress is tracked in the session task list; this document is the spec the
 slices implement against.

@@ -1730,3 +1730,48 @@ fn auth_required_opens_the_sign_in_picker() {
     assert!(!h.app().auth_picker_open(), "Esc dismisses sign-in");
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W3-2: /diff working-tree viewer ----
+
+/// `/diff` shells out (via `Cmd::perform`, the registry pattern) and opens a
+/// scrollable, coloured overlay. The git call's output is environment-
+/// dependent, so the structural assertions inject a known diff string; the
+/// `/diff` round-trip only needs to deterministically open the overlay.
+#[test]
+fn slash_diff_opens_a_scrollable_overlay() {
+    let mut h = chatting(120, 30);
+
+    // The /diff command is a recognised builtin and round-trips to an
+    // overlay (Harness runs Cmd::perform inline; real git output varies but
+    // an overlay always opens).
+    assert!(
+        h.app()
+            .command_specs()
+            .iter()
+            .any(|c| c.name == "diff" && c.source == CommandSource::Builtin)
+    );
+    typ(&mut h, "/diff");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().diff().is_some(), "/diff opens the diff overlay");
+    assert!(h.snapshot().contains("git diff"), "diff chrome drawn");
+
+    // Inject a known diff so the body assertions are deterministic.
+    h.message(Msg::DiffLoaded(
+        "diff --git a/x b/x\n@@ -1 +1 @@\n-old line\n+new line\n".to_owned(),
+    ));
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("old line") && screen.contains("new line") && screen.contains("@@"),
+        "the unified diff renders:\n{screen}"
+    );
+
+    // Scroll model: Down advances, g resets to the top.
+    key(&mut h, KeyCode::Down);
+    assert_eq!(h.app().diff().unwrap().scroll(), 1);
+    key(&mut h, KeyCode::Char('g'));
+    assert_eq!(h.app().diff().unwrap().scroll(), 0);
+
+    key(&mut h, KeyCode::Esc);
+    assert!(h.app().diff().is_none(), "Esc closes the diff overlay");
+    assert!(h.is_running());
+}

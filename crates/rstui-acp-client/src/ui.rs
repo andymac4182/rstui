@@ -36,7 +36,9 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
     }
     render_footer(app, frame, footer);
 
-    if app.pager().open() {
+    if app.diff().is_some() {
+        render_diff(app, frame, area);
+    } else if app.pager().open() {
         render_transcript_pager(app, frame, area);
     } else if app.help_visible() {
         render_help(app, frame, area);
@@ -1190,6 +1192,48 @@ fn render_auth_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The `/diff` overlay — a captured `git diff HEAD` with the usual unified
+/// colours, scrollable. Pure projection of [`crate::app::DiffView`].
+fn render_diff(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let Some(d) = app.diff() else { return };
+    let t = app.theme();
+    let block = Block::bordered()
+        .title(" git diff — ↑↓/jk PgUp/Dn g/G · Esc/q close ")
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(area);
+    clear(frame, area);
+    frame.render_widget(block, area);
+
+    let lines: Vec<Line> = d
+        .text()
+        .lines()
+        .map(|l| {
+            let style = if l.starts_with("@@") {
+                Style::new().fg(Color::Cyan)
+            } else if l.starts_with("diff ")
+                || l.starts_with("index ")
+                || l.starts_with("--- ")
+                || l.starts_with("+++ ")
+            {
+                Style::new().fg(Color::DarkGray)
+            } else if l.starts_with('+') {
+                Style::new().fg(Color::Green)
+            } else if l.starts_with('-') {
+                Style::new().fg(Color::Red)
+            } else {
+                t.base()
+            };
+            Line::styled(l.to_owned(), style)
+        })
+        .collect();
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total = para.line_count(inner.width.max(1)) as u16;
+    let max_scroll = total.saturating_sub(inner.height);
+    let scroll = d.scroll().min(max_scroll);
+    frame.render_widget(para.scroll((0, scroll)), inner);
 }
 
 fn render_log(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
