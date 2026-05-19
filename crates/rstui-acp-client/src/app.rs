@@ -1394,28 +1394,29 @@ impl ChatApp {
         if last.role != Role::Agent {
             return;
         }
-        let Some((before, payload, after)) = crate::acp::split_rich_ui(&last.text) else {
+        let segments = crate::acp::message_segments(&last.text);
+        // Only rewrite the entry when there is at least one renderable
+        // block — a prose-only reply stays one untouched markdown entry.
+        if !segments
+            .iter()
+            .any(|s| matches!(s, crate::acp::MessageSegment::Rich(_)))
+        {
             return;
-        };
-        let idx = self.transcript.len() - 1;
-        if before.is_empty() {
-            self.transcript.remove(idx);
-        } else {
-            let entry = &mut self.transcript[idx];
-            entry.text = before;
-            entry.open = false;
-            entry.md_cache = None;
         }
-        self.transcript.push(Entry {
-            role: Role::RichUi,
-            text: payload.source,
-            open: false,
-            md_cache: None,
-        });
-        if !after.is_empty() {
+        // Replace the single accumulated agent entry with the ordered
+        // segments: markdown prose stays a `Role::Agent` (markdown) entry,
+        // every embedded json-render / A2UI / Mermaid / Structurizr /
+        // JSON-Canvas block becomes a `Role::RichUi` entry rendered
+        // inline — any number of them, interleaved, in order.
+        self.transcript.pop();
+        for segment in segments {
+            let (role, text) = match segment {
+                crate::acp::MessageSegment::Prose(prose) => (Role::Agent, prose),
+                crate::acp::MessageSegment::Rich(payload) => (Role::RichUi, payload.source),
+            };
             self.transcript.push(Entry {
-                role: Role::Agent,
-                text: after,
+                role,
+                text,
                 open: false,
                 md_cache: None,
             });

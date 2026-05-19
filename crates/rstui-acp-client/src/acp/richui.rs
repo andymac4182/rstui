@@ -2,12 +2,14 @@
 //! json-render) inside the transcript.
 //!
 //! The client advertises (in the ACP `initialize` client capabilities,
-//! see [`render_capability_meta`]) that it can render A2UI and
-//! json-render documents. When an agent then sends one — as a content
-//! block that is a self-contained JSON document or a fenced
-//! ` ```a2ui ` / ` ```json-render ` / ` ```spec ` block — [`detect`]
-//! classifies it and [`render_lines`] projects it through
-//! [`rstui_jsonui`] into transcript [`Line`]s.
+//! see [`render_capability_meta`]) that it can render A2UI / json-render
+//! documents and the Mermaid / Structurizr-C4 / JSON-Canvas diagram
+//! DSLs. When an agent sends one — a self-contained JSON document, or a
+//! fenced ` ```a2ui ` / ` ```json-render ` / ` ```mermaid ` /
+//! ` ```structurizr ` / ` ```canvas ` block — [`detect`] classifies it
+//! and [`render_lines`] projects it inline through `rstui-jsonui`
+//! (declarative UI) or the same `rstui-widgets` diagram widgets the
+//! kitchen-sink Rich Text screen uses, into transcript [`Line`]s.
 //!
 //! Detection is **conservative and total** and never panics. A real
 //! agent streams the document wrapped in prose across many
@@ -23,19 +25,30 @@
 //! composes with the existing immediate-mode transcript with no new
 //! lifecycle.
 
-use rstui_core::{Buffer, Line, Rect, Span, Style};
+use rstui_core::{Buffer, Line, Rect, Span, Style, Widget};
 use rstui_jsonui::a2ui::A2uiSurface;
 use rstui_jsonui::jsonrender::JsonRenderDoc;
 use rstui_jsonui::tree::HitMap;
+use rstui_widgets::{JsonCanvas, Mermaid, Structurizr};
 use serde_json::{Map, Value};
 
-/// Which declarative-UI format an agent payload is.
+/// Which renderable format an agent block is. The two declarative-UI
+/// engines, plus the three diagram DSLs the client already advertises
+/// ([`diagram_capability`](rstui_jsonui::capability::diagram_capability))
+/// — all rendered inline in the transcript through the same widgets the
+/// kitchen sink uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RichUiFormat {
     /// Google A2UI (a server→client envelope or a JSONL stream of them).
     A2ui,
     /// Vercel json-render (a flat `{root,elements,state}` spec).
     JsonRender,
+    /// A Mermaid diagram (any type) → [`rstui_widgets::Mermaid`].
+    Mermaid,
+    /// A Structurizr DSL / C4 workspace → [`rstui_widgets::Structurizr`].
+    Structurizr,
+    /// A JSON Canvas document → [`rstui_widgets::JsonCanvas`].
+    JsonCanvas,
 }
 
 /// A detected agent-authored UI document: its [`RichUiFormat`] and the
@@ -54,6 +67,9 @@ fn fence_format(tag: &str) -> Option<RichUiFormat> {
     match tag.trim().to_ascii_lowercase().as_str() {
         "a2ui" => Some(RichUiFormat::A2ui),
         "json-render" | "jsonrender" | "jsonui" | "spec" => Some(RichUiFormat::JsonRender),
+        "mermaid" => Some(RichUiFormat::Mermaid),
+        "structurizr" | "c4" => Some(RichUiFormat::Structurizr),
+        "canvas" | "jsoncanvas" | "json-canvas" => Some(RichUiFormat::JsonCanvas),
         _ => None,
     }
 }
@@ -180,6 +196,56 @@ pub fn split_message(text: &str) -> Option<(String, RichUiPayload, String)> {
     detect(text).map(|payload| (String::new(), payload, String::new()))
 }
 
+/// One ordered piece of an assembled agent message.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageSegment {
+    /// Markdown prose — rendered with the `Markdown` widget, exactly as
+    /// any ordinary agent reply is.
+    Prose(String),
+    /// An extracted renderable block — rendered inline as the live UI /
+    /// diagram (json-render, A2UI, Mermaid, Structurizr, JSON Canvas).
+    Rich(RichUiPayload),
+}
+
+/// Splits an assembled agent message into its ordered segments —
+/// markdown prose interleaved with **every** embedded fenced UI/diagram
+/// block (and a whole-message bare A2UI/json-render document). This is
+/// the answer to "use markdown for the message **and** turn the embedded
+/// json-render / A2UI / diagram into a UI": one pass over the assembled
+/// message, any number of blocks, the prose between them preserved as
+/// markdown. Total; a message with no blocks is a single
+/// [`Prose`](MessageSegment::Prose) (the caller then leaves it as a
+/// normal markdown agent entry).
+#[must_use]
+pub fn segments(text: &str) -> Vec<MessageSegment> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    loop {
+        if let Some((format, body, range)) = find_fenced_doc(rest) {
+            let before = rest[..range.start].trim();
+            if !before.is_empty() {
+                out.push(MessageSegment::Prose(before.to_owned()));
+            }
+            out.push(MessageSegment::Rich(RichUiPayload {
+                format,
+                source: body,
+            }));
+            rest = &rest[range.end..];
+            continue;
+        }
+        let tail = rest.trim();
+        if !tail.is_empty() {
+            // No more fences — a whole-remaining *bare* A2UI/json-render
+            // doc still becomes a UI; otherwise it is markdown prose.
+            match detect(tail) {
+                Some(payload) => out.push(MessageSegment::Rich(payload)),
+                None => out.push(MessageSegment::Prose(tail.to_owned())),
+            }
+        }
+        return out;
+    }
+}
+
 /// Projects a detected payload to transcript [`Line`]s, `width` columns
 /// wide and at most `max_height` rows (it renders the document into a
 /// scratch [`Buffer`] then converts the painted rows — the same
@@ -189,29 +255,51 @@ pub fn split_message(text: &str) -> Option<(String, RichUiPayload, String)> {
 #[must_use]
 pub fn render_lines(payload: &RichUiPayload, width: u16, max_height: u16) -> Vec<Line<'static>> {
     let width = width.max(1);
-    let node = match payload.format {
-        RichUiFormat::A2ui => {
-            let mut surface = A2uiSurface::new();
-            surface.apply_stream(&payload.source);
-            surface.project()
+    let cap = max_height.max(1);
+    let mut scratch;
+    match payload.format {
+        RichUiFormat::A2ui | RichUiFormat::JsonRender => {
+            let node = if payload.format == RichUiFormat::A2ui {
+                let mut surface = A2uiSurface::new();
+                surface.apply_stream(&payload.source);
+                surface.project()
+            } else {
+                match serde_json::from_str::<Value>(&payload.source) {
+                    Ok(spec) => JsonRenderDoc::from_flat_value(&spec).view(),
+                    Err(_) => return vec![Line::raw("[invalid json-render document]")],
+                }
+            };
+            // Size the scratch to the document's *content* height
+            // (clamped by the caller's cap), not the cap itself —
+            // otherwise a bordered container expands to fill
+            // `max_height` and, with the transcript's sticky-bottom
+            // autoscroll, the content scrolls out of view.
+            let height = node.measure_height(width).clamp(1, cap);
+            scratch = Buffer::empty(Rect::new(0, 0, width, height));
+            node.render(scratch.area(), &mut scratch, &mut HitMap::new());
         }
-        RichUiFormat::JsonRender => match serde_json::from_str::<Value>(&payload.source) {
-            Ok(spec) => JsonRenderDoc::from_flat_value(&spec).view(),
-            Err(_) => return vec![Line::raw("[invalid json-render document]")],
-        },
-    };
-
-    // Size the scratch to the document's *content* height (clamped by
-    // the caller's cap), not the cap itself — otherwise a bordered
-    // container expands to fill `max_height` and, with the transcript's
-    // sticky-bottom autoscroll, the content scrolls out of view.
-    let height = node.measure_height(width).clamp(1, max_height.max(1));
-    let mut scratch = Buffer::empty(Rect::new(0, 0, width, height));
-    let mut hits = HitMap::new();
-    node.render(scratch.area(), &mut scratch, &mut hits);
+        // The diagram DSLs: render the *same* widget the kitchen-sink
+        // Rich Text screen uses, into a capped scratch (trailing blank
+        // rows are trimmed below, so a small diagram stays small). Each
+        // widget is total — invalid/streaming-truncated source degrades
+        // to its own placeholder, never a panic.
+        RichUiFormat::Mermaid => {
+            scratch = Buffer::empty(Rect::new(0, 0, width, cap));
+            Mermaid::new(payload.source.as_str()).render(scratch.area(), &mut scratch);
+        }
+        RichUiFormat::Structurizr => {
+            scratch = Buffer::empty(Rect::new(0, 0, width, cap));
+            Structurizr::new(payload.source.as_str()).render(scratch.area(), &mut scratch);
+        }
+        RichUiFormat::JsonCanvas => {
+            scratch = Buffer::empty(Rect::new(0, 0, width, cap));
+            JsonCanvas::new(payload.source.as_str()).render(scratch.area(), &mut scratch);
+        }
+    }
 
     // Convert painted rows to owned Lines, trimming the trailing blank
     // rows so an over-tall scratch does not pad the transcript.
+    let height = scratch.area().height;
     let mut rows: Vec<Line<'static>> = Vec::new();
     for y in 0..height {
         let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
@@ -350,5 +438,69 @@ mod tests {
 
         let meta = render_capability_meta();
         assert!(meta.contains_key("a2uiClientCapabilities"));
+    }
+
+    #[test]
+    fn diagram_fences_are_recognised_and_rendered_inline() {
+        for (tag, want) in [
+            ("mermaid", RichUiFormat::Mermaid),
+            ("structurizr", RichUiFormat::Structurizr),
+            ("c4", RichUiFormat::Structurizr),
+            ("canvas", RichUiFormat::JsonCanvas),
+            ("json-canvas", RichUiFormat::JsonCanvas),
+        ] {
+            let msg = format!("see:\n```{tag}\nflowchart LR\n  A-->B\n```");
+            assert_eq!(
+                detect(&msg).map(|p| p.format),
+                Some(want),
+                "```{tag} is a recognised inline-renderable fence"
+            );
+        }
+        // A Mermaid block renders as the diagram (its node label is
+        // painted), not as raw fence text.
+        let payload = RichUiPayload {
+            format: RichUiFormat::Mermaid,
+            source: "flowchart LR\n  Start-->Stop".to_owned(),
+        };
+        let text: String = render_lines(&payload, 60, 20)
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(
+            text.contains("Start") && text.contains("Stop"),
+            "the Mermaid diagram rendered (node labels painted): {text:?}"
+        );
+        assert!(!text.contains("```"), "no raw fence in the rendered output");
+    }
+
+    #[test]
+    fn segments_split_a_message_into_prose_and_every_block_in_order() {
+        let msg = "Intro prose.\n\n\
+                   ```mermaid\nflowchart LR\n A-->B\n```\n\n\
+                   Middle prose.\n\n\
+                   ```json-render\n{\"root\":\"x\",\"elements\":{}}\n```\n\n\
+                   Closing prose.";
+        let segs = segments(msg);
+        assert_eq!(
+            segs.len(),
+            5,
+            "prose,mermaid,prose,json-render,prose: {segs:?}"
+        );
+        assert!(matches!(&segs[0], MessageSegment::Prose(p) if p == "Intro prose."));
+        assert!(matches!(&segs[1], MessageSegment::Rich(p) if p.format == RichUiFormat::Mermaid));
+        assert!(matches!(&segs[2], MessageSegment::Prose(p) if p == "Middle prose."));
+        assert!(
+            matches!(&segs[3], MessageSegment::Rich(p) if p.format == RichUiFormat::JsonRender)
+        );
+        assert!(matches!(&segs[4], MessageSegment::Prose(p) if p == "Closing prose."));
+
+        // Prose-only → one Prose segment (caller leaves it markdown).
+        let plain = segments("just a normal answer, no UI here");
+        assert_eq!(plain.len(), 1);
+        assert!(matches!(&plain[0], MessageSegment::Prose(_)));
+
+        // Whole-message bare doc → a single Rich segment.
+        let bare = segments(r#"{"root":"a","elements":{}}"#);
+        assert!(matches!(bare.as_slice(), [MessageSegment::Rich(_)]));
     }
 }

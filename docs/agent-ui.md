@@ -72,11 +72,17 @@ To AI apps what `rstui-widgets` is to general TUIs:
   catalog + authoring prompt, and the Mermaid/Structurizr diagram DSL —
   so the agent knows it may reply with rich UI, and exactly which
   components, props and events are available.
-- `acp::richui` conservatively detects a self-contained A2UI envelope /
-  json-render spec / fenced block in an agent message (total — a partial
-  streamed chunk stays prose), folds it into the transcript as a
-  `Role::RichUi` entry, and the view re-projects it through
-  `rstui-jsonui` every frame.
+- At turn end `acp::richui::segments` splits the **assembled** agent
+  message into ordered pieces — markdown prose interleaved with **every**
+  embedded fenced block — so the message renders like markdown *and* each
+  ` ```json-render ` / ` ```a2ui ` / ` ```mermaid ` / ` ```structurizr ` /
+  ` ```canvas ` block becomes an inline `Role::RichUi` entry (re-projected
+  every frame through `rstui-jsonui` or the same `rstui-widgets` diagram
+  widgets the kitchen-sink Rich Text screen uses). Per-chunk detection
+  cannot see a streamed, prose-wrapped block (each chunk is an incomplete
+  fragment) — splitting the assembled message at turn end is what makes a
+  real agent's reply actually render. Total: a reply with no block stays
+  ordinary markdown.
 - The **`/render`** slash command makes this work with **any** agent,
   not just one that reads the `initialize` `_meta`: it sends the
   json-render authoring instructions + the component catalog (the same

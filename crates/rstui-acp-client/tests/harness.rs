@@ -1228,6 +1228,41 @@ fn a_streamed_prose_wrapped_agent_document_renders_at_turn_end() {
     assert!(h.is_running());
 }
 
+#[test]
+fn a_message_with_markdown_and_several_blocks_renders_each_inline() {
+    // "Use markdown for the message AND turn json-render/A2UI (and the
+    // diagram DSLs) into a UI" — interleaved prose + a Mermaid diagram +
+    // prose + a json-render doc, streamed, all rendered at turn end.
+    let mut h = chatting(120, 50);
+    for chunk in [
+        "# Plan\n\nThe flow:\n\n```mermaid\nflowchart LR\n  Ingest-->Score\n```",
+        "\n\nAnd the live status:\n\n```json-render\n",
+        "{\"root\":\"c\",\"elements\":{\"c\":{\"type\":\"Text\",",
+        "\"props\":{\"text\":\"All systems go\"}}}}\n```\n\nDone.",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    let s = h.snapshot();
+    // Markdown prose rendered (heading text present), the Mermaid
+    // diagram rendered (node labels painted), the json-render doc
+    // rendered (its text), and NO raw fences left as code.
+    assert!(s.contains("Plan"), "markdown prose rendered:\n{s}");
+    assert!(
+        s.contains("Ingest") && s.contains("Score"),
+        "the Mermaid diagram rendered inline:\n{s}"
+    );
+    assert!(
+        s.contains("All systems go"),
+        "the json-render doc rendered inline:\n{s}"
+    );
+    assert!(
+        !s.contains("```mermaid") && !s.contains("```json-render"),
+        "no raw fenced blocks shown as code (they became widgets):\n{s}"
+    );
+    assert!(h.is_running());
+}
+
 // ---- Codex-parity W1-1: composer input history (↑/↓ recall) ----
 
 fn composer_text(h: &Harness<ChatApp>) -> String {
