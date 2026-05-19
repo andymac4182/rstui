@@ -1135,6 +1135,169 @@ pub fn project_cached(
     cache.resolve(columns, rows, state)
 }
 
+/// A by-index row provider — DT-OPT-5b
+/// (`docs/datatable-optimization-roadmap.md`), the only place "add
+/// virtualisation" means *virtualise the data model*.
+///
+/// [`project`] requires a fully materialized `&[DataRow]` (it indexes every
+/// row), so the ~110 B/cell of `docs/perf-datatable-scale.md` × rows × cols
+/// must all exist at once — the real ceiling (1M × 100 ≈ 10 GiB). A
+/// `RowSource` lets the projection *visit* a row that is **borrowed or
+/// generated on demand** instead, so the caller need never hold every owned
+/// cell simultaneously: project to the light `Vec<VisualRow>` (≈ a `usize`
+/// per kept row), then materialize only the visible window for render.
+///
+/// `[DataRow]` implements it (zero-copy — the existing `&[DataRow]` path is
+/// unchanged and byte-identical via [`project`]); a columnar store or a
+/// pure generator implements it without owning a `Vec<DataRow>` at all.
+pub trait RowSource {
+    /// Total number of rows.
+    fn row_count(&self) -> usize;
+    /// Calls `f` with the row at `index` (borrowed or freshly built),
+    /// returning its result, or `None` if out of range. The `&DataRow` need
+    /// only live for the call — a generator builds it on the stack.
+    fn with_row<R>(&self, index: usize, f: impl FnOnce(&DataRow) -> R) -> Option<R>;
+}
+
+impl<'a> RowSource for [DataRow<'a>] {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+    fn with_row<R>(&self, index: usize, f: impl FnOnce(&DataRow) -> R) -> Option<R> {
+        self.get(index).map(f)
+    }
+}
+
+/// [`project`] over a [`RowSource`] instead of a materialized `&[DataRow]` —
+/// DT-OPT-5b. Same pipeline (filter → two-tier group/sort → collapse), same
+/// output: `project_source(&rows[..], …)` is byte-identical to
+/// `project(&rows, …)` (gate-enforced) — but the source may generate each
+/// row on demand, so a million-row table need not exist as a million owned
+/// `DataRow`s. Each row is visited `O(1)` times (the DT-OPT-1 sort-key
+/// precompute means the comparator never re-visits).
+#[must_use]
+pub fn project_source<S: RowSource + ?Sized>(
+    columns: &[DataColumn],
+    src: &S,
+    state: &DataTableState,
+) -> Vec<VisualRow> {
+    let n = src.row_count();
+    let needle = state.filter.to_lowercase();
+    let mut kept: Vec<usize> = (0..n)
+        .filter(|&i| {
+            needle.is_empty()
+                || src
+                    .with_row(i, |r| {
+                        (0..r.cell_count()).any(|c| {
+                            r.cell_text(c)
+                                .is_some_and(|t| t.to_lowercase().contains(&needle))
+                        })
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    // DT-OPT-1 precompute, one visit per row (the comparator is then
+    // allocation- and visit-free).
+    let sort_keys = state.sort_keys();
+    let row_sort_text: Vec<Vec<String>> = if sort_keys.is_empty() {
+        Vec::new()
+    } else {
+        (0..n)
+            .map(|i| {
+                src.with_row(i, |r| {
+                    sort_keys
+                        .iter()
+                        .map(|&(col, _)| r.cell_text(col).map(Cow::into_owned).unwrap_or_default())
+                        .collect()
+                })
+                .unwrap_or_default()
+            })
+            .collect()
+    };
+    let cmp_keys = |&a: &usize, &b: &usize| -> std::cmp::Ordering {
+        for (ki, &(_, dir)) in sort_keys.iter().enumerate() {
+            let ka = &row_sort_text[a][ki];
+            let kb = &row_sort_text[b][ki];
+            let ord = match dir {
+                SortDirection::Ascending => ka.cmp(kb),
+                SortDirection::Descending => kb.cmp(ka),
+            };
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        std::cmp::Ordering::Equal
+    };
+
+    match state.group_by {
+        Some(col) if col < columns.len() => {
+            let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
+            for s in kept {
+                let key = src.with_row(s, |r| group_key(r, col)).unwrap_or_default();
+                by_key.entry(key).or_default().push(s);
+            }
+            let mut buckets: Vec<(String, Vec<usize>)> = by_key.into_iter().collect();
+            buckets.sort_by(|(ka, _), (kb, _)| match state.group_direction() {
+                SortDirection::Ascending => ka.cmp(kb),
+                SortDirection::Descending => kb.cmp(ka),
+            });
+            let mut out = Vec::with_capacity(buckets.len());
+            for (key, mut members) in buckets {
+                members.sort_by(&cmp_keys);
+                let collapsed = state.is_collapsed(&key);
+                out.push(VisualRow::Group {
+                    key,
+                    count: members.len(),
+                    collapsed,
+                });
+                if !collapsed {
+                    out.extend(members.into_iter().map(|source| VisualRow::Data { source }));
+                }
+            }
+            out
+        }
+        _ => {
+            kept.sort_by(&cmp_keys);
+            kept.into_iter()
+                .map(|source| VisualRow::Data { source })
+                .collect()
+        }
+    }
+}
+
+/// Materialize only the rows a projected `visual` window references, as
+/// owned plain-text [`DataRow`]s (the DT-OPT-5a lightweight kind) — the
+/// `&[DataRow]` slice [`DataTable::new`] still needs for render, built from
+/// a [`RowSource`] without ever holding the whole table. Pass the
+/// `[offset, offset + body_height)` slice of the projection; group headers
+/// and out-of-range indices are skipped (their text is rebuilt by the
+/// caller's own `VisualRow::Group` handling, exactly as today).
+#[must_use]
+pub fn materialize_window<S: RowSource + ?Sized>(
+    src: &S,
+    visual: &[VisualRow],
+) -> Vec<(usize, DataRow<'static>)> {
+    visual
+        .iter()
+        .filter_map(|v| match v {
+            VisualRow::Data { source } => src
+                .with_row(*source, |r| {
+                    let cells: Vec<String> = (0..r.cell_count())
+                        .map(|c| r.cell_text(c).map(Cow::into_owned).unwrap_or_default())
+                        .collect();
+                    let mut row = DataRow::text(cells);
+                    if let Some(g) = &r.group {
+                        row = row.group(g.as_ref().to_owned());
+                    }
+                    row.style(r.style)
+                })
+                .map(|row| (*source, row)),
+            VisualRow::Group { .. } => None,
+        })
+        .collect()
+}
+
 /// A comprehensive, sortable/filterable/groupable, mouse-hit-testable,
 /// virtualized data grid with optional in-cell editing — a **pure projection**
 /// of caller-owned [`columns`](DataTable::new)/[`rows`](DataTable::new)/a
@@ -3048,5 +3211,81 @@ mod tests {
         );
         // Body and header track the same window (header zips the same rects).
         assert!(at2.contains("h2") && !at2.contains("h0"));
+    }
+
+    /// DT-OPT-5b: `project_source(&rows[..])` is byte-identical to
+    /// `project(&rows)` (the slice impl is the unchanged path), and a pure
+    /// **generator** source — no `Vec<DataRow>` materialized — projects to
+    /// the same result as the equivalent materialized table.
+    #[test]
+    fn project_source_matches_project_for_slice_and_a_generator() {
+        let cols = [DataColumn::new("id"), DataColumn::new("grp")];
+        let rows: Vec<DataRow> = (0..50)
+            .map(|i| DataRow::new([format!("r{:03}", (i * 37) % 50), format!("g{}", i % 4)]))
+            .collect();
+
+        let specs = [
+            DataTableState::new(),
+            {
+                let mut s = DataTableState::new();
+                s.set_sort(Some((0, SortDirection::Ascending)));
+                s
+            },
+            {
+                let mut s = DataTableState::new();
+                s.set_filter("g2");
+                s
+            },
+            {
+                let mut s = DataTableState::new();
+                s.set_group_by(Some(1));
+                s.set_sort(Some((0, SortDirection::Descending)));
+                s
+            },
+        ];
+        for s in &specs {
+            assert_eq!(
+                project(&cols, &rows, s),
+                project_source(&cols, &rows[..], s),
+                "slice RowSource is byte-identical to project()"
+            );
+        }
+
+        // A generator that fabricates each row on demand — it owns NO
+        // `Vec<DataRow>`, only the row count and a rule.
+        struct Gen(usize);
+        impl RowSource for Gen {
+            fn row_count(&self) -> usize {
+                self.0
+            }
+            fn with_row<R>(&self, i: usize, f: impl FnOnce(&DataRow) -> R) -> Option<R> {
+                (i < self.0).then(|| {
+                    let row = DataRow::new([
+                        format!("r{:03}", (i * 37) % 50),
+                        format!("g{}", i % 4),
+                    ]);
+                    f(&row)
+                })
+            }
+        }
+        let gsrc = Gen(50);
+        for s in &specs {
+            assert_eq!(
+                project(&cols, &rows, s),
+                project_source(&cols, &gsrc, s),
+                "a generator RowSource projects identically to the materialized table"
+            );
+        }
+
+        // The render window helper realizes only the projected rows.
+        let v = project_source(&cols, &gsrc, &specs[1]);
+        let win = materialize_window(&gsrc, &v[..5.min(v.len())]);
+        assert!(win.len() <= 5 && !win.is_empty());
+        for (idx, row) in &win {
+            let expect = gsrc
+                .with_row(*idx, |r| r.cell_text(0).map(|c| c.into_owned()))
+                .flatten();
+            assert_eq!(row.cell_text(0).map(|c| c.into_owned()), expect);
+        }
     }
 }

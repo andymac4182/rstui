@@ -407,7 +407,7 @@ pub use checkbox::Checkbox;
 pub use command_palette::CommandPalette;
 pub use data_table::{
     CellField, CellSelectState, DataColumn, DataRow, DataTable, DataTableHit, DataTableState,
-    SortDirection, VisualRow, cell_truthy,
+    RowSource, SortDirection, VisualRow, cell_truthy,
 };
 pub use description_list::{DescriptionList, DescriptionRow};
 pub use diagram_cache::DiagramCache;
