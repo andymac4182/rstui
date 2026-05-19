@@ -13,6 +13,12 @@ authors.workspace = true
 # framework MSRV) out of the release-packaging surface.
 publish = false
 description = "A full-screen Agent Client Protocol (ACP) chat client TUI built on rstui: registry-aware agent launch, streaming transcript, permission prompts, and a deny-by-default plugin extension layer."
+# This crate ships 9 binaries (the client + 8 reference plugins under
+# `src/bin/`). Without `default-run`, `cargo run -p rstui-acp-client`
+# is ambiguous and Cargo refuses to pick one — so the `--agent`/`--cmd`
+# switch never reaches a binary. Naming the client as the default makes
+# `cargo run -p rstui-acp-client -- --cmd "<your acp server>"` just work.
+default-run = "rstui-acp-client"
 
 [lints]
 workspace = true

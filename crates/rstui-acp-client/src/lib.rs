@@ -45,23 +45,27 @@ use crate::input::TerminalEvents;
 /// terminal is taken over.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
-    /// An explicit agent launch command (`--agent "npx -y …"`). When `None`
-    /// the client opens the registry picker instead.
+    /// An explicit **custom ACP command** to run for local-stdio
+    /// communication — set by `--agent` / `--cmd` / `--command`, or the
+    /// `RSTUI_ACP_AGENT` env var (see [`with_agent_env`](Self::with_agent_env)).
+    /// When `None` the client opens the registry picker instead.
     pub agent_command: Option<String>,
     /// Plugin launch commands to attach (`--plugin <cmd>`, repeatable).
     pub plugins: Vec<String>,
 }
 
 impl Config {
-    /// Parses `--agent <cmd>` / `--plugin <cmd>` (repeatable) / `--help` from
-    /// an argument iterator. Unknown flags are ignored so the binary stays
-    /// forgiving in a terminal.
+    /// Parses the custom-command switch (`--agent` / `--cmd` / `--command`,
+    /// all synonyms — the last one wins), `--plugin <cmd>` (repeatable), and
+    /// `--help` from an argument iterator. Unknown flags are ignored so the
+    /// binary stays forgiving in a terminal. Pure: the `RSTUI_ACP_AGENT`
+    /// env fallback is applied separately by [`with_agent_env`](Self::with_agent_env).
     pub fn from_args<I: IntoIterator<Item = String>>(args: I) -> Self {
         let mut cfg = Config::default();
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
-                "--agent" => cfg.agent_command = it.next(),
+                "--agent" | "--cmd" | "--command" => cfg.agent_command = it.next(),
                 "--plugin" => {
                     if let Some(p) = it.next() {
                         cfg.plugins.push(p);
@@ -71,6 +75,19 @@ impl Config {
             }
         }
         cfg
+    }
+
+    /// Folds the `RSTUI_ACP_AGENT` env fallback in: an explicit switch wins,
+    /// otherwise `env` (the resolved `RSTUI_ACP_AGENT`) supplies the custom
+    /// local-stdio command — the same typo-safe override convention as
+    /// `RSTUI_THEME` / `RSTUI_KEYMAP` / `RSTUI_ACP_*`. Pure (env is passed
+    /// in) so the precedence is unit-testable without the process env.
+    #[must_use]
+    pub fn with_agent_env(mut self, env: Option<String>) -> Self {
+        if self.agent_command.is_none() {
+            self.agent_command = env.filter(|s| !s.trim().is_empty());
+        }
+        self
     }
 }
 
@@ -142,6 +159,11 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         LifecycleOptions::default(),
     )?;
     let mut events = TerminalEvents::new();
+    // `RSTUI_ACP_AGENT=<cmd>` supplies the custom local-stdio command when
+    // no `--agent`/`--cmd`/`--command` switch was given (flag still wins).
+    // Resolved here, not in `Config::from_args`, so headless `Harness`
+    // tests building `ChatApp::new` directly stay env-independent.
+    let config = config.with_agent_env(std::env::var("RSTUI_ACP_AGENT").ok());
     let mut app = ChatApp::new(config);
     // `RSTUI_KEYMAP=<map name|/path/to/keymap>` remaps the global commands
     // without a rebuild or the in-app panel — the same typo-safe seam as

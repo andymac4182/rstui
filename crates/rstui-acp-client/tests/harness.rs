@@ -161,6 +161,37 @@ fn config_from_args_parses_agent_and_repeated_plugins() {
     assert!(empty.plugins.is_empty());
 }
 
+/// `--agent`, `--cmd` and `--command` are synonyms for the custom
+/// local-stdio ACP command, and the `RSTUI_ACP_AGENT` env fallback (folded
+/// in by `with_agent_env`, passed explicitly so the test never touches the
+/// process env) only applies when no switch was given.
+#[test]
+fn custom_command_switch_synonyms_and_env_precedence() {
+    for flag in ["--agent", "--cmd", "--command"] {
+        let cfg = Config::from_args([flag, "my-acp --stdio"].into_iter().map(String::from));
+        assert_eq!(
+            cfg.agent_command.as_deref(),
+            Some("my-acp --stdio"),
+            "{flag} sets the custom command"
+        );
+        // An explicit switch wins over the env var.
+        let cfg = cfg.with_agent_env(Some("ENV_CMD".to_owned()));
+        assert_eq!(cfg.agent_command.as_deref(), Some("my-acp --stdio"));
+    }
+
+    // No switch → the env var supplies the command…
+    let cfg =
+        Config::from_args(std::iter::empty::<String>()).with_agent_env(Some("envd-acp".to_owned()));
+    assert_eq!(cfg.agent_command.as_deref(), Some("envd-acp"));
+
+    // …but a blank/whitespace env var is ignored (still the picker).
+    let cfg =
+        Config::from_args(std::iter::empty::<String>()).with_agent_env(Some("   ".to_owned()));
+    assert_eq!(cfg.agent_command, None);
+    let cfg = Config::from_args(std::iter::empty::<String>()).with_agent_env(None);
+    assert_eq!(cfg.agent_command, None);
+}
+
 #[test]
 fn registry_parse_resolves_an_npx_agent_command() {
     let json = r#"{

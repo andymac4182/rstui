@@ -3,12 +3,18 @@
 //! ```text
 //! rstui-acp-client                       # open the registry agent picker
 //! rstui-acp-client --agent "npx -y @zed-industries/claude-code-acp@latest"
+//! rstui-acp-client --cmd "python my_acp_server.py"  # any custom local-stdio ACP command
+//! RSTUI_ACP_AGENT="./target/debug/my-acp" rstui-acp-client  # …or via the env var
 //! rstui-acp-client --plugin ./my-plugin  # attach an extra plugin (repeatable)
 //! ```
 //!
-//! With no `--plugin`, the reference plugins next to this binary
-//! (`rstui-acp-plugin-powerline`, `-btw`, `-ask-user`) are auto-attached so
-//! the powerline footer and slash commands work out of the box.
+//! `--agent`, `--cmd` and `--command` are synonyms: the **custom ACP
+//! command** to launch and speak to over local stdio. Without one (and
+//! without `RSTUI_ACP_AGENT`) the registry picker opens — which also offers
+//! a "Custom command…" entry. With no `--plugin`, the reference plugins
+//! next to this binary (`rstui-acp-plugin-powerline`, `-btw`, `-ask-user`)
+//! are auto-attached so the powerline footer and slash commands work out of
+//! the box.
 
 use std::process::ExitCode;
 
@@ -34,12 +40,19 @@ async fn main() -> ExitCode {
 fn print_usage() {
     println!(
         "rstui-acp-client — a full-screen ACP chat client\n\n\
-         USAGE:\n  rstui-acp-client [--agent <cmd>] [--plugin <cmd>]…\n\n\
+         USAGE:\n  rstui-acp-client [--cmd <acp-command>] [--plugin <cmd>]…\n\n\
          OPTIONS:\n\
-         \x20 --agent  <cmd>   Launch this agent command directly (skip the picker)\n\
+         \x20 --cmd <cmd>      Custom ACP command to run & speak to over local\n\
+         \x20                  stdio (skip the picker). --agent and --command\n\
+         \x20                  are synonyms.\n\
          \x20 --plugin <cmd>   Attach an extension plugin process (repeatable)\n\
          \x20 -h, --help       Show this help\n\n\
-         With no --agent the ACP registry picker opens. With no --plugin the\n\
-         in-tree reference plugins beside this binary are auto-attached."
+         ENV:\n\
+         \x20 RSTUI_ACP_AGENT  Custom ACP command when no --cmd is given\n\n\
+         With no command (and no RSTUI_ACP_AGENT) the ACP registry picker\n\
+         opens — it also has a \"Custom command…\" entry. With no --plugin the\n\
+         in-tree reference plugins beside this binary are auto-attached.\n\n\
+         Via cargo (note the `--` before the switch):\n\
+         \x20 cargo run -p rstui-acp-client -- --cmd \"python my_acp.py\""
     );
 }
