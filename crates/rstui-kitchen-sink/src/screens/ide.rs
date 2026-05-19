@@ -365,6 +365,11 @@ scroll and the line-number gutter both did their jobs. That is the
 only assertion this file is making.
 "#;
 
+/// One memoised overlay slot: `(active file, rev, theme-fp) ->` the cached
+/// flattened syntax overlay. A `type` alias keeps the `syntax_memo` field a
+/// simple type (clippy::type_complexity).
+type OverlayMemo = Option<(usize, u64, u64, Rc<Vec<Style>>)>;
+
 /// The editor's caller-owned state: one [`TextArea`] per open file.
 #[derive(Debug)]
 pub(crate) struct State {
@@ -384,7 +389,7 @@ pub(crate) struct State {
     /// ADR 0025 ethos): `(active, rev, theme-fp) -> Rc<overlay>`. `RefCell`
     /// keeps the pure `view` a projection — a hit and a miss are
     /// byte-identical, the memo only elides the reparse.
-    syntax_memo: RefCell<Option<(usize, u64, u64, Rc<Vec<Style>>)>>,
+    syntax_memo: RefCell<OverlayMemo>,
 }
 
 /// A cheap, stable hash of just the [`Theme`] colours the syntax palette
