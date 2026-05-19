@@ -292,6 +292,13 @@ declare_json_render_catalog! {
         "Multi-choice picker.";
     "ConfirmInput" ("message", "defaultValue", "yesLabel", "noLabel") ["confirm", "deny"] =>
         "Yes/No confirm.";
+    "Button" ("label", "text", "variant", "disabled") ["press"] =>
+        "Action button. on.press runs a builtin (setState/…) locally, \
+         or sends a host action {action,params} back to the agent.";
+    "Checkbox" ("label", "value") [] =>
+        "Boolean toggle (two-way: value:{\"$bindState\":\"/ptr\"}).";
+    "Slider" ("label", "value", "min", "max", "step") [] =>
+        "Bounded numeric stepper (two-way: value:{\"$bindState\":\"/ptr\"}).";
     "Tabs" [children] ("tabs", "value", "color") ["change"] =>
         "Tab strip + active panel.";
     "Markdown" ("text") [] => "A markdown document.";
@@ -409,9 +416,24 @@ mod tests {
         let catalog = json_render_catalog();
         let map = catalog.as_object().unwrap();
         // The upstream Ink standard set (Box…Markdown) + the rstui
-        // chart extension (Line/Area/Pie/Scatter/Histogram/StackedBar/
-        // Heatmap added alongside the original BarChart/Sparkline).
-        assert_eq!(map.len(), 34, "the standard component set + charts");
+        // chart extension + the form-element set (Button/Checkbox/
+        // Slider added beside TextInput/Select/ConfirmInput).
+        assert_eq!(
+            map.len(),
+            37,
+            "the standard component set + charts + form elements"
+        );
+        for form in ["Button", "Checkbox", "Slider", "TextInput"] {
+            assert!(map.contains_key(form), "json-render advertises {form}");
+        }
+        assert!(
+            catalog["Button"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event == "press"),
+            "Button advertises the press event the agent binds an action to"
+        );
         assert!(map.contains_key("Box") && map.contains_key("Markdown"));
         assert!(
             catalog["TextInput"]["events"]

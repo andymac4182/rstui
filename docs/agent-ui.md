@@ -116,6 +116,22 @@ To AI apps what `rstui-widgets` is to general TUIs:
   `actionResponse` with no `createSurface`) folds into the open live
   doc (`RichDoc::merge_followup`) so the pane updates in place rather
   than stacking a duplicate.
+- **Every form element is supported and submits**, in *both* formats,
+  and each is advertised in the catalog/prompt the agent receives:
+  - **json-render**: `Button` (`on.press` → a builtin runs locally,
+    else a host `{action,params}` round-trips to the agent),
+    `TextInput`, `Checkbox`/`Switch`/`Toggle` (two-way `$bindState`
+    bool), `Slider`/`Range` (a `[−] value [+]` stepper, two-way
+    `$bindState`, clamped `min..=max`), `Select`/`MultiSelect`,
+    `ConfirmInput`, `Tabs`. (`Button`/`Checkbox`/`Slider` were
+    advertised-but-unimplemented → a dead `[unsupported]`; now real.)
+  - **A2UI**: `Button` (its `action.event` → the spec
+    `{version,action:{…}}` envelope), `TextField`, `CheckBox`,
+    `ChoicePicker`, `Slider` (was a read-only Gauge; now the same
+    interactive two-way stepper), `DateTimeInput`, `Tabs`.
+  Inputs write to the data model; a `Button`'s event/host-action is
+  the submit, with the bound values resolved into its
+  `context`/`params` — so a full form round-trips to the agent.
 - **Charts/graphs are first-class** in both formats. `BarChart`,
   `LineChart`, `AreaChart`, `PieChart`, `Sparkline`, `ScatterPlot`,
   `Histogram`, `StackedBarChart`, `Heatmap` project to a real themed
