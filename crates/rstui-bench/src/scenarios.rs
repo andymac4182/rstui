@@ -22,7 +22,8 @@ use rstui_core::{
 };
 use rstui_runtime::{App, Cmd, Frame, Harness};
 use rstui_widgets::{
-    JsonCanvas, List, ListItem, Markdown, Paragraph, Row, Structurizr, Table, Tree, TreeItem, Wrap,
+    DataColumn, DataRow, DataTable, DataTableState, JsonCanvas, List, ListItem, Markdown,
+    Paragraph, Row, SortDirection, Structurizr, Table, Tree, TreeItem, Wrap, data_table::project,
 };
 
 use crate::measure::{Bench, Stats};
@@ -215,6 +216,72 @@ fn widget_table_render(bench: &Bench) -> Stats {
         .render(frame(), &mut buf);
         buf.get(Position::ORIGIN).map(|c| c.symbol)
     })
+}
+
+/// A `DataTable` fixture: `rows × cols` cells of realistic, deterministic,
+/// *varied* content (so a sort actually has work) — the shape a real data
+/// grid holds, not a degenerate one-char fixture.
+fn datatable_fixture(
+    rows: usize,
+    cols: usize,
+) -> (Vec<DataColumn<'static>>, Vec<DataRow<'static>>) {
+    let columns: Vec<DataColumn> = (0..cols)
+        .map(|c| DataColumn::new(format!("col{c}")))
+        .collect();
+    let data: Vec<DataRow> = (0..rows)
+        .map(|i| {
+            let shuffled = i.wrapping_mul(2_654_435_761) & 0x00ff_ffff;
+            DataRow::new((0..cols).map(|c| match c {
+                0 => format!("R{shuffled:08}"),
+                1 => format!("name-{}", i % 9973),
+                _ => format!("c{c}v{}", i % 1000),
+            }))
+        })
+        .collect();
+    (columns, data)
+}
+
+/// `widget/datatable/render` — a virtualized render of a **50 000**-row × 6-col
+/// grid (the projection is built once, outside the timed closure — it is the
+/// caller-owned per-state-change artifact, measured separately). Only the
+/// ~47-row visible window is ever touched, so this must stay flat regardless
+/// of row count: it is the regression guard that `DataTable`'s body render
+/// never silently becomes O(rows). (Capacity sweep: identical cost at 1 000
+/// and 1 000 000 rows.)
+fn widget_datatable_render(bench: &Bench) -> Stats {
+    let (columns, data) = datatable_fixture(50_000, 6);
+    let state = DataTableState::new();
+    let visual = project(&columns, &data, &state);
+    let mut buf = Buffer::empty(frame());
+    bench.run(|| {
+        DataTable::new(&columns, &data, &visual, &state).render(frame(), &mut buf);
+        buf.get(Position::ORIGIN).map(|c| c.symbol)
+    })
+}
+
+/// `widget/datatable/project` — the identity `project()` (no sort/filter/
+/// group) over **50 000** rows: the common per-state-change cost a scroll or
+/// selection re-runs. O(rows) but allocation-light (it builds the index
+/// `Vec` then the `Vec<VisualRow>`, never touching cell text) — sub-10ms even
+/// at 1 000 000 rows in the capacity sweep.
+fn widget_datatable_project(bench: &Bench) -> Stats {
+    let (columns, data) = datatable_fixture(50_000, 6);
+    let state = DataTableState::new();
+    bench.run(|| project(&columns, &data, &state).len())
+}
+
+/// `widget/datatable/project_sorted` — a single-key sorted `project()`. **2 000**
+/// rows, not 50 000: the comparator calls `line_text` (a per-cell `String`
+/// allocation) twice per comparison, so this path is O(n log n) *allocations*
+/// — ~4 s to sort 1 000 000 rows in the capacity sweep. The small N keeps the
+/// suite fast while still guarding that the sort comparator's per-row
+/// allocation behaviour never regresses (this is the `DataTable` scaling
+/// bottleneck the scale report calls out for a future `line_text` cache).
+fn widget_datatable_project_sorted(bench: &Bench) -> Stats {
+    let (columns, data) = datatable_fixture(2_000, 6);
+    let mut state = DataTableState::new();
+    state.set_sort(Some((0, SortDirection::Ascending)));
+    bench.run(|| project(&columns, &data, &state).len())
 }
 
 /// `widget/tree/render` — a 300-node tree (the files/navigation pane): the
@@ -538,6 +605,12 @@ pub(crate) const SCENARIOS: &[(&str, Scenario)] = &[
     ("selection/extract", selection_extract),
     ("widget/list/render", widget_list_render),
     ("widget/table/render", widget_table_render),
+    ("widget/datatable/render", widget_datatable_render),
+    ("widget/datatable/project", widget_datatable_project),
+    (
+        "widget/datatable/project_sorted",
+        widget_datatable_project_sorted,
+    ),
     ("widget/tree/render", widget_tree_render),
     ("widget/paragraph/render", widget_paragraph_render),
     ("widget/markdown/render", widget_markdown_render),
