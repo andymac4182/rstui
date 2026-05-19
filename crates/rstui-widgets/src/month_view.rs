@@ -621,9 +621,16 @@ impl Widget for MonthView<'_> {
                     break;
                 }
                 if e.multi_day() || e.all_day() {
-                    // A bar segment: fill the cell width then the title, so
-                    // contiguous covered cells read as one continuous bar.
-                    let st = tint(base, e.color());
+                    // A bar segment: a solid colour fill with a contrast
+                    // label (so a spanning event reads as an actual bar, not
+                    // faint tinted text), then the title; contiguous covered
+                    // cells abut into one continuous bar. `Reset` keeps the
+                    // cell's own colours.
+                    let st = if e.color() == Color::Reset {
+                        base
+                    } else {
+                        base.bg(e.color()).fg(crate::event::readable_fg(e.color()))
+                    };
                     for x in cell_x..cell_right {
                         buf.set_cell(Position::new(x, y), ' ', st);
                     }
@@ -817,9 +824,14 @@ mod tests {
         MonthView::new(2026, 5, 31, 5)
             .events(&events)
             .render(buf.area(), &mut buf);
-        // All-day single-cell event renders as a one-column-wide spanning bar
-        // on cell_y+1. Day 1 col 5 → x0 = 25. Bar bg is base; title tinted.
-        assert_eq!(buf.get(Position::new(26, 3)).unwrap().fg, Color::Green);
+        // All-day single-cell event renders as a one-column-wide spanning
+        // bar on cell_y+1. Day 1 col 5 → x0 = 25. The bar is a solid colour
+        // fill with a contrast label (was faint tinted text on the surface).
+        assert_eq!(buf.get(Position::new(26, 3)).unwrap().bg, Color::Green);
+        assert_eq!(
+            buf.get(Position::new(25, 3)).unwrap().fg,
+            crate::event::readable_fg(Color::Green)
+        );
     }
 
     #[test]
@@ -835,12 +847,11 @@ mod tests {
             .events(&events)
             .render(buf.area(), &mut buf);
         // Week 0 cell_y = 2, bar at cell_y+1 = 3. cols 5..6 → x 25..35.
-        let st = buf.get(Position::new(25, 3)).unwrap();
-        assert_eq!(st.fg, Color::Blue); // title char tinted
-        // The bar is continuous across the column boundary at x = 30.
-        assert_eq!(buf.get(Position::new(30, 3)).unwrap().fg, Color::Blue);
-        // It does not bleed past Saturday into Sunday's column on this row.
-        assert_eq!(buf.get(Position::new(34, 3)).unwrap().fg, Color::Blue);
+        // The bar is a solid colour fill, continuous across the column
+        // boundary at x = 30 and up to Saturday's right edge (x = 34).
+        assert_eq!(buf.get(Position::new(25, 3)).unwrap().bg, Color::Blue);
+        assert_eq!(buf.get(Position::new(30, 3)).unwrap().bg, Color::Blue);
+        assert_eq!(buf.get(Position::new(34, 3)).unwrap().bg, Color::Blue);
     }
 
     #[test]

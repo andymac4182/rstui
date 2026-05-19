@@ -45,10 +45,10 @@
 
 use std::borrow::Cow;
 
-use rstui_core::{Buffer, Position, Rect, Style, Widget};
+use rstui_core::{Buffer, Color, Position, Rect, Style, Widget};
 
 use crate::block::Block;
-use crate::event::{CalendarEvent, pack_day, time_label};
+use crate::event::{CalendarEvent, pack_day, readable_fg, time_label};
 
 /// The hour-ruler gutter: `"HH:00"` (5 columns) plus a one-column separator so
 /// the ruler never visually merges with the first event block.
@@ -319,6 +319,35 @@ impl<'a> DayView<'a> {
         Some(snapped.min(u32::from(crate::event::MINUTES_PER_DAY)) as u16)
     }
 
+    /// The full-width rectangle a timed `[start_min, end_min]` event occupies
+    /// in the day column — the slot a drag ghost should match so it is the
+    /// **same size** as the placed block and the user sees exactly where it
+    /// lands and which hour rows it aligns with. A pure function of `area`
+    /// and the window, mirroring [`body`](Self::body) and the identical
+    /// `render` row mapping (the private `block_rows` helper); empty when the
+    /// span is wholly
+    /// outside the visible window or the area is too small (never a panic).
+    #[must_use]
+    pub fn slot_rect(&self, area: Rect, start_min: u16, end_min: u16) -> Rect {
+        let body = self.body(area);
+        if body.is_empty() {
+            return Rect::ZERO;
+        }
+        let (s, e) = self.window();
+        let (top, h) = block_rows(
+            u32::from(start_min),
+            u32::from(end_min),
+            u32::from(s) * 60,
+            u32::from(e) * 60,
+            body.top(),
+            u32::from(body.height),
+        );
+        if h == 0 {
+            return Rect::ZERO;
+        }
+        Rect::new(body.left(), top, body.width, h)
+    }
+
     /// The [`id`](crate::CalendarEvent::id) of the timed event whose block
     /// covers `pos`, or `None`. Mirrors `render`'s tiling exactly (same
     /// [`pack_day`] columns and row mapping), so a
@@ -477,7 +506,13 @@ impl Widget for DayView<'_> {
                 continue;
             }
             let ev = all_day[row as usize];
-            let chip = band_base.patch(Style::new().fg(ev.color()));
+            // A solid colour chip with a contrast label (an arbitrary caller
+            // tint must stay legible) — `Reset` keeps the band's own colours.
+            let chip = if ev.color() == Color::Reset {
+                band_base
+            } else {
+                band_base.patch(Style::new().bg(ev.color()).fg(readable_fg(ev.color())))
+            };
             // Whole-row tint so the chip reads as a band, then the title.
             buf.set_style(Rect::new(left, y, inner.width, 1), chip);
             put(buf, ev.title(), chip, left, y, right);
@@ -554,7 +589,13 @@ impl Widget for DayView<'_> {
             if h == 0 {
                 continue;
             }
-            let mut fill = self.style.patch(Style::new().bg(ev.color()));
+            // The block fill carries a contrast label colour (a category
+            // tint must never render unreadable text); `Reset` keeps the
+            // panel's own colours. `selected_style` is patched last.
+            let mut fill = self.style;
+            if ev.color() != Color::Reset {
+                fill = fill.patch(Style::new().bg(ev.color()).fg(readable_fg(ev.color())));
+            }
             if self.selected_event == Some(ev.id()) {
                 fill = fill.patch(self.selected_style);
             }
@@ -720,7 +761,12 @@ mod tests {
         dv.render(buf.area(), &mut buf);
         // Band is row 1 (after the header). Whole row tinted Green + title.
         assert_eq!(buf.get(Position::new(0, 1)).unwrap().symbol, 'H');
-        assert_eq!(buf.get(Position::new(0, 1)).unwrap().fg, Color::Green);
+        // A solid colour chip with a contrast label (was faint tinted text).
+        assert_eq!(buf.get(Position::new(0, 1)).unwrap().bg, Color::Green);
+        assert_eq!(
+            buf.get(Position::new(0, 1)).unwrap().fg,
+            crate::event::readable_fg(Color::Green)
+        );
         // The grid (and its ruler) now starts at row 2.
         let mut r2 = String::new();
         for x in 0..5 {
@@ -742,7 +788,12 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
         dv.render(buf.area(), &mut buf);
         assert_eq!(buf.get(Position::new(0, 1)).unwrap().symbol, 'C');
-        assert_eq!(buf.get(Position::new(0, 1)).unwrap().fg, Color::Magenta);
+        // A solid colour chip with a contrast label (was faint tinted text).
+        assert_eq!(buf.get(Position::new(0, 1)).unwrap().bg, Color::Magenta);
+        assert_eq!(
+            buf.get(Position::new(0, 1)).unwrap().fg,
+            crate::event::readable_fg(Color::Magenta)
+        );
     }
 
     #[test]
@@ -983,5 +1034,31 @@ mod tests {
             row.push(buf.get(Position::new(x, band_last)).unwrap().symbol);
         }
         assert!(row.starts_with("+3 more"), "got {row:?}");
+    }
+
+    #[test]
+    fn slot_rect_is_a_full_width_block_aligned_with_where_the_event_lands() {
+        // One 09:00–11:00 event, window 08..18, generous area.
+        let events = [ev(1, "Plan", 0, 9, 0, 11, 0)];
+        let dv = DayView::new(0).events(&events).hours(8, 18);
+        let area = Rect::new(0, 0, 40, 24);
+        let body = dv.body(area);
+        assert!(!body.is_empty());
+        let r = dv.slot_rect(area, 9 * 60, 11 * 60);
+        assert!(!r.is_empty());
+        // Same column as the day grid, full width — a ghost the same size.
+        assert_eq!(r.x, body.x);
+        assert_eq!(r.width, body.width);
+        // The slot aligns with where the block actually is: a click in its
+        // middle resolves (via the shared row mapping) to the event.
+        let mid = Position::new(r.x + r.width / 2, r.y + r.height / 2);
+        assert_eq!(dv.event_at(area, mid), Some(1));
+        // Just above the slot's top is *not* the event (alignment is exact).
+        if r.y > body.y {
+            let above = Position::new(mid.x, r.y - 1);
+            assert_ne!(dv.event_at(area, above), Some(1));
+        }
+        // A span wholly before the visible window collapses to empty (total).
+        assert!(dv.slot_rect(area, 0, 30).is_empty());
     }
 }

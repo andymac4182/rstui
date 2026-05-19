@@ -513,7 +513,7 @@ impl Widget for WeekView<'_> {
                 {
                     let mut bs = band_base;
                     if ev.color() != Color::Reset {
-                        bs = bs.bg(ev.color());
+                        bs = bs.bg(ev.color()).fg(event::readable_fg(ev.color()));
                     }
                     if self.selected_event == Some(ev.id()) {
                         bs = bs.patch(self.selected_style);
@@ -580,7 +580,7 @@ impl Widget for WeekView<'_> {
                 let mut bs = grid_glyph;
                 if let Some(ev) = ev {
                     if ev.color() != Color::Reset {
-                        bs = bs.bg(ev.color());
+                        bs = bs.bg(ev.color()).fg(event::readable_fg(ev.color()));
                     }
                 }
                 if self.selected_event == Some(l.id) {

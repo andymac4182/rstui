@@ -416,6 +416,67 @@ pub fn time_label_12h(minute: u16) -> String {
     }
 }
 
+/// A foreground [`Color`] that stays legible drawn **on** an event-block fill
+/// of `bg` — the contrast colour the time-grid/month views give an event's
+/// label so a category tint never renders unreadable text.
+///
+/// A block tinted by an *arbitrary* caller [`color`](CalendarEvent::color)
+/// must keep its title legible — the [`Gauge`](crate::Gauge) totality rule
+/// applied to colour, not just geometry. Inheriting the panel's text colour
+/// makes a near-white label on a light accent fill (or near-black on a dark
+/// one) invisible. This picks near-black or near-white by the fill's
+/// perceptual luminance (`0.299R + 0.587G + 0.114B`, the standard
+/// coefficients). [`Color::Reset`] returns `Reset` so the caller can leave
+/// the base style untouched (an uncoloured event reads in the panel's own
+/// colours); named/indexed ANSI colours map by conventional brightness.
+#[must_use]
+pub fn readable_fg(bg: Color) -> Color {
+    /// Near-black, for a light fill.
+    const DARK: Color = Color::Rgb(20, 22, 26);
+    /// Near-white, for a dark fill.
+    const LIGHT: Color = Color::Rgb(245, 247, 250);
+    /// Luminance (0..=255) above which a fill is "light" → use a dark fg.
+    /// `128` keeps a saturated mid-green (≈136) on the dark side of the line
+    /// (black text reads better on it) while a dark amber (≈106) stays light.
+    const LIGHT_CUTOFF: u32 = 128;
+
+    let bright = |r: u32, g: u32, b: u32| (299 * r + 587 * g + 114 * b) / 1000;
+    let pick = |r, g, b| {
+        if bright(r, g, b) > LIGHT_CUTOFF {
+            DARK
+        } else {
+            LIGHT
+        }
+    };
+    match bg {
+        Color::Reset => Color::Reset,
+        Color::Rgb(r, g, b) => pick(u32::from(r), u32::from(g), u32::from(b)),
+        // The 6×6×6 colour cube (16..=231): reconstruct the RGB and reuse the
+        // luminance test; the 24-step grey ramp (232..=255) is a line.
+        Color::Indexed(i @ 16..=231) => {
+            let c = u32::from(i - 16);
+            let lvl = |v: u32| if v == 0 { 0 } else { 55 + 40 * v };
+            pick(lvl(c / 36), lvl((c / 6) % 6), lvl(c % 6))
+        }
+        Color::Indexed(i @ 232..=255) => {
+            if u32::from(i - 232) * 10 + 8 > LIGHT_CUTOFF {
+                DARK
+            } else {
+                LIGHT
+            }
+        }
+        // The conventionally *light* ANSI names take a dark fg; everything
+        // else (the dark names, dim indexed `0..=15`, anything else) a light.
+        Color::White
+        | Color::Gray
+        | Color::LightYellow
+        | Color::LightGreen
+        | Color::LightCyan
+        | Color::Yellow => DARK,
+        _ => LIGHT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +643,28 @@ mod tests {
         assert_eq!(time_label_12h(720), "12pm");
         assert_eq!(time_label_12h(780), "1pm");
         assert_eq!(time_label_12h(13 * 60 + 5), "1:05pm");
+    }
+
+    #[test]
+    fn readable_fg_contrasts_the_fill_and_passes_reset_through() {
+        let dark = Color::Rgb(20, 22, 26);
+        let light = Color::Rgb(245, 247, 250);
+        // Reset ⇒ Reset (the caller then leaves the base style untouched).
+        assert_eq!(readable_fg(Color::Reset), Color::Reset);
+        // Light fills (the kitchen-sink dark-theme category palette) ⇒ dark fg.
+        assert_eq!(readable_fg(Color::Rgb(88, 166, 255)), dark); // accent blue
+        assert_eq!(readable_fg(Color::Rgb(63, 185, 80)), dark); // ok green
+        assert_eq!(readable_fg(Color::Rgb(210, 153, 34)), dark); // warn amber
+        assert_eq!(readable_fg(Color::Rgb(188, 140, 255)), dark); // accent_alt
+        // Genuinely dark fills ⇒ light fg.
+        assert_eq!(readable_fg(Color::Rgb(13, 17, 23)), light); // base
+        assert_eq!(readable_fg(Color::Rgb(154, 103, 0)), light); // light-theme amber
+        // ANSI names map by conventional brightness; the cube/grey ramp work.
+        assert_eq!(readable_fg(Color::White), dark);
+        assert_eq!(readable_fg(Color::Black), light);
+        assert_eq!(readable_fg(Color::Indexed(231)), dark); // cube white
+        assert_eq!(readable_fg(Color::Indexed(16)), light); // cube black
+        assert_eq!(readable_fg(Color::Indexed(255)), dark); // grey ramp top
+        assert_eq!(readable_fg(Color::Indexed(232)), light); // grey ramp bottom
     }
 }

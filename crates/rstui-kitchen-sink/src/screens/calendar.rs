@@ -67,6 +67,26 @@ const DAY_COUNT: u32 = 31;
 /// Weekday index of day-of-month 1 (May 1 2026 is a Friday).
 const WEEKDAY_OF_FIRST: u32 = 5;
 
+/// 2026's `(day_count, weekday_of_first)` per month, January…December
+/// (`0` = Sunday). Caller-owned date facts the screen hands `YearView` so it
+/// can draw all twelve mini-months — the widget itself does **no** date math
+/// (without these it correctly renders blank). May is `(31, 5)`, consistent
+/// with [`DAY_COUNT`]/[`WEEKDAY_OF_FIRST`].
+const MONTHS_2026: [(u32, u32); 12] = [
+    (31, 4), // Jan — Thu
+    (28, 0), // Feb — Sun
+    (31, 0), // Mar — Sun
+    (30, 3), // Apr — Wed
+    (31, 5), // May — Fri
+    (30, 1), // Jun — Mon
+    (31, 3), // Jul — Wed
+    (31, 6), // Aug — Sat
+    (30, 2), // Sep — Tue
+    (31, 4), // Oct — Thu
+    (30, 0), // Nov — Sun
+    (31, 2), // Dec — Tue
+];
+
 /// The fixed "today" day-of-month (deterministic — no wall clock).
 const TODAY: u32 = 14;
 
@@ -1103,8 +1123,11 @@ impl State {
     }
 
     fn year_widget<'a>(&self, _evs: &'a [CalendarEvent<'a>]) -> YearView<'a> {
-        // The one modelled month's per-day-count tuple; "busy" marks May.
+        // Hand it the caller-owned 2026 month facts — without `.months(...)`
+        // YearView has nothing to lay out and renders blank.
         YearView::new(2026)
+            .months(&MONTHS_2026)
+            .first_weekday(0)
             .today(Some((5, TODAY)))
             .selected(Some((5, self.selected_day)))
     }
@@ -1272,15 +1295,40 @@ impl State {
             Modal::Editor => self.view_editor(theme, frame, area),
         }
 
-        // The drag ghost, last, following the pointer (the board seam).
+        // The drag ghost, last, following the pointer (the board seam). In
+        // Day view it is the SAME-SIZE, grid-aligned slot the event will
+        // occupy (snapped to 15-min rows, full event-column width) so the
+        // user sees exactly where it lands and which hour it aligns with;
+        // every other view keeps the compact floating box.
         if let Some(d) = self.drag {
             if let Some(i) = self.index_of(d.id) {
                 let label = self.events[i].title.clone();
-                let w = (label.chars().count() as u16 + 4).min(28).min(area.width);
-                let h = 3u16.min(area.height);
-                let gx = d.at.x.min(area.right().saturating_sub(w)).max(area.x);
-                let gy = d.at.y.min(area.bottom().saturating_sub(h)).max(area.y);
-                let grect = Rect::new(gx, gy, w, h);
+                let aligned = if self.view_mode == DAY {
+                    // Same block inset as the rendered day widget (geometry
+                    // depends only on borders/padding, not title/colour).
+                    let dv = self
+                        .day_widget(&evs)
+                        .block(Block::bordered().border_type(BorderType::Rounded));
+                    dv.minute_at(body, d.at).and_then(|start| {
+                        let dur = evs
+                            .iter()
+                            .find(|e| e.id() == d.id)
+                            .map_or(60, |e| e.duration_min())
+                            .max(15);
+                        let end = start.saturating_add(dur).min(MINUTES_PER_DAY);
+                        let r = dv.slot_rect(body, start, end);
+                        (!r.is_empty()).then_some(r)
+                    })
+                } else {
+                    None
+                };
+                let grect = aligned.unwrap_or_else(|| {
+                    let w = (label.chars().count() as u16 + 4).min(28).min(area.width);
+                    let h = 3u16.min(area.height);
+                    let gx = d.at.x.min(area.right().saturating_sub(w)).max(area.x);
+                    let gy = d.at.y.min(area.bottom().saturating_sub(h)).max(area.y);
+                    Rect::new(gx, gy, w, h)
+                });
                 let gblock = Block::bordered()
                     .border_type(BorderType::Thick)
                     .border_style(theme.border_focused())
