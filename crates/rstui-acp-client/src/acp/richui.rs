@@ -1041,6 +1041,52 @@ mod tests {
     }
 
     #[test]
+    fn json_render_button_press_round_trips_to_the_agent() {
+        // The reported gap: a json-render `Button` was advertised but
+        // unimplemented (→ a dead `[unsupported: Button]`). It must
+        // project to a real button and its `on.press` host action must
+        // round-trip the spec `{action,params}` to the agent, with a
+        // bound field's value resolved in.
+        let spec = r#"{"root":"form","elements":{
+            "form":{"type":"Box","children":["q","send"]},
+            "q":{"type":"TextInput","props":{"label":"Q","value":{"$bindState":"/q"}}},
+            "send":{"type":"Button","props":{"label":"Send","variant":"primary"},"on":{"press":{"action":"submitForm","params":{"q":{"$state":"/q"}}}}}
+        },"state":{"q":""}}"#;
+        let mut doc = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::JsonRender,
+            source: spec.to_owned(),
+        })
+        .expect("json-render builds");
+        doc.set_field_text("/q", "hello");
+
+        let action = doc
+            .act_node("send", "t")
+            .expect("the Button resolves an action");
+        let RichAction::ToAgent(json) = action else {
+            panic!("a json-render Button host action must round-trip, got {action:?}");
+        };
+        let v: Value = serde_json::from_str(&json).expect("payload is JSON");
+        assert_eq!(v["action"], "submitForm");
+        assert_eq!(
+            v["params"]["q"], "hello",
+            "the bound field resolves into the submitted params: {json}"
+        );
+
+        // A Button whose press is a builtin stays LOCAL (spec: builtin
+        // actions mutate local UI state, they don't message the agent).
+        let local = r#"{"root":"b","elements":{"b":{"type":"Button","props":{"label":"+"},"on":{"press":{"action":"setState","params":{"statePath":"/n","value":1}}}}},"state":{"n":0}}"#;
+        let mut d2 = RichDoc::build(&RichUiPayload {
+            format: RichUiFormat::JsonRender,
+            source: local.to_owned(),
+        })
+        .expect("builds");
+        assert!(
+            matches!(d2.act_node("b", "t"), Some(RichAction::Local(_))),
+            "a builtin-action Button stays local, not a round-trip"
+        );
+    }
+
+    #[test]
     fn a2ui_tabs_switch_via_act_node_persists() {
         // A2UI `Tabs` headers are now interactive (`<id>#tab:<n>`):
         // activating one switches the reducer-owned active tab and the

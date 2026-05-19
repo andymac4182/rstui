@@ -1511,6 +1511,58 @@ fn agent_form_opens_in_the_right_pane_and_keyboard_fills_then_submits() {
 }
 
 #[test]
+fn json_render_button_in_a_form_round_trips_when_clicked() {
+    // The reported bug: a json-render Button doesn't submit. Stream a
+    // json-render form with a `Button`; it must open in the pane,
+    // render as a real button (not "[unsupported: Button]"), and a
+    // click round-trip the action to the agent (headless: the
+    // not-connected breadcrumb proves the whole pipeline fired).
+    let mut h = chatting(160, 44);
+    h.message(Msg::Resize(Size::new(160, 44)));
+    for chunk in [
+        "Here's a form:\n\n```json-render\n",
+        r#"{"root":"f","elements":{"#,
+        r#""f":{"type":"Box","children":["q","go"]},"#,
+        r#""q":{"type":"TextInput","props":{"label":"Q","value":{"$bindState":"/q"}}},"#,
+        r#""go":{"type":"Button","props":{"label":"SendIt","variant":"primary"},"on":{"press":{"action":"submitForm","params":{"q":{"$state":"/q"}}}}}"#,
+        r#"},"state":{"q":""}}"#,
+        "\n```\n",
+    ] {
+        h.message(Msg::Acp(AcpEvent::AgentText(chunk.to_owned())));
+    }
+    h.message(Msg::Acp(AcpEvent::TurnEnded("EndTurn".to_owned())));
+    h.message(Msg::Acp(AcpEvent::Status("session ready".to_owned())));
+
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("SendIt") && !screen.contains("unsupported: Button"),
+        "the json-render Button renders as a real button:\n{screen}"
+    );
+    // Click the button by label (column = char count; the border is
+    // multibyte, like the other pane click tests).
+    let (bx, by) = screen
+        .lines()
+        .enumerate()
+        .find_map(|(y, line)| {
+            line.find("SendIt")
+                .map(|b| (line[..b].chars().count() as u16, y as u16))
+        })
+        .expect("the button label is on screen");
+    h.message(Msg::RichClick(Position::new(bx + 1, by)));
+    assert!(
+        h.app()
+            .transcript()
+            .iter()
+            .rev()
+            .take(3)
+            .any(|e| e.text.contains("not connected") || e.text.contains("UI action sent")),
+        "clicking the json-render Button round-tripped the action to the agent:\n{}",
+        h.snapshot()
+    );
+    assert!(h.is_running());
+}
+
+#[test]
 fn agent_followup_updates_the_open_pane_in_place_closing_the_loop() {
     // The full two-way loop: a submitted action's *response* (an A2UI
     // `updateDataModel` for the same surface, no `createSurface`) folds

@@ -520,6 +520,27 @@ fn map_component(
         }
         "Tabs" => tabs(props, children),
         "Markdown" => UiNode::Markdown(prop_str(props, "text").unwrap_or("").to_owned()),
+        // json-render `Button` (upstream: `<button onClick={emit("press")}>
+        // {props.label}</button>`). The element key is the hit id, so a
+        // click `dispatch(key,"press")`s the element's `on.press`
+        // binding — a builtin (`setState`) stays local, a host/custom
+        // action round-trips to the agent (`{action,params}`). This was
+        // advertised in the catalog but unimplemented (→ a dead
+        // `[unsupported: Button]` that never submitted).
+        "Button" | "Submit" | "Action" => {
+            let variant = prop_str(props, "variant").or_else(|| prop_str(props, "kind"));
+            UiNode::Button {
+                id: node_id.to_owned(),
+                label: prop_str(props, "label")
+                    .or_else(|| prop_str(props, "text"))
+                    .unwrap_or("Submit")
+                    .to_owned(),
+                primary: type_name == "Submit"
+                    || matches!(variant, Some("primary" | "submit" | "cta")),
+                disabled: prop_bool(props, "disabled"),
+                focused: false,
+            }
+        }
         // Unknown component → visible placeholder (progressive degrade).
         other => UiNode::Placeholder(other.to_owned()),
     }
