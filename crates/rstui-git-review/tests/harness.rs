@@ -12,6 +12,19 @@ use rstui_core::{
 use rstui_git_review::{Config, GitReview};
 use rstui_runtime::Harness;
 
+/// A process- and thread-unique temp directory path for a fixture repo.
+/// `process::id()` is constant across this test binary's parallel threads
+/// and `SystemTime::now()` can repeat within a tick, so two fixtures could
+/// previously land on the same path and race their `git init` (an
+/// intermittent gate red). A monotonic atomic sequence makes every fixture
+/// path distinct without depending on the clock.
+fn unique_tmp(prefix: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()))
+}
+
 /// A left-button mouse event of `kind` at `(x, y)`.
 fn mouse(kind: MouseEventKind, x: u16, y: u16) -> Event {
     Event::from(MouseEvent::new(
@@ -152,11 +165,7 @@ fn git_in(dir: &std::path::Path, args: &[&str]) {
 fn edit_round_trip_writes_the_working_tree_file() {
     // A throwaway repo with one commit adding one text file — deterministic,
     // independent of this repo's history.
-    let dir = std::env::temp_dir().join(format!(
-        "rgr-edit-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-    ));
+    let dir = unique_tmp("rgr-edit");
     std::fs::create_dir_all(&dir).expect("temp dir");
     git_in(&dir, &["init", "-q"]);
     std::fs::write(dir.join("note.txt"), "hello\n").expect("seed file");
@@ -193,14 +202,7 @@ fn edit_round_trip_writes_the_working_tree_file() {
 
 #[test]
 fn degrades_cleanly_outside_a_git_repo() {
-    let dir = std::env::temp_dir().join(format!(
-        "rstui-git-review-test-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let dir = unique_tmp("rstui-git-review-test");
     std::fs::create_dir_all(&dir).expect("temp dir");
 
     let mut h = harness(Config {
@@ -236,11 +238,7 @@ fn tiny_terminal_is_a_safe_no_op() {
 /// Build a throwaway repo with one commit per `subjects` entry (each adds a
 /// distinct file), newest last. Returns the repo dir (caller cleans up).
 fn fixture(subjects: &[&str]) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rgr-fx-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-    ));
+    let dir = unique_tmp("rgr-fx");
     std::fs::create_dir_all(&dir).expect("temp dir");
     git_in(&dir, &["init", "-q"]);
     for (i, subj) in subjects.iter().enumerate() {
@@ -471,11 +469,7 @@ fn widening_the_history_pane_reveals_more_of_the_commit_subject() {
     // fixed 64-char cap), never in a file — so a match can only come from
     // the history list row, not the diff pane.
     let subject = format!("{}ENDTOKEN", "x".repeat(80));
-    let dir = std::env::temp_dir().join(format!(
-        "rgr-wide-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-    ));
+    let dir = unique_tmp("rgr-wide");
     std::fs::create_dir_all(&dir).expect("temp dir");
     git_in(&dir, &["init", "-q"]);
     std::fs::write(dir.join("a.txt"), "hi\n").expect("seed");
@@ -574,11 +568,7 @@ fn shift(code: KeyCode) -> Event {
 /// (so `Language::from_path` resolves Rust for syntax + outline), seeded
 /// with `body`. Returns the repo dir (caller cleans up).
 fn rust_repo(body: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rgr-rs-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-    ));
+    let dir = unique_tmp("rgr-rs");
     std::fs::create_dir_all(&dir).expect("temp dir");
     git_in(&dir, &["init", "-q"]);
     std::fs::write(dir.join("lib.rs"), body).expect("seed");
