@@ -1587,3 +1587,74 @@ fn started_sessions_feed_the_resume_picker() {
     );
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W2-5: @-file mention completion ----
+
+/// Typing `@<query>` opens a fuzzy file-completion popup over the cwd; the
+/// test cwd (a crate or the workspace root) deterministically contains
+/// `Cargo.toml`. Tab inserts the path into the prompt text (the agent
+/// resolves `@path` itself — the Codex composer UX). `user@host` must NOT
+/// trigger it (the `@` is not at a word start).
+#[test]
+fn at_mention_fuzzy_file_completion() {
+    let mut h = chatting(120, 30);
+    assert!(h.app().mention().is_none(), "no popup before '@'");
+
+    typ(&mut h, "@Cargo");
+    let m = h.app().mention().expect("'@Cargo' opens the file popup");
+    assert!(
+        m.items.iter().any(|p| p.ends_with("Cargo.toml")),
+        "the cwd's Cargo.toml is offered; got {:?}",
+        m.items
+    );
+    assert!(h.snapshot().contains("@ files"), "popup chrome drawn");
+
+    // Down moves the highlight (when there is more than one match).
+    let before = h.app().mention().unwrap().selected;
+    key(&mut h, KeyCode::Down);
+    let after = h.app().mention().unwrap().selected;
+    assert!(after != before || h.app().mention().unwrap().items.len() == 1);
+
+    // Select Cargo.toml explicitly, then Tab inserts it + a trailing space.
+    loop {
+        let m = h.app().mention().unwrap();
+        if m.items[m.selected].ends_with("Cargo.toml") {
+            break;
+        }
+        key(&mut h, KeyCode::Down);
+    }
+    key(&mut h, KeyCode::Tab);
+    assert!(
+        h.app().mention().is_none(),
+        "Tab accepts and closes the popup"
+    );
+    let text = h.app().composer().lines().join("\n");
+    assert!(
+        text.contains("Cargo.toml "),
+        "the path replaced the @token in the prompt; got {text:?}"
+    );
+
+    // An email-like `user@host` does not trigger the mention popup.
+    let mut h2 = chatting(120, 30);
+    typ(&mut h2, "mail user@hos");
+    assert!(
+        h2.app().mention().is_none(),
+        "`@` mid-word (user@host) is not a mention"
+    );
+    // …but a fresh word starting with `@` does.
+    typ(&mut h2, " @sr");
+    assert!(
+        h2.app().mention().is_some(),
+        "a word-initial @ does trigger"
+    );
+
+    // Slash completion and @-mention are mutually exclusive.
+    let mut h3 = chatting(120, 30);
+    typ(&mut h3, "/he");
+    assert!(h3.app().completion().is_some());
+    assert!(
+        h3.app().mention().is_none(),
+        "slash popup suppresses mention"
+    );
+    assert!(h.is_running());
+}

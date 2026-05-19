@@ -56,7 +56,7 @@ out of scope per above.
 | ~~`/model`~~ picker (model selection) | **Done** (iter 7) | W2-2 ✅ |
 | ~~`/mode`~~ session-mode switch (covers `/plan`, approval modes) | **Done** (iter 7) | W2-3 ✅ |
 | ~~`/resume`~~ list & load prior sessions | **Done** (iter 7) | W2-4 ✅ |
-| **`@`-file mentions** with fuzzy completion | **Gap** | W2-5 |
+| ~~`@`-file mentions~~ with fuzzy completion | **Done** (iter 7) | W2-5 ✅ |
 | **Sign-in** when the agent requires auth | **Gap** | W2-6 |
 | External `$EDITOR` compose | **Gap** | W3-1 |
 | `/diff` working-tree diff viewer | **Gap** | W3-2 |
@@ -127,8 +127,15 @@ docs-updated slice, merged back under the serialized lock
     `LoadSessionRequest` (`session/load`) — the agent replays the
     conversation through the existing notification path (transcript cleared
     first to avoid mixing).
-11. **W2-5 `@`-mentions** — fuzzy file completion in the composer; selected
-    paths sent as ACP resource-link content blocks.
+11. **W2-5 `@`-mentions** ✅ *(landed, iter 7)* — a composer `@token`
+    opens a fuzzy file-completion popup over a **bounded** cwd scan
+    (`scan_files`: depth/count caps, VCS/`target`/`node_modules` pruned;
+    cached per token), ranked by `rank_paths` (basename-prefix > substring >
+    path; pure, unit-tested). Tab/Enter inserts the path into the prompt
+    text — the agent resolves `@path` itself, the Codex composer UX (formal
+    ACP resource-link blocks deferred; plain text is what agents accept
+    today). Mutually exclusive with the slash popup; `user@host` is not a
+    mention.
 12. **W2-6 Sign-in** — when `initialize`/prompt reports auth required, run the
     `authenticate` method per `AuthCapabilities`.
 

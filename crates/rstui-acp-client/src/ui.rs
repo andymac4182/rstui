@@ -304,8 +304,54 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         frame.set_cursor_position(Position::new(cx, cy));
     }
 
-    // The slash-command autocomplete floats just above the composer.
+    // The slash-command autocomplete / `@`-mention popup floats just above
+    // the composer (they are mutually exclusive, so at most one draws).
     render_completion(app, frame, composer_area);
+    render_mention(app, frame, composer_area);
+}
+
+/// The `@`-mention file-completion popup — fuzzy workspace paths for the
+/// `@token` at the cursor (Codex's `@` mention). Pure projection of
+/// [`crate::app::MentionState`].
+fn render_mention(app: &ChatApp, frame: &mut Frame<'_>, composer_area: Rect) {
+    let Some(m) = app.mention() else { return };
+    if m.items.is_empty() {
+        return;
+    }
+    let above = composer_area.y.saturating_sub(1);
+    if above < 3 {
+        return;
+    }
+    let rows = (m.items.len() as u16).min(above.saturating_sub(2));
+    let h = rows + 2;
+    let rect = Rect {
+        x: composer_area.x,
+        y: composer_area.y - h,
+        width: composer_area.width,
+        height: h,
+    };
+    let block = Block::bordered().title(" @ files — ↑↓ Tab/Enter Esc ");
+    let body = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let items: Vec<ListItem> = m
+        .items
+        .iter()
+        .map(|p| {
+            ListItem::new(Line::from(Span::styled(
+                format!("@{}", truncate(p, body.width.saturating_sub(2) as usize)),
+                Style::new().fg(Color::Cyan),
+            )))
+        })
+        .collect();
+    frame.render_widget(
+        List::new(items)
+            .highlight_symbol("▸ ")
+            .highlight_style(app.theme().selection())
+            .selected(Some(m.selected)),
+        body,
+    );
 }
 
 fn render_completion(app: &ChatApp, frame: &mut Frame<'_>, composer_area: Rect) {

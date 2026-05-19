@@ -77,6 +77,100 @@ fn bell_default() -> bool {
     bell_from_env(std::env::var("RSTUI_ACP_BELL").ok().as_deref())
 }
 
+/// Directory names never descended into by the `@`-mention file scan
+/// (huge / generated / VCS internals).
+const MENTION_SKIP_DIRS: &[&str] = &[
+    ".git",
+    ".jj",
+    ".hg",
+    ".svn",
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "__pycache__",
+];
+
+/// Bounded recursive scan of `root` for `@`-mention candidates: forward-slash
+/// relative paths, hidden entries and [`MENTION_SKIP_DIRS`] pruned, hard
+/// caps on depth and count so the walk can never stall the UI on a huge
+/// tree. Pure-ish (only reads the FS); never fails (unreadable dirs skipped).
+#[must_use]
+fn scan_files(root: &std::path::Path) -> Vec<String> {
+    const MAX_FILES: usize = 4000;
+    const MAX_DEPTH: usize = 8;
+    let mut out = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if out.len() >= MAX_FILES {
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || MENTION_SKIP_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                if depth + 1 < MAX_DEPTH {
+                    stack.push((path, depth + 1));
+                }
+            } else {
+                out.push(rel);
+                if out.len() >= MAX_FILES {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Ranks `candidates` for `@`-mention `query` (case-insensitive): an empty
+/// query keeps the first `max` (sorted); otherwise basename-prefix beats
+/// basename-substring beats path-substring, ties broken by shortest then
+/// lexicographic, capped at `max`. Pure — the unit-tested core.
+#[must_use]
+fn rank_paths(candidates: &[String], query: &str, max: usize) -> Vec<String> {
+    let q = query.to_ascii_lowercase();
+    let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_ascii_lowercase();
+    let mut scored: Vec<(u8, usize, String)> = candidates
+        .iter()
+        .filter_map(|p| {
+            let lp = p.to_ascii_lowercase();
+            let lb = base(p);
+            let rank = if q.is_empty() {
+                3
+            } else if lb.starts_with(&q) {
+                0
+            } else if lb.contains(&q) {
+                1
+            } else if lp.contains(&q) {
+                2
+            } else {
+                return None;
+            };
+            Some((rank, p.len(), p.clone()))
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    scored.into_iter().take(max).map(|(_, _, p)| p).collect()
+}
+
 /// Unix seconds now (0 before the epoch — impossible in practice; only the
 /// relative ordering of `/resume` entries matters anyway).
 #[must_use]
@@ -334,6 +428,23 @@ pub struct Completion {
     pub selected: usize,
 }
 
+/// The live `@`-mention file-completion popup (Codex's `@` file mention):
+/// fuzzy-matched workspace paths for the `@token` at the cursor.
+#[derive(Debug, Clone)]
+pub struct MentionState {
+    /// The bounded cwd file scan, cached while the same `@token` is active
+    /// so keystrokes only re-rank, never re-walk the tree.
+    candidates: Vec<String>,
+    /// Ranked, capped paths shown in the popup.
+    pub items: Vec<String>,
+    /// Highlighted index into `items`.
+    pub selected: usize,
+    /// Composer row the `@` is on.
+    row: usize,
+    /// Character column of the `@` on that row (the replace-span start).
+    at_col: usize,
+}
+
 /// Built-in slash commands, shown in autocomplete + `/help`.
 pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("help", "Show keys & commands"),
@@ -440,6 +551,8 @@ pub struct ChatApp {
     commands: BTreeMap<String, (String, String)>,
     agent_commands: BTreeMap<String, String>,
     completion: Option<Completion>,
+    /// The `@`-mention file-completion popup, if active.
+    mention: Option<MentionState>,
     todos: Vec<TodoEntry>,
     sidebar: SidebarMode,
     tool_calls: Vec<ToolCallInfo>,
@@ -543,6 +656,7 @@ impl ChatApp {
             commands: BTreeMap::new(),
             agent_commands: BTreeMap::new(),
             completion: None,
+            mention: None,
             todos: Vec::new(),
             sidebar: SidebarMode::Auto,
             tool_calls: Vec::new(),
@@ -861,6 +975,11 @@ impl ChatApp {
     #[must_use]
     pub fn completion(&self) -> Option<&Completion> {
         self.completion.as_ref()
+    }
+    /// The live `@`-mention file-completion popup, if visible.
+    #[must_use]
+    pub fn mention(&self) -> Option<&MentionState> {
+        self.mention.as_ref()
     }
     /// The agent's current execution plan (todos), newest plan wins.
     #[must_use]
@@ -1509,6 +1628,99 @@ impl ChatApp {
             self.composer.set_value(format!("/{} ", spec.name));
             Cmd::none()
         }
+    }
+
+    /// The `@`-mention being typed: `(row, at_col, query)` where `at_col` is
+    /// the character column of the `@` on the cursor's row. `Some` only when
+    /// the cursor sits in an unbroken `@<non-ws>` token whose `@` starts a
+    /// word (line start or after whitespace) — so `user@host` never triggers.
+    fn mention_query(&self) -> Option<(usize, usize, String)> {
+        let (row, col) = self.composer.cursor();
+        let line = self.composer.line(row)?;
+        let chars: Vec<char> = line.chars().collect();
+        if col > chars.len() {
+            return None;
+        }
+        let mut j = col;
+        while j > 0 {
+            let c = chars[j - 1];
+            if c.is_whitespace() {
+                return None;
+            }
+            if c == '@' {
+                let at = j - 1;
+                let word_start = at == 0 || chars[at - 1].is_whitespace();
+                if !word_start {
+                    return None;
+                }
+                let query: String = chars[at + 1..col].iter().collect();
+                return Some((row, at, query));
+            }
+            j -= 1;
+        }
+        None
+    }
+
+    /// Recomputes the `@`-mention popup after a composer edit. The slash
+    /// popup wins if active (mutually exclusive in practice). The cwd scan
+    /// is cached while the same `@token` stays open, so only the ranking
+    /// re-runs per keystroke.
+    fn refresh_mention(&mut self) {
+        if self.completion.is_some() {
+            self.mention = None;
+            return;
+        }
+        let Some((row, at_col, query)) = self.mention_query() else {
+            self.mention = None;
+            return;
+        };
+        // Take ownership of any prior state: reuse its cached scan when the
+        // same `@token` is still open, else walk the tree fresh.
+        let (candidates, prev_sel) = match self.mention.take() {
+            Some(m) if m.row == row && m.at_col == at_col => {
+                let sel = m.items.get(m.selected).cloned();
+                (m.candidates, sel)
+            }
+            _ => (scan_files(&self.cwd), None),
+        };
+        let items = rank_paths(&candidates, &query, COMPLETION_MAX);
+        if items.is_empty() {
+            return; // self.mention is already None (taken above)
+        }
+        let selected = prev_sel
+            .and_then(|k| items.iter().position(|i| *i == k))
+            .unwrap_or(0);
+        self.mention = Some(MentionState {
+            candidates,
+            items,
+            selected,
+            row,
+            at_col,
+        });
+    }
+
+    /// Moves the `@`-mention selection by `delta`, wrapping at both ends.
+    fn move_mention(&mut self, delta: i32) {
+        if let Some(m) = &mut self.mention {
+            let n = m.items.len() as i32;
+            if n > 0 {
+                m.selected = (((m.selected as i32 + delta) % n + n) % n) as usize;
+            }
+        }
+    }
+
+    /// Accepts the highlighted file mention: replaces the `@query` span on
+    /// its row with the chosen path and a trailing space. The path lands in
+    /// the prompt text — the agent (Codex/Claude-Code/…) resolves `@path`
+    /// mentions itself, exactly the Codex composer UX.
+    fn accept_mention(&mut self) {
+        let Some(m) = self.mention.take() else { return };
+        let Some(path) = m.items.get(m.selected).cloned() else {
+            return;
+        };
+        let (_, col) = self.composer.cursor();
+        self.composer
+            .replace_span((m.row, m.at_col), (m.row, col), &format!("{path} "));
     }
 
     fn begin_quit(&mut self) -> Cmd<Msg> {
@@ -2210,6 +2422,40 @@ impl ChatApp {
             }
         }
 
+        // The `@`-mention popup owns the same navigation/accept keys while it
+        // is visible (and the slash popup is not — they are mutually
+        // exclusive). Tab/Enter insert the highlighted path; Esc hides it;
+        // anything else falls through and re-filters below.
+        if self.completion.is_none() && self.mention.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.mention = None;
+                    return Cmd::none();
+                }
+                KeyCode::Up => {
+                    self.move_mention(-1);
+                    return Cmd::none();
+                }
+                KeyCode::Down => {
+                    self.move_mention(1);
+                    return Cmd::none();
+                }
+                KeyCode::Char('p') if ctrl => {
+                    self.move_mention(-1);
+                    return Cmd::none();
+                }
+                KeyCode::Char('n') if ctrl => {
+                    self.move_mention(1);
+                    return Cmd::none();
+                }
+                KeyCode::Tab | KeyCode::Enter => {
+                    self.accept_mention();
+                    return Cmd::none();
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Char('c') if ctrl => return self.begin_quit(),
             KeyCode::Char('q') if ctrl => return self.begin_quit(),
@@ -2274,9 +2520,11 @@ impl ChatApp {
             }
             _ => {}
         }
-        // Any edit that reached the composer re-filters the popup (and
-        // opens it the moment a leading `/` appears).
+        // Any edit that reached the composer re-filters the popups (the
+        // slash one opens on a leading `/`, the `@`-mention one on an
+        // `@token` at the cursor; they are mutually exclusive).
         self.refresh_completion();
+        self.refresh_mention();
         Cmd::none()
     }
 }
@@ -2363,6 +2611,7 @@ impl App for ChatApp {
                     self.history.reset();
                     self.composer.insert_str(&text);
                     self.refresh_completion();
+                    self.refresh_mention();
                 }
                 Cmd::none()
             }
@@ -2764,6 +3013,39 @@ mod bell_env_tests {
         for off in ["0", "false", "no", "off", "OFF", " Off "] {
             assert!(!bell_from_env(Some(off)), "{off:?} → off");
         }
+    }
+}
+
+#[cfg(test)]
+mod mention_rank_tests {
+    use super::rank_paths;
+
+    #[test]
+    fn ranks_basename_prefix_over_substring_over_path_and_caps() {
+        let cands: Vec<String> = [
+            "src/app.rs",
+            "src/ui.rs",
+            "docs/app-notes.md",
+            "src/sub/apparatus.rs",
+            "README.md",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+
+        // basename starts with "app" (app.rs, apparatus.rs) rank first,
+        // then basename-substring (app-notes.md), then path-substring.
+        let r = rank_paths(&cands, "app", 10);
+        assert_eq!(r[0], "src/app.rs", "shortest basename-prefix wins");
+        assert!(r.contains(&"src/sub/apparatus.rs".to_owned()));
+        assert!(r.contains(&"docs/app-notes.md".to_owned()));
+        assert!(!r.contains(&"README.md".to_owned()), "non-matches dropped");
+
+        // Empty query keeps everything, capped.
+        assert_eq!(rank_paths(&cands, "", 2).len(), 2, "cap honoured");
+        assert_eq!(rank_paths(&cands, "", 99).len(), cands.len());
+        // Case-insensitive.
+        assert_eq!(rank_paths(&cands, "READ", 9), vec!["README.md".to_owned()]);
     }
 }
 
