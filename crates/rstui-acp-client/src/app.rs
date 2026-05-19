@@ -12,8 +12,8 @@ use rstui_widgets::Markdown;
 
 use crate::Config;
 use crate::acp::{
-    AcpEvent, DriverCmd, DriverHandle, ModeOption, ModelOption, PermissionChoice, PermissionOption,
-    TodoEntry, TodoStatus, ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
+    AcpEvent, AuthOption, DriverCmd, DriverHandle, ModeOption, ModelOption, PermissionChoice,
+    PermissionOption, TodoEntry, TodoStatus, ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
 };
 use crate::history::InputHistory;
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
@@ -463,6 +463,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("model", "Choose the model (if the agent offers a choice)"),
     ("mode", "Switch the session mode (plan / approval / …)"),
     ("resume", "Resume a previous session (session/load)"),
+    ("login", "Sign in to the agent (if it requires auth)"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -596,6 +597,11 @@ pub struct ChatApp {
     sessions: SessionStore,
     resume_picker_open: bool,
     resume_sel: usize,
+    /// Agent auth methods (ACP `authenticate`) + sign-in picker state. The
+    /// picker auto-opens when the agent reports auth is required.
+    auth_methods: Vec<AuthOption>,
+    auth_picker_open: bool,
+    auth_sel: usize,
     last_size: Size,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
@@ -683,6 +689,9 @@ impl ChatApp {
             sessions: SessionStore::load(),
             resume_picker_open: false,
             resume_sel: 0,
+            auth_methods: Vec::new(),
+            auth_picker_open: false,
+            auth_sel: 0,
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
@@ -940,6 +949,21 @@ impl ChatApp {
     #[must_use]
     pub fn resume_sel(&self) -> usize {
         self.resume_sel
+    }
+    /// The agent's auth methods (empty until it reports auth is required).
+    #[must_use]
+    pub fn auth_methods(&self) -> &[AuthOption] {
+        &self.auth_methods
+    }
+    /// Whether the sign-in picker overlay is open.
+    #[must_use]
+    pub fn auth_picker_open(&self) -> bool {
+        self.auth_picker_open
+    }
+    /// The highlighted row in the sign-in picker.
+    #[must_use]
+    pub fn auth_sel(&self) -> usize {
+        self.auth_sel
     }
     /// The launch command of the connected agent (empty before connect).
     #[must_use]
@@ -1384,6 +1408,17 @@ impl ChatApp {
                         .and_then(|id| self.models.iter().position(|m| m.id == id))
                         .unwrap_or(0);
                     self.model_picker_open = true;
+                }
+                Cmd::none()
+            }
+            "login" => {
+                if self.auth_methods.is_empty() {
+                    self.push_system(
+                        "no sign-in needed (the agent did not advertise auth methods)",
+                    );
+                } else {
+                    self.auth_sel = 0;
+                    self.auth_picker_open = true;
                 }
                 Cmd::none()
             }
@@ -2064,6 +2099,40 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Key handling for the sign-in picker: ↑/↓ (or `j`/`k`) move, Enter
+    /// runs the ACP `authenticate` for the chosen method (the driver then
+    /// retries `session/new`), Esc dismisses (stay disconnected; pick
+    /// another agent with `/agents`).
+    fn auth_picker_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let last = self.auth_methods.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => self.auth_picker_open = false,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.auth_sel = self.auth_sel.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.auth_sel = (self.auth_sel + 1).min(last);
+            }
+            KeyCode::Enter => {
+                if let Some(m) = self.auth_methods.get(self.auth_sel) {
+                    let id = m.id.clone();
+                    let name = m.name.clone();
+                    if self.driver.is_some() {
+                        self.push_system(format!("authenticating: {name}…"));
+                        if let Some(driver) = &self.driver {
+                            driver.send(DriverCmd::Authenticate(id));
+                        }
+                    } else {
+                        self.push_system("not connected — cannot authenticate");
+                    }
+                }
+                self.auth_picker_open = false;
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         if self.picking {
@@ -2105,6 +2174,9 @@ impl ChatApp {
         }
         if self.resume_picker_open {
             return self.resume_picker_key(key);
+        }
+        if self.auth_picker_open {
+            return self.auth_picker_key(key);
         }
         if self.keymap_panel {
             return self.keymap_panel_key(key);
@@ -2695,6 +2767,12 @@ impl ChatApp {
                     when: unix_now(),
                 });
                 self.sessions.save();
+            }
+            AcpEvent::AuthRequired(methods) => {
+                self.auth_methods = methods;
+                self.auth_sel = 0;
+                self.auth_picker_open = !self.auth_methods.is_empty();
+                self.push_system("sign-in required — choose an auth method");
             }
             AcpEvent::Status(s) => {
                 if s == "session ready" {

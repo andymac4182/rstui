@@ -50,6 +50,8 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
         render_mode_picker(app, frame, area);
     } else if app.resume_picker_open() {
         render_resume_picker(app, frame, area);
+    } else if app.auth_picker_open() {
+        render_auth_picker(app, frame, area);
     } else if app.plugins_overlay() {
         render_plugins_overlay(app, frame, area);
     } else if app.keymap_panel_open() {
@@ -1147,6 +1149,40 @@ fn render_resume_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
             };
             let label = format!(" {agent}  ·  {}  ·  #{id_short}", s.cwd);
             if i == app.resume_sel() {
+                Line::styled(label, t.selection())
+            } else {
+                Line::styled(label, t.base())
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The sign-in picker — the agent's ACP auth methods (Codex's "Sign in
+/// with ChatGPT / API key"); Enter runs `authenticate`. Pure projection.
+fn render_auth_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let methods = app.auth_methods();
+    let h = (methods.len() as u16 + 4).clamp(7, area.height.saturating_sub(2).max(7));
+    let rect = centered(area, area.width.min(72), h);
+    let block = Block::bordered()
+        .title(" Sign in (↑↓ select · Enter · Esc dismiss) ")
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let lines: Vec<Line> = methods
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let label = if m.description.is_empty() {
+                format!("  {}", m.name)
+            } else {
+                format!("  {} — {}", m.name, m.description)
+            };
+            if i == app.auth_sel() {
                 Line::styled(label, t.selection())
             } else {
                 Line::styled(label, t.base())

@@ -12,10 +12,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sacp::schema::{
-    ClientCapabilities, ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest,
-    NewSessionRequest, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionModeId, SessionNotification, SessionUpdate, SetSessionModeRequest, TextContent,
+    AuthMethodId, AuthenticateRequest, ClientCapabilities, ContentBlock, ContentChunk,
+    InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionModeId, SessionNotification, SessionUpdate,
+    SetSessionModeRequest, TextContent,
 };
 use sacp::{Agent, Client, ConnectionTo};
 use tokio::io::AsyncBufReadExt;
@@ -154,10 +155,69 @@ async fn run(
                 .await?;
             let _ = loop_tx.send(AcpEvent::Connected(format!("{:?}", init.agent_info)));
 
-            let new_session = connection
-                .send_request(NewSessionRequest::new(cwd.clone()))
-                .block_task()
-                .await?;
+            // Create the session, running the ACP `authenticate` handshake
+            // first if the agent rejects us and advertises auth methods
+            // (Codex sign-in). Agents that auth out-of-band (env/API key)
+            // simply succeed on the first try and never hit this.
+            let new_session = 'session: loop {
+                match connection
+                    .send_request(NewSessionRequest::new(cwd.clone()))
+                    .block_task()
+                    .await
+                {
+                    Ok(s) => break 'session s,
+                    Err(e) => {
+                        if init.auth_methods.is_empty() {
+                            return Err(e);
+                        }
+                        let methods: Vec<super::events::AuthOption> = init
+                            .auth_methods
+                            .iter()
+                            .map(|m| super::events::AuthOption {
+                                id: m.id().0.to_string(),
+                                name: m.name().to_owned(),
+                                description: m.description().unwrap_or_default().to_owned(),
+                            })
+                            .collect();
+                        let _ = loop_tx.send(AcpEvent::AuthRequired(methods));
+                        // Wait for the user's choice; ignore unrelated
+                        // commands until authenticated (no session yet).
+                        loop {
+                            match cmd_rx.recv().await {
+                                Some(DriverCmd::Authenticate(id)) => {
+                                    match connection
+                                        .send_request(AuthenticateRequest::new(AuthMethodId::new(
+                                            id,
+                                        )))
+                                        .block_task()
+                                        .await
+                                    {
+                                        Ok(_) => break, // retry session/new
+                                        Err(ae) => {
+                                            let _ = loop_tx.send(AcpEvent::Error(ae.to_string()));
+                                            let methods: Vec<super::events::AuthOption> = init
+                                                .auth_methods
+                                                .iter()
+                                                .map(|m| super::events::AuthOption {
+                                                    id: m.id().0.to_string(),
+                                                    name: m.name().to_owned(),
+                                                    description: m
+                                                        .description()
+                                                        .unwrap_or_default()
+                                                        .to_owned(),
+                                                })
+                                                .collect();
+                                            let _ = loop_tx.send(AcpEvent::AuthRequired(methods));
+                                        }
+                                    }
+                                }
+                                Some(DriverCmd::Shutdown) | None => return Ok(()),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            };
             let session_id = new_session.session_id.clone();
             let model_state = new_session.models.clone();
             let mode_state = new_session.modes.clone();
@@ -291,6 +351,9 @@ async fn run(
                             }
                         }
                     }
+                    // Auth is handled before the session exists; once it
+                    // does, a stray Authenticate is a no-op.
+                    DriverCmd::Authenticate(_) => {}
                     DriverCmd::Shutdown => break,
                 }
             }

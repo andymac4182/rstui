@@ -57,7 +57,7 @@ out of scope per above.
 | ~~`/mode`~~ session-mode switch (covers `/plan`, approval modes) | **Done** (iter 7) | W2-3 ✅ |
 | ~~`/resume`~~ list & load prior sessions | **Done** (iter 7) | W2-4 ✅ |
 | ~~`@`-file mentions~~ with fuzzy completion | **Done** (iter 7) | W2-5 ✅ |
-| **Sign-in** when the agent requires auth | **Gap** | W2-6 |
+| ~~Sign-in~~ when the agent requires auth | **Done** (iter 7) | W2-6 ✅ |
 | External `$EDITOR` compose | **Gap** | W3-1 |
 | `/diff` working-tree diff viewer | **Gap** | W3-2 |
 | Image paste / attachment | **Gap** | W3-3 |
@@ -136,8 +136,12 @@ docs-updated slice, merged back under the serialized lock
     ACP resource-link blocks deferred; plain text is what agents accept
     today). Mutually exclusive with the slash popup; `user@host` is not a
     mention.
-12. **W2-6 Sign-in** — when `initialize`/prompt reports auth required, run the
-    `authenticate` method per `AuthCapabilities`.
+12. **W2-6 Sign-in** ✅ *(landed, iter 7)* — the driver wraps
+    `session/new` in an auth loop: on rejection with non-empty
+    `InitializeResponse.auth_methods` it emits `AuthRequired`; a sign-in
+    picker auto-opens; Enter issues the **typed** `AuthenticateRequest`
+    (`authenticate`) then retries `session/new`. `/login` reopens it;
+    agents that auth out-of-band never hit this. **Wave 2 complete.**
 
 **Wave 3 — heavier / lower priority:**
 

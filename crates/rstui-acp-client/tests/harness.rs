@@ -1658,3 +1658,75 @@ fn at_mention_fuzzy_file_completion() {
     );
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W2-6: sign-in (ACP authenticate) ----
+
+use rstui_acp_client::acp::AuthOption;
+
+/// An agent that rejects `session/new` and advertises auth methods makes the
+/// driver emit `AuthRequired`; the client auto-opens a sign-in picker.
+/// Enter routes `authenticate` (the connected send is the async side, out
+/// of Harness by ADR 0011 → "not connected" headless). `/login` reopens it.
+#[test]
+fn auth_required_opens_the_sign_in_picker() {
+    let mut h = chatting(110, 30);
+    assert!(!h.app().auth_picker_open());
+
+    typ(&mut h, "/login");
+    key(&mut h, KeyCode::Enter);
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("no sign-in needed"),
+        "with no methods, /login explains"
+    );
+
+    h.message(Msg::Acp(AcpEvent::AuthRequired(vec![
+        AuthOption {
+            id: "chatgpt".to_owned(),
+            name: "Sign in with ChatGPT".to_owned(),
+            description: String::new(),
+        },
+        AuthOption {
+            id: "api".to_owned(),
+            name: "API key".to_owned(),
+            description: "Use OPENAI_API_KEY".to_owned(),
+        },
+    ])));
+    assert!(
+        h.app().auth_picker_open(),
+        "AuthRequired auto-opens sign-in"
+    );
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("Sign in") && screen.contains("ChatGPT"),
+        "the auth methods are listed:\n{screen}"
+    );
+
+    key(&mut h, KeyCode::Down);
+    assert_eq!(h.app().auth_sel(), 1);
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().auth_picker_open(), "Enter closes the picker");
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("not connected")
+    );
+
+    // The methods are remembered, so /login can reopen the picker.
+    typ(&mut h, "/login");
+    key(&mut h, KeyCode::Enter);
+    assert!(
+        h.app().auth_picker_open(),
+        "/login reopens the sign-in picker"
+    );
+    key(&mut h, KeyCode::Esc);
+    assert!(!h.app().auth_picker_open(), "Esc dismisses sign-in");
+    assert!(h.is_running());
+}

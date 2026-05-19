@@ -25,8 +25,9 @@ mod richui;
 
 pub use driver::spawn_driver;
 pub use events::{
-    AcpEvent, DriverCmd, DriverHandle, ModeOption, ModelOption, PermissionChoice, PermissionOption,
-    TodoEntry, TodoStatus, ToolBody, ToolCallInfo, ToolCallPatch, ToolKind, ToolStatus,
+    AcpEvent, AuthOption, DriverCmd, DriverHandle, ModeOption, ModelOption, PermissionChoice,
+    PermissionOption, TodoEntry, TodoStatus, ToolBody, ToolCallInfo, ToolCallPatch, ToolKind,
+    ToolStatus,
 };
 pub use richui::{
     RichUiFormat, RichUiPayload, render_capability_meta, render_source as render_rich_ui,

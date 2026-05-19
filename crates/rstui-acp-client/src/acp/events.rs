@@ -13,6 +13,9 @@ pub enum AcpEvent {
     /// A session was created (`session/new`) — its id, so the client can
     /// remember it for `/resume`.
     SessionStarted(String),
+    /// The agent rejected `session/new` and advertises auth methods: the
+    /// user must sign in (ACP `authenticate`) before a session can start.
+    AuthRequired(Vec<AuthOption>),
     /// A human-readable connection/lifecycle status line.
     Status(String),
     /// A chunk of assistant message text (appended to the open turn).
@@ -266,6 +269,17 @@ pub struct ModelOption {
     pub description: String,
 }
 
+/// One agent auth method (ACP `AuthMethod`), shown in the sign-in picker.
+#[derive(Debug, Clone)]
+pub struct AuthOption {
+    /// Opaque method id, echoed back in `authenticate`.
+    pub id: String,
+    /// Human-readable name (e.g. "Sign in with ChatGPT").
+    pub name: String,
+    /// Optional one-line description (empty if the agent gave none).
+    pub description: String,
+}
+
 /// One agent-advertised session mode (ACP `SessionMode`), shown in the
 /// `/mode` picker.
 #[derive(Debug, Clone)]
@@ -309,6 +323,9 @@ pub enum DriverCmd {
     SetMode(String),
     /// Resume a prior session (`session/load`) by its id.
     LoadSession(String),
+    /// Authenticate with the chosen auth method id (ACP `authenticate`),
+    /// then the driver retries `session/new`.
+    Authenticate(String),
     /// Answer a pending [`AcpEvent::Permission`].
     Permission {
         /// The id from the request being answered.
