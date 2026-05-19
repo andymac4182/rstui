@@ -26,7 +26,20 @@
 //! | `namespace`, `namespace.*`, `module` | **namespace** |
 //! | `operator` | **operator** |
 //! | `punctuation`, `punctuation.*` | **punctuation** |
+//! | `escape` (bare string-escape; `string.escape`/`string.special` already string) | **string** |
+//! | `delimiter` (bare; `punctuation.delimiter` already punctuation) | **punctuation** |
+//! | `text.title`, `markup.heading*` (markdown headings) | **type_** |
+//! | `text.literal`, `markup.raw*`, `text.uri`, `markup.link*` | **string** |
+//! | `text.reference` (link/reference label) | **function** |
 //! | everything else | none (`Style::new()`) |
+//!
+//! Every capture every shipped grammar's bundled `highlights.scm` can emit
+//! is covered by the rows above **or** is on the audit allowlist
+//! (`@embedded` injection regions, `@none`, spell/conceal hints). The
+//! `every_grammar_highlight_capture_is_classified_or_allowlisted` test
+//! compiles each grammar's real query and fails CI if any capture is
+//! neither — the gate-enforced "we handle them all" invariant (a grammar
+//! bump that adds a capture turns it red).
 //!
 //! The match is "exact name, or name starts with `prefix.`", so
 //! `keyword.control.return` → keyword and `string.special.key` → string.
@@ -92,6 +105,18 @@ enum Bucket {
 fn matches(name: &str, key: &str) -> bool {
     name == key
         || (name.len() > key.len() && name.starts_with(key) && name.as_bytes()[key.len()] == b'.')
+}
+
+/// Whether `name` is classified into a [`SyntaxStyles`] bucket (i.e. it
+/// receives a token colour). The capture-coverage audit test asserts every
+/// capture every shipped grammar can emit is either classified here or on
+/// its documented allowlist — the gate-enforced "we handle them all"
+/// invariant. A `bool` (not the private [`Bucket`]) so the audit can call
+/// it without leaking module-private types. Test-only (the audit is the
+/// sole caller), so it does not exist in the non-test build.
+#[cfg(test)]
+pub(crate) fn is_capture_classified(name: &str) -> bool {
+    bucket_for(name).is_some()
 }
 
 /// The bucket for a tree-sitter capture name per the documented table.
@@ -170,6 +195,36 @@ fn bucket_for(name: &str) -> Option<Bucket> {
     }
     if matches(name, "punctuation") {
         return Some(Bucket::Punctuation);
+    }
+    // A string-escape sequence (`\n`, `\"`, `\u{…}`) — emitted as a bare
+    // `@escape` by rust/python/go/json (the `@string.escape` /
+    // `@string.special` forms are already routed to String by the string
+    // block above). Colour it as part of the string it lives in.
+    if name == "escape" {
+        return Some(Bucket::String);
+    }
+    // A bare `@delimiter` (some C-family grammars) is punctuation
+    // (`@punctuation.delimiter` is already handled by the block above).
+    if name == "delimiter" {
+        return Some(Bucket::Punctuation);
+    }
+    // Markdown / markup prose (the `tree-sitter-md` highlight set):
+    // a heading pops like a type, inline code / a URI reads like a string,
+    // a link/reference label like a callable accent. (`@punctuation.*`,
+    // `@string.escape` and `@none` from that grammar are already handled /
+    // allowlisted.)
+    if matches(name, "text.title") || matches(name, "markup.heading") {
+        return Some(Bucket::Type);
+    }
+    if matches(name, "text.literal")
+        || matches(name, "markup.raw")
+        || matches(name, "text.uri")
+        || matches(name, "markup.link")
+    {
+        return Some(Bucket::String);
+    }
+    if matches(name, "text.reference") {
+        return Some(Bucket::Function);
     }
     None
 }

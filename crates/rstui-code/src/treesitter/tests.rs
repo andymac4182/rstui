@@ -596,3 +596,88 @@ fn fuzz_total_and_invariants_all_enabled_languages() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// THE CAPTURE AUDIT — goal: "review all the tree-sitter outputs of classes of
+// code and make sure we are handling them all correctly and theming
+// correctly". For every enabled grammar, compile its bundled highlight query
+// and assert every capture name it can emit is either routed to a
+// `SyntaxStyles` bucket by `bucket_for` or is on the documented `ALLOW` list
+// of captures that intentionally carry no token colour (tree-sitter
+// structural / injection / locals / spell helpers). A grammar bump that adds
+// a capture we do not classify turns this red — the gate-enforced "we handle
+// them all" invariant. Run with `-- --nocapture` to print the full
+// per-language capture inventory.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_grammar_highlight_capture_is_classified_or_allowlisted() {
+    // Captures that intentionally carry no foreground colour: `@embedded`
+    // marks an injected-language region (regex / template / f-string body)
+    // coloured by the *injected* grammar when injections run — Tier-1 does
+    // not run injections, so the region keeps the body fg (correct). `@none`
+    // is markdown's explicit "no style". The spell/conceal hints are editor
+    // affordances, not token colours.
+    const ALLOW: &[&str] = &["embedded", "none", "spell", "nospell", "conceal"];
+    fn allowed(n: &str) -> bool {
+        n.starts_with('_')
+            || n.starts_with("injection.")
+            || n.starts_with("local.")
+            || n.starts_with("definition.")
+            || n.starts_with("reference.")
+            || n == "scope"
+            || ALLOW.contains(&n)
+    }
+
+    let mut unhandled: Vec<String> = Vec::new();
+    let mut inventory: Vec<(&'static str, Vec<String>)> = Vec::new();
+    let mut check = |lang: &'static str, d: super::lang::LangData| {
+        let q = tree_sitter::Query::new(&d.language, d.highlights_query)
+            .expect("the pinned grammar's bundled highlight query must compile");
+        let mut names: Vec<String> = q.capture_names().iter().map(|s| s.to_string()).collect();
+        names.sort();
+        names.dedup();
+        for n in &names {
+            if !super::highlight::is_capture_classified(n) && !allowed(n) {
+                unhandled.push(format!("{lang}: @{n}"));
+            }
+        }
+        inventory.push((lang, names));
+    };
+
+    #[cfg(feature = "rust")]
+    check("rust", super::lang::rust());
+    #[cfg(feature = "python")]
+    check("python", super::lang::python());
+    #[cfg(feature = "javascript")]
+    check("javascript", super::lang::javascript());
+    #[cfg(feature = "typescript")]
+    check("typescript", super::lang::typescript());
+    #[cfg(feature = "go")]
+    check("go", super::lang::go());
+    #[cfg(feature = "c")]
+    check("c", super::lang::c());
+    #[cfg(feature = "json")]
+    check("json", super::lang::json());
+    #[cfg(feature = "markdown")]
+    check("markdown", super::lang::markdown());
+
+    for (lang, names) in &inventory {
+        eprintln!(
+            "[capture-audit] {lang} ({} captures): {}",
+            names.len(),
+            names
+                .iter()
+                .map(|n| format!("@{n}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    assert!(
+        unhandled.is_empty(),
+        "tree-sitter highlight captures not classified by `bucket_for` (add \
+         them to `bucket_for`, or to the audit `ALLOW` list if they \
+         intentionally carry no colour):\n  {}",
+        unhandled.join("\n  ")
+    );
+}
