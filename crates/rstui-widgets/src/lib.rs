@@ -305,6 +305,7 @@
 //! ```
 
 pub mod accordion;
+pub mod agenda_view;
 pub mod alert;
 pub mod align;
 pub mod avatar;
@@ -323,7 +324,9 @@ pub mod card;
 pub mod checkbox;
 pub mod command_palette;
 pub mod data_table;
+pub mod date_navigator;
 pub mod date_picker;
+pub mod day_view;
 pub mod description_list;
 /// The shared diagram drawing surface reused by the Mermaid and Structurizr
 /// renderers. Crate-internal, not part of the public API.
@@ -331,6 +334,9 @@ mod diagram;
 pub mod diagram_cache;
 pub mod divider;
 pub mod drawer;
+pub mod event;
+pub mod event_card;
+pub mod event_editor;
 pub mod extmark;
 pub mod flame_graph;
 pub mod flow;
@@ -358,6 +364,7 @@ pub mod masked_input;
 pub mod menu;
 pub mod mermaid;
 pub mod modal;
+pub mod month_view;
 pub mod pagination;
 pub mod paragraph;
 pub mod pie_chart;
@@ -384,6 +391,7 @@ pub mod structurizr;
 pub mod switch;
 pub mod table;
 pub mod tabs;
+pub mod time_picker;
 pub mod toast;
 pub mod tooltip;
 pub mod trace_waterfall;
@@ -391,7 +399,9 @@ pub mod tree;
 pub mod treemap;
 pub mod violin_chart;
 pub mod waterfall;
+pub mod week_view;
 pub mod which_key;
+pub mod year_view;
 
 pub use accordion::{Accordion, AccordionSection};
 pub use alert::{Alert, AlertLevel};
@@ -488,3 +498,17 @@ pub use stacked_bar_chart::{StackMode, StackedBar, StackedBarChart};
 pub use treemap::{Treemap, TreemapTile};
 pub use violin_chart::{Violin, ViolinChart, ViolinOrientation};
 pub use waterfall::{Waterfall, WaterfallDirection, WaterfallKind, WaterfallStep};
+// The calendar-app widget family — a later additive export wave (the pattern
+// the observability and business-dashboard clusters use). Every view is a
+// pure projection of the shared caller-owned [`CalendarEvent`] model; the
+// app owns moving/scheduling via the views' `*_at` hit accessors (ADR 0026).
+pub use agenda_view::AgendaView;
+pub use date_navigator::{DateNavigator, NavTarget};
+pub use day_view::DayView;
+pub use event::{CalendarEvent, EventLayout};
+pub use event_card::EventCard;
+pub use event_editor::{EventEditor, EventEditorField};
+pub use month_view::MonthView;
+pub use time_picker::TimePicker;
+pub use week_view::WeekView;
+pub use year_view::YearView;
