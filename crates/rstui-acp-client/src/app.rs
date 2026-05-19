@@ -271,6 +271,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("plugins", "Show loaded plugins, commands & status"),
     ("log", "Toggle the diagnostic log"),
     ("theme", "Pick a colour theme (browse + preview live)"),
+    ("copy", "Copy the last agent answer to the clipboard"),
     ("cancel", "Interrupt the streaming turn"),
     ("quit", "Exit the client"),
 ];
@@ -462,6 +463,12 @@ impl ChatApp {
     #[must_use]
     pub fn transcript(&self) -> &[Entry] {
         &self.transcript
+    }
+    /// The text `/copy` would place on the clipboard (the most recent agent
+    /// answer), or `None` if the agent has not answered yet.
+    #[must_use]
+    pub fn last_response(&self) -> Option<&str> {
+        self.last_agent_text()
     }
     /// The registry as loaded (possibly the offline fallback).
     #[must_use]
@@ -738,6 +745,19 @@ impl ChatApp {
         }
     }
 
+    /// The most recent agent answer's text (the `/copy` payload), or `None`
+    /// when the agent has not answered yet. Walks back over thoughts, tool
+    /// calls, plans and system lines to the last `Role::Agent` prose entry —
+    /// Codex's "copy last response as markdown".
+    #[must_use]
+    fn last_agent_text(&self) -> Option<&str> {
+        self.transcript
+            .iter()
+            .rev()
+            .find(|e| e.role == Role::Agent)
+            .map(|e| e.text.as_str())
+    }
+
     fn append_agent(&mut self, role: Role, chunk: &str) {
         if let Some(last) = self.transcript.last_mut() {
             if last.role == role && last.open {
@@ -935,6 +955,26 @@ impl ChatApp {
                 // Esc can restore it.
                 self.theme_restore = Some(self.theme.clone());
                 self.picking = true;
+                Cmd::none()
+            }
+            "copy" => {
+                match self.last_agent_text() {
+                    Some(text) => {
+                        let text = text.to_owned();
+                        let n = text.len();
+                        if crate::clipboard::copy(&text) {
+                            self.push_system(format!("copied last response ({n} bytes)"));
+                            self.toast("copied to clipboard");
+                        } else {
+                            // Headless / non-terminal: no OS hop, but say so
+                            // rather than silently doing nothing.
+                            self.push_system(format!(
+                                "copy unavailable here (no terminal); {n} bytes not sent"
+                            ));
+                        }
+                    }
+                    None => self.push_system("nothing to copy yet (no agent response)"),
+                }
                 Cmd::none()
             }
             "cancel" => {

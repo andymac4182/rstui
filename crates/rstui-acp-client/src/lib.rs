@@ -23,6 +23,7 @@
 
 pub mod acp;
 pub mod app;
+pub(crate) mod clipboard;
 pub mod history;
 pub mod input;
 pub mod plugin;

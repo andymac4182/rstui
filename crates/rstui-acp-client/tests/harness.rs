@@ -1137,3 +1137,46 @@ fn arrows_move_within_a_multiline_draft_before_recalling_history() {
     );
     assert!(h.app().history().browsing());
 }
+
+// ---- Codex-parity W1-2: /copy last response to clipboard ----
+
+/// `/copy` targets the most recent agent answer. The OS-clipboard hop is
+/// inert under `cargo test` (no terminal), so the assertion is on the
+/// observable system breadcrumb + the resolved payload, not the escape.
+#[test]
+fn slash_copy_targets_the_last_agent_answer() {
+    let mut h = chatting(100, 30);
+
+    // Nothing answered yet → /copy says so and copies nothing.
+    typ(&mut h, "/copy");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().last_response().is_none());
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("nothing to copy"),
+        "with no agent response, /copy reports nothing to copy"
+    );
+
+    // Agent answers; /copy now resolves that text as the payload.
+    h.message(Msg::Acp(AcpEvent::AgentText(
+        "The answer is **42**.".to_owned(),
+    )));
+    assert_eq!(h.app().last_response(), Some("The answer is **42**."));
+
+    typ(&mut h, "/copy");
+    key(&mut h, KeyCode::Enter);
+    let last = &h.app().transcript().last().unwrap().text;
+    assert!(
+        last.contains("copied") || last.contains("copy unavailable"),
+        "/copy reports its outcome (got {last:?})"
+    );
+    assert!(
+        !last.contains("nothing to copy"),
+        "with an answer present, /copy does not say nothing-to-copy"
+    );
+    assert!(h.is_running());
+}
