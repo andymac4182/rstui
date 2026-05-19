@@ -52,7 +52,7 @@ out of scope per above.
 | ~~Bell on turn completion~~ | **Done** (iter 6) | W1-4 ✅ |
 | ~~`/init`, `/review` canned prompts~~ | **Done** (iter 6) | W1-5 ✅ |
 | ~~Full-screen transcript pager (Codex `/transcript`)~~ | **Done** (iter 6) | W1-6 ✅ |
-| **`/status`** session + token usage | **Gap** | W2-1 |
+| ~~`/status` session + token usage~~ | **Done** (iter 7) | W2-1 ✅ |
 | **`/model`** picker (model + reasoning effort) | **Gap** | W2-2 |
 | **`/mode`** session-mode switch (covers `/plan`, approval modes) | **Gap** | W2-3 |
 | **`/resume`** list & load prior sessions | **Gap** | W2-4 |
@@ -102,8 +102,11 @@ docs-updated slice, merged back under the serialized lock
 
 **Wave 2 — ACP-wired:**
 
-7. **W2-1 `/status`** — fold `Usage`/`UsageUpdate` into state; a status
-   overlay showing agent, model, cwd, mode, and token usage.
+7. **W2-1 `/status`** ✅ *(landed, iter 7)* — the ACP `usage_update`
+   notification is parsed in the driver's JSON arm (no `unstable_session_usage`
+   feature needed) into `AcpEvent::Usage`; a `/status` overlay shows agent,
+   cwd, connection, turn state, **context tokens + % of window**, theme,
+   keymap, history size, bell.
 8. **W2-2 `/model`** — capture `SessionModelState`; a picker that issues
    `session/set_model`.
 9. **W2-3 `/mode`** — capture `SessionModeState`; a picker that issues

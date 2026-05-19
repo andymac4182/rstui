@@ -1349,3 +1349,34 @@ fn transcript_pager_opens_scrolls_searches_and_closes() {
     assert!(!h.app().pager().open(), "Esc on a clean pager closes it");
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W2-1: /status + token usage ----
+
+/// An ACP `usage_update` is folded into state; `/status` opens an overlay
+/// that surfaces it (with the % of the context window) plus the session
+/// configuration, and Esc closes it.
+#[test]
+fn usage_update_feeds_the_status_overlay() {
+    let mut h = chatting(110, 30);
+    assert_eq!(h.app().usage(), None, "no usage reported yet");
+
+    h.message(Msg::Acp(AcpEvent::Usage {
+        used: 1500,
+        size: 10000,
+    }));
+    assert_eq!(h.app().usage(), Some((1500, 10000)));
+
+    typ(&mut h, "/status");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().status_visible(), "/status opens the overlay");
+    let screen = h.snapshot();
+    assert!(screen.contains("Status"), "status chrome drawn:\n{screen}");
+    assert!(
+        screen.contains("1500") && screen.contains("15%"),
+        "token usage and its window percentage are shown:\n{screen}"
+    );
+
+    key(&mut h, KeyCode::Esc);
+    assert!(!h.app().status_visible(), "Esc closes /status");
+    assert!(h.is_running());
+}

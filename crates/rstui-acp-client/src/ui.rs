@@ -42,6 +42,8 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
         render_help(app, frame, area);
     } else if app.log_visible() {
         render_log(app, frame, area);
+    } else if app.status_visible() {
+        render_status(app, frame, area);
     } else if app.plugins_overlay() {
         render_plugins_overlay(app, frame, area);
     } else if app.keymap_panel_open() {
@@ -919,6 +921,66 @@ fn render_keymap_panel(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
             .disabled_style(t.dim_text()),
         inner,
     );
+}
+
+/// The `/status` overlay — session configuration + token usage, the
+/// information Codex's `/status` surfaces. A pure projection of state.
+fn render_status(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let rect = centered(area, area.width.min(72), area.height.clamp(10, 18));
+    let block = Block::bordered()
+        .title(" Status (Esc to close) ")
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let conn = match app.screen() {
+        Screen::Picker => "no session (picker)",
+        Screen::Connecting => "connecting…",
+        Screen::Chat => "connected",
+    };
+    let agent = {
+        let a = app.agent_command();
+        if a.is_empty() {
+            "(none — pick one with /agents)".to_owned()
+        } else {
+            a.to_owned()
+        }
+    };
+    let context = match app.usage() {
+        Some((used, size)) if size > 0 => {
+            let pct = (used as f64 / size as f64 * 100.0).round() as u64;
+            format!("{used} / {size} tokens ({pct}% of window)")
+        }
+        Some((used, _)) => format!("{used} tokens in context"),
+        None => "— (agent has not reported usage)".to_owned(),
+    };
+    let (map, os, _) = app.keymap_panel_status();
+    let lines = vec![
+        kv("Agent", &agent),
+        kv("Working dir", &app.cwd().display().to_string()),
+        kv("Connection", conn),
+        kv(
+            "Turn",
+            if app.is_streaming() {
+                "streaming…"
+            } else {
+                "idle"
+            },
+        ),
+        kv("Context", &context),
+        Line::raw(""),
+        kv("Theme", &t.name),
+        kv("Keymap", &format!("{map} ({os})")),
+        kv(
+            "History",
+            &format!("{} recalled prompts", app.history().entries().len()),
+        ),
+        kv("Bell", if app.bell_enabled() { "on" } else { "off" }),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_log(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {

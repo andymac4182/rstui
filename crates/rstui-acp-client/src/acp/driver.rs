@@ -403,6 +403,19 @@ fn summarize_update(notification: &SessionNotification) -> Vec<AcpEvent> {
                 .unwrap_or_default();
             vec![AcpEvent::Plan(entries)]
         }
+        "usage_update" => {
+            let used = obj.get("used").and_then(serde_json::Value::as_u64);
+            let size = obj.get("size").and_then(serde_json::Value::as_u64);
+            // Only surface a usage event when the agent actually sent the
+            // numbers; a malformed update should not zero the display.
+            match (used, size) {
+                (Some(used), size) => vec![AcpEvent::Usage {
+                    used,
+                    size: size.unwrap_or(0),
+                }],
+                _ => Vec::new(),
+            }
+        }
         other => content_text
             .map(AcpEvent::AgentText)
             .into_iter()

@@ -31,6 +31,14 @@ pub enum AcpEvent {
     /// The agent's advertised slash commands (`available_commands_update`):
     /// `(name, description)` pairs, surfaced in the autocomplete + help.
     AvailableCommands(Vec<(String, String)>),
+    /// A context-window usage update (ACP `usage_update`): tokens currently
+    /// in context and the total window size, surfaced in `/status`.
+    Usage {
+        /// Tokens currently in the context window.
+        used: u64,
+        /// Total context-window size in tokens (`0` if unknown).
+        size: u64,
+    },
     /// The current turn finished; carries the ACP stop reason, debug-rendered.
     TurnEnded(String),
     /// The agent wants authorization. Single-flight: the driver waits for the

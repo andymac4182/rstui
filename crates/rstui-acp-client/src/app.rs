@@ -337,6 +337,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "transcript",
         "Open the full-screen transcript pager (search with /)",
     ),
+    ("status", "Show session info & token usage"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -444,6 +445,11 @@ pub struct ChatApp {
     log: Vec<String>,
     show_log: bool,
     show_help: bool,
+    /// `/status` overlay open.
+    show_status: bool,
+    /// Latest ACP `usage_update`: `(tokens_in_context, context_window_size)`.
+    /// `None` until the agent reports usage (many agents do every turn).
+    usage: Option<(u64, u64)>,
     last_size: Size,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
@@ -517,6 +523,8 @@ impl ChatApp {
             log: Vec::new(),
             show_log: false,
             show_help: false,
+            show_status: false,
+            usage: None,
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
@@ -684,6 +692,27 @@ impl ChatApp {
     #[must_use]
     pub fn log_visible(&self) -> bool {
         self.show_log
+    }
+    /// Whether the `/status` overlay is open.
+    #[must_use]
+    pub fn status_visible(&self) -> bool {
+        self.show_status
+    }
+    /// Latest context-window usage `(used, size)` from ACP `usage_update`,
+    /// or `None` if the agent has not reported any.
+    #[must_use]
+    pub fn usage(&self) -> Option<(u64, u64)> {
+        self.usage
+    }
+    /// The launch command of the connected agent (empty before connect).
+    #[must_use]
+    pub fn agent_command(&self) -> &str {
+        &self.agent_label
+    }
+    /// The working directory the session runs in.
+    #[must_use]
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.cwd
     }
     /// The merged plugin footer segments (in plugin-name order), borrowed.
     ///
@@ -1095,6 +1124,10 @@ impl ChatApp {
                     follow: true,
                     ..PagerState::default()
                 };
+                Cmd::none()
+            }
+            "status" => {
+                self.show_status = !self.show_status;
                 Cmd::none()
             }
             "theme" => {
@@ -1582,6 +1615,10 @@ impl ChatApp {
         }
         if self.show_log && key.code == KeyCode::Esc {
             self.show_log = false;
+            return Cmd::none();
+        }
+        if self.show_status && matches!(key.code, KeyCode::Esc | KeyCode::F(1)) {
+            self.show_status = false;
             return Cmd::none();
         }
         if self.show_plugins && matches!(key.code, KeyCode::Esc | KeyCode::F(1)) {
@@ -2234,6 +2271,9 @@ impl ChatApp {
             AcpEvent::AvailableCommands(cmds) => {
                 self.agent_commands = cmds.into_iter().collect();
                 self.refresh_completion();
+            }
+            AcpEvent::Usage { used, size } => {
+                self.usage = Some((used, size));
             }
             AcpEvent::TurnEnded(reason) => {
                 self.close_open_entry();
