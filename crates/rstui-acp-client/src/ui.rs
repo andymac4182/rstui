@@ -36,7 +36,9 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
     }
     render_footer(app, frame, footer);
 
-    if app.diff().is_some() {
+    if app.wire_visible() {
+        render_wire(app, frame, area);
+    } else if app.diff().is_some() {
         render_diff(app, frame, area);
     } else if app.pager().open() {
         render_transcript_pager(app, frame, area);
@@ -1271,6 +1273,57 @@ fn render_diff(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     let max_scroll = total.saturating_sub(inner.height);
     let scroll = d.scroll().min(max_scroll);
     frame.render_widget(para.scroll((0, scroll)), inner);
+}
+
+/// The live **ACP wire console** — raw client↔agent stdio, tailing the
+/// latest (so a stalled spawn is obvious). Auto-shown while connecting,
+/// auto-closed on connect unless pinned (F2 / `/wire`). Pure projection of
+/// [`crate::app::WireConsole`].
+fn render_wire(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    use crate::acp::WireDir;
+    let t = app.theme();
+    let connecting = app.screen() == Screen::Connecting;
+    let title = if connecting {
+        " Connecting — agent stdio · auto-closes when ready · F2 keep "
+    } else {
+        " ACP wire — raw agent stdio · F2 or /wire to close "
+    };
+    let block = Block::bordered()
+        .title(title)
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(area);
+    clear(frame, area);
+    frame.render_widget(block, area);
+
+    let lines = app.wire().lines();
+    if lines.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "  waiting for the agent to speak ACP over stdio…",
+                Style::new().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+    // Tail: only the rows that fit, newest at the bottom (watch it scroll).
+    let start = lines.len().saturating_sub(inner.height as usize);
+    let rows: Vec<Line> = lines[start..]
+        .iter()
+        .map(|(dir, text)| {
+            let (color, tag) = match dir {
+                WireDir::ToAgent => (Color::Cyan, "→"),
+                WireDir::FromAgent => (Color::Green, "←"),
+                WireDir::Stderr => (Color::Red, "⚠"),
+            };
+            Line::from(vec![
+                Span::styled(format!("{tag} "), Style::new().fg(color)),
+                Span::styled(text.clone(), Style::new().fg(color)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(rows).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_log(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {

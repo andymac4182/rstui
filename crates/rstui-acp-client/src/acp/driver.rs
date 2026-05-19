@@ -24,7 +24,9 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::oneshot;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use super::events::{AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption};
+use super::events::{
+    AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, WireDir,
+};
 
 type PermMap = Arc<Mutex<HashMap<u64, oneshot::Sender<PermissionChoice>>>>;
 
@@ -86,13 +88,27 @@ async fn run(
         .spawn()
         .map_err(|e| format!("failed to spawn `{program}`: {e}"))?;
 
-    let child_stdin = child.stdin.take().ok_or("agent stdin unavailable")?;
-    let child_stdout = child.stdout.take().ok_or("agent stdout unavailable")?;
+    // Tee the JSON-RPC stdio through the wire console (transparent: the
+    // bytes pass to/from `sacp` unchanged; a bounded copy is mirrored to
+    // the reducer for the live "agent stdio" overlay).
+    let child_stdin = super::wire::TeeWrite::new(
+        child.stdin.take().ok_or("agent stdin unavailable")?,
+        ev_tx.clone(),
+    );
+    let child_stdout = super::wire::TeeRead::new(
+        child.stdout.take().ok_or("agent stdout unavailable")?,
+        ev_tx.clone(),
+    );
     if let Some(stderr) = child.stderr.take() {
         let tx = ev_tx.clone();
         tokio::spawn(async move {
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                // Stderr feeds both the diagnostic /log and the wire console.
+                let _ = tx.send(AcpEvent::Wire {
+                    dir: WireDir::Stderr,
+                    text: line.clone(),
+                });
                 let _ = tx.send(AcpEvent::Stderr(line));
             }
         });

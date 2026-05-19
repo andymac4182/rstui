@@ -22,12 +22,13 @@
 mod driver;
 mod events;
 mod richui;
+mod wire;
 
 pub use driver::spawn_driver;
 pub use events::{
     AcpEvent, AuthOption, DriverCmd, DriverHandle, ModeOption, ModelOption, PermissionChoice,
     PermissionOption, TodoEntry, TodoStatus, ToolBody, ToolCallInfo, ToolCallPatch, ToolKind,
-    ToolStatus,
+    ToolStatus, WireDir,
 };
 pub use richui::{
     RichUiFormat, RichUiPayload, render_capability_meta, render_source as render_rich_ui,

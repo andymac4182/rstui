@@ -81,6 +81,14 @@ pub enum AcpEvent {
     },
     /// A line the agent wrote to its stderr (diagnostics, shown in the log).
     Stderr(String),
+    /// A raw chunk on the ACP stdio wire (the live wire-console feed):
+    /// what we sent the agent, what it sent back, or its stderr.
+    Wire {
+        /// Which stream this chunk came from.
+        dir: WireDir,
+        /// The chunk, decoded UTF-8-lossy (already length-bounded).
+        text: String,
+    },
     /// A transport/protocol error; the session is no longer usable.
     Error(String),
     /// The agent process exited / the connection closed.
@@ -267,6 +275,29 @@ pub struct ModelOption {
     pub name: String,
     /// Optional one-line description (empty if the agent gave none).
     pub description: String,
+}
+
+/// Which ACP stdio stream a [`AcpEvent::Wire`] chunk came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireDir {
+    /// Client → agent (what we wrote to the agent's stdin).
+    ToAgent,
+    /// Agent → client (what the agent wrote to its stdout).
+    FromAgent,
+    /// The agent's stderr (diagnostics).
+    Stderr,
+}
+
+impl WireDir {
+    /// A compact direction tag for the wire console.
+    #[must_use]
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::ToAgent => "→",
+            Self::FromAgent => "←",
+            Self::Stderr => "⚠",
+        }
+    }
 }
 
 /// One agent auth method (ACP `AuthMethod`), shown in the sign-in picker.

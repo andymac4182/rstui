@@ -1920,3 +1920,70 @@ fn picker_custom_command_entry_launches_without_a_flag() {
         "empty input does not connect"
     );
 }
+
+// ---- CC-5: live ACP wire console (raw stdio) ----
+
+/// Raw stdio chunks are captured into a bounded ring (split per line,
+/// direction-tagged); F2 and `/wire` pin the overlay open on any screen
+/// (it also auto-shows while `Screen::Connecting` — the driver/connect
+/// path is the async side, out of Harness by ADR 0011). The overlay is
+/// hidden by default once connected (not pinned).
+#[test]
+fn wire_console_captures_stdio_and_toggles_with_f2() {
+    use rstui_acp_client::acp::WireDir;
+
+    let mut h = chatting(120, 30);
+    assert!(h.app().wire().lines().is_empty());
+    assert!(
+        !h.app().wire_visible(),
+        "connected & unpinned ⇒ the console is hidden (auto-closed)"
+    );
+
+    // A multi-line chunk becomes one ring entry per physical line.
+    h.message(Msg::Acp(AcpEvent::Wire {
+        dir: WireDir::ToAgent,
+        text: "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\"}\n".to_owned(),
+    }));
+    h.message(Msg::Acp(AcpEvent::Wire {
+        dir: WireDir::FromAgent,
+        text: "{\"result\":{}}".to_owned(),
+    }));
+    h.message(Msg::Acp(AcpEvent::Wire {
+        dir: WireDir::Stderr,
+        text: "agent: starting up".to_owned(),
+    }));
+    let lines = h.app().wire().lines();
+    assert_eq!(lines.len(), 3, "blank trailing split piece is dropped");
+    assert_eq!(lines[0].0, WireDir::ToAgent);
+    assert!(lines[0].1.contains("initialize"));
+    assert_eq!(lines[2].0, WireDir::Stderr);
+
+    // F2 pins the console open on the chat screen and draws it.
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::F(2))));
+    assert!(h.app().wire().pinned());
+    assert!(h.app().wire_visible());
+    let screen = h.snapshot();
+    assert!(
+        screen.contains("ACP wire") && screen.contains("initialize"),
+        "the wire console renders the captured stdio:\n{screen}"
+    );
+
+    // F2 again unpins → hidden again (connected).
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::F(2))));
+    assert!(!h.app().wire().pinned());
+    assert!(!h.app().wire_visible());
+
+    // `/wire` is an equivalent toggle with a breadcrumb.
+    typ(&mut h, "/wire");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().wire().pinned());
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("wire console: pinned")
+    );
+    assert!(h.is_running());
+}

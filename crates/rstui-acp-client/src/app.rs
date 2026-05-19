@@ -13,7 +13,8 @@ use rstui_widgets::Markdown;
 use crate::Config;
 use crate::acp::{
     AcpEvent, AuthOption, DriverCmd, DriverHandle, ModeOption, ModelOption, PermissionChoice,
-    PermissionOption, TodoEntry, TodoStatus, ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
+    PermissionOption, TodoEntry, TodoStatus, ToolCallInfo, ToolKind, ToolStatus, WireDir,
+    spawn_driver,
 };
 use crate::history::InputHistory;
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
@@ -448,6 +449,30 @@ impl PagerState {
     }
 }
 
+/// The live **ACP wire console**: the raw stdio between client and agent.
+/// Auto-shown while the agent is spawning/connecting (so you watch the
+/// handshake and see exactly where a custom command stalls) and
+/// auto-closed once connected — unless `pinned` (F2 / `/wire`), in which
+/// case it stays for on-demand debugging on any screen.
+#[derive(Debug, Default)]
+pub struct WireConsole {
+    lines: Vec<(WireDir, String)>,
+    pinned: bool,
+}
+
+impl WireConsole {
+    /// Recent wire lines, oldest→newest (the renderer tails them).
+    #[must_use]
+    pub fn lines(&self) -> &[(WireDir, String)] {
+        &self.lines
+    }
+    /// Whether the user pinned the console open (survives connect).
+    #[must_use]
+    pub fn pinned(&self) -> bool {
+        self.pinned
+    }
+}
+
 /// The `/diff` overlay: a captured `git diff HEAD` plus the scroll offset
 /// (clamp-on-render, the pager's model).
 #[derive(Debug, Clone)]
@@ -537,6 +562,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("resume", "Resume a previous session (session/load)"),
     ("login", "Sign in to the agent (if it requires auth)"),
     ("diff", "Show the working-tree git diff"),
+    ("wire", "Toggle the ACP wire console (raw agent stdio · F2)"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -682,6 +708,8 @@ pub struct ChatApp {
     auth_sel: usize,
     /// The `/diff` overlay (a captured `git diff`), if open.
     diff: Option<DiffView>,
+    /// The live ACP wire console (raw stdio); auto-shown while connecting.
+    wire: WireConsole,
     last_size: Size,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
@@ -774,6 +802,7 @@ impl ChatApp {
             auth_picker_open: false,
             auth_sel: 0,
             diff: None,
+            wire: WireConsole::default(),
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
@@ -1056,6 +1085,19 @@ impl ChatApp {
     #[must_use]
     pub fn diff(&self) -> Option<&DiffView> {
         self.diff.as_ref()
+    }
+    /// The live ACP wire console (raw stdio feed).
+    #[must_use]
+    pub fn wire(&self) -> &WireConsole {
+        &self.wire
+    }
+    /// Whether the wire console overlay is showing: automatically while the
+    /// agent is spawning/connecting (so the handshake is visible and a
+    /// stalled custom command is obvious), or whenever the user pinned it
+    /// (F2 / `/wire`). It therefore auto-closes once connected unless pinned.
+    #[must_use]
+    pub fn wire_visible(&self) -> bool {
+        self.screen == Screen::Connecting || self.wire.pinned
     }
     /// The launch command of the connected agent (empty before connect).
     #[must_use]
@@ -1507,6 +1549,15 @@ impl ChatApp {
                 self.push_system("running git diff…");
                 let cwd = self.cwd.clone();
                 Cmd::perform(move || Msg::DiffLoaded(run_git_diff(&cwd)))
+            }
+            "wire" => {
+                self.wire.pinned = !self.wire.pinned;
+                self.push_system(if self.wire.pinned {
+                    "ACP wire console: pinned (F2 or /wire to hide)"
+                } else {
+                    "ACP wire console: hidden"
+                });
+                Cmd::none()
             }
             "login" => {
                 if self.auth_methods.is_empty() {
@@ -2253,6 +2304,13 @@ impl ChatApp {
 
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        // F2 pins/unpins the ACP wire console on any screen (the global
+        // debug shortcut). It auto-shows while connecting regardless; pin
+        // to keep watching after the session is ready, unpin to dismiss.
+        if key.code == KeyCode::F(2) {
+            self.wire.pinned = !self.wire.pinned;
+            return Cmd::none();
+        }
         if self.picking {
             return self.theme_picker_key(key);
         }
@@ -3086,6 +3144,21 @@ impl ChatApp {
                 });
             }
             AcpEvent::Stderr(line) => self.push_log(format!("agent: {line}")),
+            AcpEvent::Wire { dir, text } => {
+                // One ring entry per physical line so the console reads as a
+                // stream; bounded so a chatty agent can't grow it unbounded.
+                const WIRE_CAP: usize = 4000;
+                for piece in text.split('\n') {
+                    if piece.is_empty() {
+                        continue;
+                    }
+                    self.wire.lines.push((dir, piece.to_owned()));
+                }
+                if self.wire.lines.len() > WIRE_CAP {
+                    let drop = self.wire.lines.len() - WIRE_CAP * 3 / 4;
+                    self.wire.lines.drain(0..drop);
+                }
+            }
             AcpEvent::Error(e) => {
                 self.streaming = false;
                 self.push_system(format!("error: {e}"));
