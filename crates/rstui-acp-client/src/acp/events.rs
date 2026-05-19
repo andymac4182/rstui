@@ -31,6 +31,16 @@ pub enum AcpEvent {
     /// The agent's advertised slash commands (`available_commands_update`):
     /// `(name, description)` pairs, surfaced in the autocomplete + help.
     AvailableCommands(Vec<(String, String)>),
+    /// The agent's selectable models (from `NewSessionResponse.models`):
+    /// the current model id and the catalogue, surfaced by `/model`.
+    Models {
+        /// The currently-active model id.
+        current: String,
+        /// The models the agent offers.
+        available: Vec<ModelOption>,
+    },
+    /// The agent confirmed a `session/set_model`; the new current model id.
+    ModelSelected(String),
     /// A context-window usage update (ACP `usage_update`): tokens currently
     /// in context and the total window size, surfaced in `/status`.
     Usage {
@@ -229,6 +239,18 @@ pub struct TodoEntry {
     pub priority: String,
 }
 
+/// One agent-advertised model (ACP `ModelInfo`), shown in the `/model`
+/// picker.
+#[derive(Debug, Clone)]
+pub struct ModelOption {
+    /// Opaque model id, echoed back in `session/set_model`.
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Optional one-line description (empty if the agent gave none).
+    pub description: String,
+}
+
 /// One selectable answer to a [`AcpEvent::Permission`] request.
 #[derive(Debug, Clone)]
 pub struct PermissionOption {
@@ -254,6 +276,8 @@ pub enum DriverCmd {
     Prompt(String),
     /// Cancel the in-flight turn (best-effort `session/cancel`).
     Cancel,
+    /// Switch the session model (`session/set_model`) to this model id.
+    SetModel(String),
     /// Answer a pending [`AcpEvent::Permission`].
     Permission {
         /// The id from the request being answered.

@@ -12,8 +12,8 @@ use rstui_widgets::Markdown;
 
 use crate::Config;
 use crate::acp::{
-    AcpEvent, DriverCmd, DriverHandle, PermissionChoice, PermissionOption, TodoEntry, TodoStatus,
-    ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
+    AcpEvent, DriverCmd, DriverHandle, ModelOption, PermissionChoice, PermissionOption, TodoEntry,
+    TodoStatus, ToolCallInfo, ToolKind, ToolStatus, spawn_driver,
 };
 use crate::history::InputHistory;
 use crate::plugin::{FooterSegment, HostEvent, PluginAction, PluginEvent, PluginHost};
@@ -338,6 +338,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "Open the full-screen transcript pager (search with /)",
     ),
     ("status", "Show session info & token usage"),
+    ("model", "Choose the model (if the agent offers a choice)"),
     ("theme", "Pick a colour theme (browse + preview live)"),
     ("init", "Ask the agent to create/improve AGENTS.md"),
     ("review", "Ask the agent to review your uncommitted changes"),
@@ -450,6 +451,13 @@ pub struct ChatApp {
     /// Latest ACP `usage_update`: `(tokens_in_context, context_window_size)`.
     /// `None` until the agent reports usage (many agents do every turn).
     usage: Option<(u64, u64)>,
+    /// The agent's advertised model catalogue (empty until `NewSessionResponse`
+    /// reports one) and the active model id.
+    models: Vec<ModelOption>,
+    current_model: Option<String>,
+    /// `/model` picker overlay open + its highlighted row.
+    model_picker_open: bool,
+    model_sel: usize,
     last_size: Size,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
@@ -525,6 +533,10 @@ impl ChatApp {
             show_help: false,
             show_status: false,
             usage: None,
+            models: Vec::new(),
+            current_model: None,
+            model_picker_open: false,
+            model_sel: 0,
             last_size: Size::new(80, 24),
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
@@ -703,6 +715,38 @@ impl ChatApp {
     #[must_use]
     pub fn usage(&self) -> Option<(u64, u64)> {
         self.usage
+    }
+    /// The agent's advertised models (empty if it advertised none).
+    #[must_use]
+    pub fn models(&self) -> &[ModelOption] {
+        &self.models
+    }
+    /// The active model's id, if known.
+    #[must_use]
+    pub fn current_model(&self) -> Option<&str> {
+        self.current_model.as_deref()
+    }
+    /// The active model's display name (falls back to its id, then `—`).
+    #[must_use]
+    pub fn current_model_name(&self) -> String {
+        match self.current_model.as_deref() {
+            Some(id) => self
+                .models
+                .iter()
+                .find(|m| m.id == id)
+                .map_or_else(|| id.to_owned(), |m| m.name.clone()),
+            None => "—".to_owned(),
+        }
+    }
+    /// Whether the `/model` picker overlay is open.
+    #[must_use]
+    pub fn model_picker_open(&self) -> bool {
+        self.model_picker_open
+    }
+    /// The highlighted row in the `/model` picker.
+    #[must_use]
+    pub fn model_sel(&self) -> usize {
+        self.model_sel
     }
     /// The launch command of the connected agent (empty before connect).
     #[must_use]
@@ -1128,6 +1172,21 @@ impl ChatApp {
             }
             "status" => {
                 self.show_status = !self.show_status;
+                Cmd::none()
+            }
+            "model" => {
+                if self.models.is_empty() {
+                    self.push_system(
+                        "this agent did not advertise selectable models (it picks its own)",
+                    );
+                } else {
+                    self.model_sel = self
+                        .current_model
+                        .as_deref()
+                        .and_then(|id| self.models.iter().position(|m| m.id == id))
+                        .unwrap_or(0);
+                    self.model_picker_open = true;
+                }
                 Cmd::none()
             }
             "theme" => {
@@ -1595,6 +1654,35 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Key handling for the `/model` picker: ↑/↓ (or `j`/`k`) move, Enter
+    /// switches the session model via the driver (`session/set_model`), Esc
+    /// cancels. A no-op list guard keeps it safe if models vanish.
+    fn model_picker_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let last = self.models.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => self.model_picker_open = false,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.model_sel = self.model_sel.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.model_sel = (self.model_sel + 1).min(last);
+            }
+            KeyCode::Enter => {
+                if let Some(m) = self.models.get(self.model_sel) {
+                    let id = m.id.clone();
+                    if self.driver.is_none() {
+                        self.push_system("not connected — cannot switch model");
+                    } else if let Some(driver) = &self.driver {
+                        driver.send(DriverCmd::SetModel(id));
+                    }
+                }
+                self.model_picker_open = false;
+            }
+            _ => {}
+        }
+        Cmd::none()
+    }
+
     /// Routes a key by the active overlay/screen. Returns the follow-up `Cmd`.
     fn on_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         if self.picking {
@@ -1627,6 +1715,9 @@ impl ChatApp {
         }
         if self.pager.open {
             return self.pager_key(key);
+        }
+        if self.model_picker_open {
+            return self.model_picker_key(key);
         }
         if self.keymap_panel {
             return self.keymap_panel_key(key);
@@ -2271,6 +2362,24 @@ impl ChatApp {
             AcpEvent::AvailableCommands(cmds) => {
                 self.agent_commands = cmds.into_iter().collect();
                 self.refresh_completion();
+            }
+            AcpEvent::Models { current, available } => {
+                self.models = available;
+                self.model_sel = self
+                    .models
+                    .iter()
+                    .position(|m| m.id == current)
+                    .unwrap_or(0);
+                self.current_model = Some(current);
+            }
+            AcpEvent::ModelSelected(id) => {
+                let name = self
+                    .models
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map_or_else(|| id.clone(), |m| m.name.clone());
+                self.current_model = Some(id);
+                self.push_system(format!("model → {name}"));
             }
             AcpEvent::Usage { used, size } => {
                 self.usage = Some((used, size));

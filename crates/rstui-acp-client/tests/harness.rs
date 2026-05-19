@@ -1380,3 +1380,81 @@ fn usage_update_feeds_the_status_overlay() {
     assert!(!h.app().status_visible(), "Esc closes /status");
     assert!(h.is_running());
 }
+
+// ---- Codex-parity W2-2: /model picker ----
+
+use rstui_acp_client::acp::ModelOption;
+
+fn model(id: &str, name: &str) -> ModelOption {
+    ModelOption {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        description: String::new(),
+    }
+}
+
+/// The agent's `NewSessionResponse.models` feeds `/model`; the picker lists
+/// them with the current one marked, and `ModelSelected` (the agent's
+/// `session/set_model` ack) updates the active model + breadcrumbs it.
+#[test]
+fn model_catalogue_drives_the_model_picker() {
+    let mut h = chatting(110, 30);
+
+    // No catalogue advertised → /model explains, opens nothing.
+    typ(&mut h, "/model");
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().model_picker_open());
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("did not advertise")
+    );
+
+    // Agent reports a catalogue.
+    h.message(Msg::Acp(AcpEvent::Models {
+        current: "fast".to_owned(),
+        available: vec![model("fast", "Fast"), model("smart", "Smart")],
+    }));
+    assert_eq!(h.app().current_model(), Some("fast"));
+    assert_eq!(h.app().current_model_name(), "Fast");
+
+    typ(&mut h, "/model");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().model_picker_open(), "/model opens with a catalogue");
+    assert_eq!(h.app().model_sel(), 0, "starts on the current model");
+    let screen = h.snapshot();
+    assert!(screen.contains("Fast") && screen.contains("Smart"));
+
+    // Move to "smart" and choose it. No driver in headless tests, so the
+    // switch reports "not connected" rather than sending — the picker still
+    // closes and the wiring (recognised, routed) is what we assert.
+    key(&mut h, KeyCode::Down);
+    assert_eq!(h.app().model_sel(), 1);
+    key(&mut h, KeyCode::Enter);
+    assert!(!h.app().model_picker_open(), "Enter closes the picker");
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("not connected")
+    );
+
+    // The agent's set_model ack authoritatively updates the active model.
+    h.message(Msg::Acp(AcpEvent::ModelSelected("smart".to_owned())));
+    assert_eq!(h.app().current_model(), Some("smart"));
+    assert_eq!(h.app().current_model_name(), "Smart");
+    assert!(
+        h.app()
+            .transcript()
+            .last()
+            .unwrap()
+            .text
+            .contains("model → Smart")
+    );
+    assert!(h.is_running());
+}

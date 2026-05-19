@@ -53,7 +53,7 @@ out of scope per above.
 | ~~`/init`, `/review` canned prompts~~ | **Done** (iter 6) | W1-5 ✅ |
 | ~~Full-screen transcript pager (Codex `/transcript`)~~ | **Done** (iter 6) | W1-6 ✅ |
 | ~~`/status` session + token usage~~ | **Done** (iter 7) | W2-1 ✅ |
-| **`/model`** picker (model + reasoning effort) | **Gap** | W2-2 |
+| ~~`/model`~~ picker (model selection) | **Done** (iter 7) | W2-2 ✅ |
 | **`/mode`** session-mode switch (covers `/plan`, approval modes) | **Gap** | W2-3 |
 | **`/resume`** list & load prior sessions | **Gap** | W2-4 |
 | **`@`-file mentions** with fuzzy completion | **Gap** | W2-5 |
@@ -107,8 +107,13 @@ docs-updated slice, merged back under the serialized lock
    feature needed) into `AcpEvent::Usage`; a `/status` overlay shows agent,
    cwd, connection, turn state, **context tokens + % of window**, theme,
    keymap, history size, bell.
-8. **W2-2 `/model`** — capture `SessionModelState`; a picker that issues
-   `session/set_model`.
+8. **W2-2 `/model`** ✅ *(landed, iter 7)* — the driver lifts
+   `NewSessionResponse.models` (`SessionModelState`) into `AcpEvent::Models`;
+   a `/model` picker (↑↓/jk, current marked) issues `session/set_model` via
+   `DriverCmd::SetModel`; the `ModelSelected` ack updates the active model
+   (also shown in `/status`). *Reasoning-effort* is not a separate ACP axis —
+   agents expose it either as distinct models here or as session
+   modes/config (W2-3).
 9. **W2-3 `/mode`** — capture `SessionModeState`; a picker that issues
    `session/set_mode` (this is how Codex's plan/approval modes reach a
    generic client).

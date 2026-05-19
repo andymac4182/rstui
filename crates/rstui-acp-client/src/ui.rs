@@ -44,6 +44,8 @@ pub fn render(app: &ChatApp, frame: &mut Frame<'_>) {
         render_log(app, frame, area);
     } else if app.status_visible() {
         render_status(app, frame, area);
+    } else if app.model_picker_open() {
+        render_model_picker(app, frame, area);
     } else if app.plugins_overlay() {
         render_plugins_overlay(app, frame, area);
     } else if app.keymap_panel_open() {
@@ -970,6 +972,7 @@ fn render_status(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
                 "idle"
             },
         ),
+        kv("Model", &app.current_model_name()),
         kv("Context", &context),
         Line::raw(""),
         kv("Theme", &t.name),
@@ -980,6 +983,47 @@ fn render_status(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         ),
         kv("Bell", if app.bell_enabled() { "on" } else { "off" }),
     ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The `/model` picker — the agent's advertised model catalogue, the
+/// currently-active one marked, Enter issues `session/set_model`. A pure
+/// projection of `app.models()` + the reducer-owned selection.
+fn render_model_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
+    let t = app.theme();
+    let models = app.models();
+    let h = (models.len() as u16 + 4).clamp(7, area.height.saturating_sub(2).max(7));
+    let rect = centered(area, area.width.min(72), h);
+    let block = Block::bordered()
+        .title(" Model (↑↓ select · Enter switch · Esc cancel) ")
+        .border_style(t.accent_text())
+        .style(t.base());
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+
+    let cur = app.current_model();
+    let lines: Vec<Line> = models
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let marker = if Some(m.id.as_str()) == cur {
+                "●"
+            } else {
+                " "
+            };
+            let label = if m.description.is_empty() {
+                format!(" {marker} {}", m.name)
+            } else {
+                format!(" {marker} {} — {}", m.name, m.description)
+            };
+            if i == app.model_sel() {
+                Line::styled(label, t.selection())
+            } else {
+                Line::styled(label, t.base())
+            }
+        })
+        .collect();
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 

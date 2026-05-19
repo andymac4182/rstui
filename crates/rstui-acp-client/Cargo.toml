@@ -61,6 +61,14 @@ rstui-acp-plugin-sdk = { path = "../rstui-acp-plugin-sdk", version = "0.0.1" }
 # The Agent Client Protocol implementation (symposium-acp). Published on
 # crates.io as `sacp`; newline-delimited JSON-RPC 2.0 over the agent's stdio.
 sacp = "11"
+# NOT a new dependency: `sacp` already pulls `agent-client-protocol-schema`
+# in transitively (pinned in Cargo.lock, re-exported as `sacp::schema`). It
+# is named here *only* to enable its `unstable` feature, which Cargo unifies
+# onto that one shared build — that gate is what makes ACP model selection
+# (`NewSessionResponse.models`), token `usage_update`, and session
+# resume/fork exist at all with sacp 11. Same 0.11 line sacp resolves, so
+# exactly one copy is compiled.
+agent-client-protocol-schema = { version = "0.11", features = ["unstable"] }
 
 # tokio: `run_async` runs inside an ambient runtime, and the ACP driver owns
 # the agent child process + its stdio. Minimal feature set, all used.

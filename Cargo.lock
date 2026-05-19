@@ -870,6 +870,7 @@ dependencies = [
 name = "rstui-acp-client"
 version = "0.0.1"
 dependencies = [
+ "agent-client-protocol-schema",
  "crossterm",
  "futures",
  "rstui-acp-plugin-sdk",

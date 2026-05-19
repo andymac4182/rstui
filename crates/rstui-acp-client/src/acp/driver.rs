@@ -158,8 +158,25 @@ async fn run(
                 .send_request(NewSessionRequest::new(cwd.clone()))
                 .block_task()
                 .await?;
-            let session_id = new_session.session_id;
+            let session_id = new_session.session_id.clone();
+            let model_state = new_session.models.clone();
             let _ = loop_tx.send(AcpEvent::Status("session ready".to_owned()));
+            // Surface the agent's model catalogue (if any) so `/model` can
+            // offer it; the ids round-trip back via `session/set_model`.
+            if let Some(ms) = model_state {
+                let _ = loop_tx.send(AcpEvent::Models {
+                    current: ms.current_model_id.0.to_string(),
+                    available: ms
+                        .available_models
+                        .iter()
+                        .map(|m| super::events::ModelOption {
+                            id: m.model_id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone().unwrap_or_default(),
+                        })
+                        .collect(),
+                });
+            }
 
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
@@ -189,6 +206,32 @@ async fn run(
                         let _ = connection.send_notification(
                             sacp::schema::CancelNotification::new(session_id.clone()),
                         );
+                    }
+                    DriverCmd::SetModel(model_id) => {
+                        // sacp 11 ships no typed `session/set_model` request
+                        // (only set_mode/load/…), so send it as a raw
+                        // `UntypedMessage` — the wire shape is the stable ACP
+                        // contract, the same JSON-first robustness this
+                        // module already relies on for notifications.
+                        match sacp::UntypedMessage::new(
+                            "session/set_model",
+                            serde_json::json!({
+                                "sessionId": session_id,
+                                "modelId": model_id,
+                            }),
+                        ) {
+                            Ok(req) => match connection.send_request(req).block_task().await {
+                                Ok(_) => {
+                                    let _ = loop_tx.send(AcpEvent::ModelSelected(model_id));
+                                }
+                                Err(err) => {
+                                    let _ = loop_tx.send(AcpEvent::Error(err.to_string()));
+                                }
+                            },
+                            Err(err) => {
+                                let _ = loop_tx.send(AcpEvent::Error(err.to_string()));
+                            }
+                        }
                     }
                     DriverCmd::Permission { id, choice } => {
                         if let Ok(mut map) = perm_map.lock() {
