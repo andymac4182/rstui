@@ -521,6 +521,38 @@ fn render_is_a_builtin_command_that_primes_the_agent() {
 }
 
 #[test]
+fn a2ui_is_a_builtin_command_that_primes_the_agent() {
+    // Symmetric twin of /render for A2UI — same canned-prompt path so
+    // any agent (not just one reading the initialize _meta) learns the
+    // A2UI format from the conversation.
+    let mut h = chatting(100, 30);
+    typ(&mut h, "/a2ui");
+    let comp = h.app().completion().expect("'/' opens the popup");
+    assert!(
+        comp.items.iter().any(|c| c.name == "a2ui"),
+        "/a2ui is a built-in command"
+    );
+
+    typ(&mut h, " a sign-up form");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Enter)));
+    let last = &h
+        .app()
+        .transcript()
+        .last()
+        .expect("a system breadcrumb")
+        .text;
+    assert!(
+        !last.contains("unknown command"),
+        "/a2ui is wired (not the unknown-command arm): {last:?}"
+    );
+    assert!(
+        last.contains("not connected"),
+        "headless: /a2ui reached send_user_prompt: {last:?}"
+    );
+    assert!(h.is_running());
+}
+
+#[test]
 fn autocomplete_filters_as_you_type_and_navigates_and_wraps() {
     let mut h = chatting(100, 30);
     typ(&mut h, "/he");

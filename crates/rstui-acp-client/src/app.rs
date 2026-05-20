@@ -586,6 +586,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "render",
         "Teach the agent the json-render UI format (e.g. /render a dashboard)",
     ),
+    (
+        "a2ui",
+        "Teach the agent the A2UI UI format (e.g. /a2ui a sign-up form)",
+    ),
     ("copy", "Copy the last agent answer to the clipboard"),
     ("bell", "Toggle the turn-completion bell"),
     ("cancel", "Interrupt the streaming turn"),
@@ -632,6 +636,29 @@ pub fn render_prompt(request: &str) -> String {
             "\n\nDo this now, replying with such a fenced ```json-render \
              document: ",
         );
+        prompt.push_str(request);
+    }
+    prompt
+}
+
+/// The `/a2ui [request]` canned prompt: symmetric twin of
+/// [`render_prompt`] for Google A2UI. The full inline A2UI catalog (a
+/// 32 KB JSON schema) is too heavy to put in an LLM context, so the
+/// slash-command path uses the compact prose
+/// [`rstui_jsonui::capability::a2ui_prompt`] (the same any-agent route
+/// `/render` uses for json-render).
+#[must_use]
+pub fn a2ui_prompt(request: &str) -> String {
+    let mut prompt = String::from(
+        "This terminal chat client can render a live A2UI UI directly \
+         from your reply. When a form, panel, or other structured answer \
+         would help, reply with an A2UI document inside a fenced ```a2ui \
+         code block (a short sentence of prose before it is fine). ",
+    );
+    prompt.push_str(&rstui_jsonui::capability::a2ui_prompt());
+    let request = request.trim();
+    if !request.is_empty() {
+        prompt.push_str("\n\nDo this now, replying with such a fenced ```a2ui document: ");
         prompt.push_str(request);
     }
     prompt
@@ -1902,6 +1929,10 @@ impl ChatApp {
             }
             "render" | "ui" => {
                 self.send_user_prompt(render_prompt(&args));
+                Cmd::none()
+            }
+            "a2ui" => {
+                self.send_user_prompt(a2ui_prompt(&args));
                 Cmd::none()
             }
             "bell" => {
@@ -3853,7 +3884,7 @@ mod mention_rank_tests {
 
 #[cfg(test)]
 mod canned_prompt_tests {
-    use super::{INIT_PROMPT, REVIEW_PROMPT, render_prompt};
+    use super::{INIT_PROMPT, REVIEW_PROMPT, a2ui_prompt, render_prompt};
 
     #[test]
     fn canned_prompts_are_substantial_and_on_topic() {
@@ -3904,6 +3935,40 @@ mod canned_prompt_tests {
         assert!(
             !bare.contains("Do this now"),
             "no request → just the priming instructions, no task line"
+        );
+    }
+
+    #[test]
+    fn a2ui_prompt_teaches_the_a2ui_format_to_any_agent() {
+        let bare = a2ui_prompt("");
+        // Names the fenced block + the JSONL envelope + the right
+        // version + at least the form-essential components — exactly
+        // what an LLM needs to emit a working A2UI surface without the
+        // 32 KB inline-catalog schema.
+        assert!(bare.contains("```a2ui"), "names the fenced block");
+        assert!(
+            bare.contains("createSurface")
+                && bare.contains("updateComponents")
+                && bare.contains("\"version\":\"v0.10\""),
+            "embeds the A2UI envelope shape"
+        );
+        for comp in ["Button", "TextField", "CheckBox", "ChoicePicker", "Slider"] {
+            assert!(bare.contains(comp), "lists {comp}");
+        }
+        // Documents the spec submit-back convention so the agent knows
+        // what to do with the incoming user message.
+        assert!(
+            bare.contains("[A2UI form submission]"),
+            "the submission convention is in the prompt"
+        );
+        // Agent-agnostic: no vendor name baked in.
+        let lower = bare.to_ascii_lowercase();
+        assert!(!lower.contains("codex") && !lower.contains("claude"));
+
+        let with_request = a2ui_prompt("  a sign-up form  ");
+        assert!(
+            with_request.contains("Do this now") && with_request.contains("a sign-up form"),
+            "the request is appended (trimmed):\n{with_request}"
         );
     }
 }

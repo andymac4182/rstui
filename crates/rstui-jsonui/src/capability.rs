@@ -304,6 +304,59 @@ declare_json_render_catalog! {
     "Markdown" ("text") [] => "A markdown document.";
 }
 
+/// The A2UI LLM instruction prompt: the envelope shape, the eighteen
+/// basic-catalog components, the `{path}` binding and Button action
+/// shapes, and the form-submission convention. A compact prose twin of
+/// the (32 KB) [`a2ui_inline_catalog`] schema — the schema is for
+/// capability-aware agents on the ACP `_meta` channel, this prompt is
+/// for **any** agent (slash-commanded by the host so a generic LLM
+/// learns the format from the conversation, mirroring
+/// [`json_render_prompt`]).
+#[must_use]
+pub fn a2ui_prompt() -> String {
+    let ver = A2UI_VERSION;
+    let cat = A2UI_CATALOG_ID;
+    format!(
+        "You may reply with a Google A2UI {ver} UI document this \
+         terminal client will render. An A2UI document is a JSONL stream \
+         (one JSON envelope per line) inside a fenced ```a2ui code \
+         block. Each envelope is one of: \
+         `{{\"version\":\"{ver}\",\"createSurface\":{{\"surfaceId\":\"<id>\",\
+         \"catalogId\":\"{cat}\"}}}}` to open a surface; \
+         `{{\"version\":\"{ver}\",\"updateComponents\":{{\"surfaceId\":\"<id>\",\
+         \"components\":[{{\"id\":\"<cid>\",\"component\":\"<Type>\",...props,\
+         \"children\":[\"<cid>\",...] }}]}}}}` to define/replace components \
+         (root id is `\"root\"`; children reference component ids); \
+         `{{\"version\":\"{ver}\",\"updateDataModel\":{{\"surfaceId\":\"<id>\",\
+         \"path\":\"/<ptr>\",\"value\":<v>}}}}` to write the surface data \
+         model; plus `deleteSurface`/`callFunction`/`actionResponse`. \
+         A prop that should bind to the data model is `{{\"path\":\"/<ptr>\"}}` \
+         (two-way for `TextField`/`CheckBox`/`ChoicePicker`/`Slider`/\
+         `DateTimeInput`). Available basic-catalog components: Text, \
+         Image, Icon, Video, AudioPlayer, Row, Column, List, Card, Tabs, \
+         Modal, Divider, Button, TextField, CheckBox, ChoicePicker, \
+         Slider, DateTimeInput. A `Button`'s action is \
+         `\"action\":{{\"event\":{{\"name\":\"<n>\",\"context\":\
+         {{\"<key>\":{{\"path\":\"/<ptr>\"}},...}}}}}}` (or \
+         `\"functionCall\":{{\"call\":\"openUrl\",\"args\":{{\"url\":\"...\"}}}}` \
+         for a local open-url).\n\n\
+         FORM SUBMISSION: when the user clicks a `Button` with an `event` \
+         action, this client resolves the `context` `{{path}}` bindings \
+         from the surface data model and sends you a USER MESSAGE shaped \
+         exactly:\n\
+         `[A2UI form submission]`\\n\\n\
+         `The user submitted the rendered A2UI form. Process the action \
+         below and respond.`\\n\\n\
+         ` ```json `\\n`{{\"version\":\"{ver}\",\"action\":{{\"name\":\"<n>\",\
+         \"surfaceId\":\"<id>\",\"sourceComponentId\":\"<cid>\",\"timestamp\":\
+         \"<rfc3339>\",\"context\":{{...resolved...}}}}}}`\\n` ``` `\n\
+         Treat that as the form submission and reply with prose, or with a \
+         follow-up A2UI envelope (e.g. an `updateDataModel`/\
+         `updateComponents` for the same `surfaceId` — the client folds \
+         it into the open pane).",
+    )
+}
+
 /// The json-render LLM instruction prompt: the document shape, the
 /// streaming-patch protocol, and the available components. An ACP host
 /// can prepend this to the model context (it travels in the capability
