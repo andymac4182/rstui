@@ -289,6 +289,34 @@ pub enum Role {
 /// would make the cache observably wrong.
 pub(crate) const MD_WIDTH: u16 = 80;
 
+/// Minimum visible inner rows for the composer box. A short draft never
+/// shrinks the box below this (so the placeholder text always has room
+/// and the affordance is always discoverable).
+pub const COMPOSER_MIN_INNER: u16 = 1;
+
+/// Hard floor for the transcript area: the transcript must keep at least
+/// this many inner rows so it is always readable while the composer grows.
+pub const TRANSCRIPT_MIN_INNER: u16 = 4;
+
+/// Computes the maximum inner height (in rows) the composer box may use
+/// for a terminal of `term_height` rows.
+///
+/// The composer grows to fit the draft but yields space to the transcript.
+/// The transcript keeps at least [`TRANSCRIPT_MIN_INNER`] inner rows plus
+/// its 2-row border and the 1-row header and footer = `TRANSCRIPT_MIN_INNER + 4`
+/// rows reserved. Whatever remains (minus the composer's own 2-row border)
+/// is the composer's max inner height, floored at [`COMPOSER_MIN_INNER`].
+///
+/// This is a pure function so the reducer (`scroll_composer_to_cursor`) and
+/// the view (`render_chat`, `rich_hit`) always agree — no stored layout.
+#[must_use]
+pub fn composer_inner_height(term_height: u16) -> u16 {
+    // rows reserved for: header(1) + footer(1) + transcript border(2) +
+    // transcript min content + composer border(2)
+    let reserved = 1 + 1 + 2 + TRANSCRIPT_MIN_INNER + 2;
+    term_height.saturating_sub(reserved).max(COMPOSER_MIN_INNER)
+}
+
 /// The active interactive doc's focus ring, purely re-derived per
 /// frame: `(rich_docs key, pane inner rect, [(node id, pane-local
 /// rect)] in draw order)`. Shared by keyboard nav and mouse hit so
@@ -832,6 +860,9 @@ pub struct ChatApp {
     /// draw order, re-derived each frame from the [`HitMap`]). Clamped
     /// to the ring on use, so it never desyncs from a re-projection.
     form_node: usize,
+    /// Row offset for scrolling the composer when content exceeds the visible
+    /// area. Kept in sync with the cursor by [`scroll_composer_to_cursor`].
+    composer_scroll: u16,
     quitting: bool,
     /// Live render-rate meter (the reusable [`rstui_widgets::FpsMeter`]),
     /// sampled once per frame in `view` and shown in the header so the
@@ -929,6 +960,7 @@ impl ChatApp {
             last_size: Size::new(80, 24),
             form_focus: false,
             form_node: 0,
+            composer_scroll: 0,
             quitting: false,
             fps: rstui_widgets::FpsMeter::new(),
             theme: crate::theme::startup_theme(),
@@ -1434,6 +1466,30 @@ impl ChatApp {
         &self.log
     }
 
+    /// Resets the composer scroll to zero.
+    /// Called by submit and history recall so the fresh draft starts at the top.
+    fn reset_composer_scroll(&mut self) {
+        self.composer_scroll = 0;
+    }
+
+    /// Adjusts `composer_scroll` so the cursor row is always visible inside
+    /// the composer's current viewport. The viewport height is derived from
+    /// the last known terminal size using the same formula as the view, so
+    /// the scroll offset is always correct without needing a render cycle.
+    fn scroll_composer_to_cursor(&mut self) {
+        let visible = composer_inner_height(self.last_size.height);
+        let (row, _col) = self.composer.cursor();
+        let row = row as u16;
+        // Scroll up if the cursor is above the visible window.
+        if row < self.composer_scroll {
+            self.composer_scroll = row;
+        }
+        // Scroll down if the cursor is below the visible window.
+        if row >= self.composer_scroll + visible {
+            self.composer_scroll = row - visible + 1;
+        }
+    }
+
     /// Appends a diagnostic line, capping retained history (APP-3).
     ///
     /// `log` is fed by every plugin `Log`, status change, and **agent stderr
@@ -1461,6 +1517,13 @@ impl ChatApp {
     #[must_use]
     pub fn scroll(&self) -> u16 {
         self.scroll
+    }
+    /// The composer scroll offset (rows): how many logical lines are scrolled
+    /// off the top of the composer box. The view uses this to show the cursor
+    /// row when the draft is taller than the visible area.
+    #[must_use]
+    pub fn composer_scroll(&self) -> u16 {
+        self.composer_scroll
     }
     /// The full-screen `/transcript` pager state (scroll + search).
     #[must_use]
@@ -1733,6 +1796,7 @@ impl ChatApp {
             return Cmd::none();
         }
         self.composer.clear();
+        self.reset_composer_scroll();
         self.follow = true;
         // Record every submission (slash commands included, like Codex) so
         // ↑ recalls it; this also ends any in-progress history browse.
@@ -2975,6 +3039,7 @@ impl ChatApp {
         if let Some(text) = recalled {
             self.composer.set_value(text);
             self.composer.move_doc_end();
+            self.reset_composer_scroll();
         }
     }
 
@@ -3100,6 +3165,8 @@ impl ChatApp {
 
     fn chat_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let sup = key.modifiers.contains(KeyModifiers::SUPER);
 
         // When the interactive form pane owns focus, every key drives
         // the rendered A2UI/json-render doc, not the composer.
@@ -3202,6 +3269,58 @@ impl ChatApp {
                 self.composer.insert_newline();
             }
             KeyCode::Enter => return self.submit_composer(),
+
+            // ---- Readline / Emacs navigation ----
+            // Ctrl-A / Home — beginning of line
+            KeyCode::Char('a') if ctrl => self.composer.move_home(),
+            // Ctrl-E / End — end of line
+            KeyCode::Char('e') if ctrl => self.composer.move_end(),
+            // Ctrl-B / Left — character backward
+            KeyCode::Char('b') if ctrl => {
+                self.composer.move_left();
+            }
+            // Ctrl-F / Right — character forward
+            KeyCode::Char('f') if ctrl => {
+                self.composer.move_right();
+            }
+            // Alt-B / Ctrl-Left — word backward
+            KeyCode::Char('b') if alt => {
+                self.history.reset();
+                self.composer.move_word_backward();
+            }
+            KeyCode::Left if ctrl => {
+                self.composer.move_word_backward();
+            }
+            // Alt-F / Ctrl-Right — word forward
+            KeyCode::Char('f') if alt => {
+                self.history.reset();
+                self.composer.move_word_forward();
+            }
+            KeyCode::Right if ctrl => {
+                self.composer.move_word_forward();
+            }
+            // Ctrl-U — kill to start of line
+            KeyCode::Char('u') if ctrl => {
+                self.history.reset();
+                self.composer.kill_line_backward();
+            }
+            // Alt-Backspace — delete word backward
+            KeyCode::Backspace if alt => {
+                self.history.reset();
+                self.composer.delete_word_backward();
+            }
+            // Cmd+Backspace (macOS) — kill to start of line
+            KeyCode::Backspace if sup => {
+                self.history.reset();
+                self.composer.kill_line_backward();
+            }
+            // Alt-D — delete word forward
+            KeyCode::Char('d') if alt => {
+                self.history.reset();
+                self.composer.delete_word_forward();
+            }
+
+            // ---- Standard editing ----
             KeyCode::Backspace => {
                 self.history.reset();
                 self.composer.delete_backward();
@@ -3254,6 +3373,8 @@ impl ChatApp {
         // `@token` at the cursor; they are mutually exclusive).
         self.refresh_completion();
         self.refresh_mention();
+        // Scroll the composer so the cursor row stays visible.
+        self.scroll_composer_to_cursor();
         Cmd::none()
     }
 }

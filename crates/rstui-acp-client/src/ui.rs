@@ -11,7 +11,7 @@ use rstui_core::{Color, Constraint, Layout, Line, Modifier, Position, Rect, Size
 use rstui_runtime::Frame;
 use rstui_widgets::{Block, KeymapView, List, ListItem, Markdown, Paragraph, Wrap};
 
-use crate::app::{ChatApp, MD_WIDTH, Role, Screen};
+use crate::app::{ChatApp, MD_WIDTH, Role, Screen, composer_inner_height};
 use crate::plugin::FooterSegment;
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -290,8 +290,18 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         RightSlot::Sidebar(side) => render_sidebar(app, frame, side),
         RightSlot::None => {}
     }
+
+    // The composer box grows with the draft up to the terminal-derived cap
+    // (see `composer_inner_height`), then scrolls. A one-line draft gets a
+    // 3-row box (1 inner + 2 border); a long draft caps so the transcript
+    // always retains at least TRANSCRIPT_MIN_INNER readable rows.
+    let max_inner = composer_inner_height(main.height);
+    let draft_rows = app.composer().row_count() as u16;
+    let composer_inner_rows = draft_rows.clamp(1, max_inner);
+    let composer_total = composer_inner_rows + 2; // +2 for top/bottom border
+
     let [transcript_area, composer_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(composer_total)]).areas(main);
 
     // ---- transcript ----
     let block = Block::bordered().title(transcript_title(app));
@@ -330,17 +340,26 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
             cinner,
         );
     } else {
+        // Scroll the rendered paragraph so the cursor row stays visible.
+        // `composer_scroll` is kept in sync by the reducer on every edit
+        // (the same clamp-on-mutation model the transcript uses).
+        let comp_scroll = app.composer_scroll();
         frame.render_widget(
-            Paragraph::new(comp_lines).wrap(Wrap { trim: false }),
+            Paragraph::new(comp_lines)
+                .wrap(Wrap { trim: false })
+                .scroll((comp_scroll, 0)),
             cinner,
         );
     }
 
-    // Park the caret in the composer when it owns focus.
+    // Park the caret in the composer when it owns focus. Subtract the
+    // scroll offset so the cursor appears at the correct screen row even
+    // when the draft is taller than the visible area.
     if app.pending_permission().is_none() && app.ask().is_none() && !app.help_visible() {
         let (row, col) = app.composer().cursor();
+        let visible_row = (row as u16).saturating_sub(app.composer_scroll());
         let cx = cinner.x + (col as u16).min(cinner.width.saturating_sub(1));
-        let cy = cinner.y + (row as u16).min(cinner.height.saturating_sub(1));
+        let cy = cinner.y + visible_row.min(cinner.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(cx, cy));
     }
 
@@ -850,11 +869,12 @@ pub(crate) fn form_pane_inner(app: &ChatApp, size: Size) -> Option<Rect> {
     }
 }
 
-/// The bordered transcript content rect inside `main` (above the
-/// 5-row composer) — the other half of the shared split.
-fn transcript_inner_for_main(main: Rect) -> Rect {
+/// The bordered transcript content rect inside `main` (above the composer) —
+/// the other half of the shared split. Takes the composer's total height so
+/// it mirrors [`render_chat`]'s dynamic layout exactly (ADR 0012 — no drift).
+fn transcript_inner_for_main(main: Rect, composer_total: u16) -> Rect {
     let [transcript_area, _composer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(composer_total)]).areas(main);
     Block::bordered().inner(transcript_area)
 }
 
@@ -884,7 +904,12 @@ pub(crate) fn rich_hit(
     ])
     .areas(area);
     let main = transcript_main_rect(app, body);
-    let inner = transcript_inner_for_main(main);
+    // Mirror render_chat's dynamic composer height so the click hit-test
+    // geometry matches what was actually painted (ADR 0012).
+    let max_inner = composer_inner_height(area.height);
+    let draft_rows = app.composer().row_count() as u16;
+    let composer_total = draft_rows.clamp(1, max_inner) + 2;
+    let inner = transcript_inner_for_main(main, composer_total);
     if inner.width < MD_WIDTH + 2 || inner.width == 0 || inner.height == 0 {
         return None; // too narrow — RichUi rows would wrap; don't mis-hit
     }

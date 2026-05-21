@@ -581,6 +581,179 @@ impl TextArea {
         self.insert_str(s);
     }
 
+    /// Moves the cursor one word forward (Emacs/readline `Alt-F` / `Ctrl-Right`).
+    ///
+    /// A "word" is a maximal run of alphanumeric+underscore characters — the
+    /// same definition readline uses. The cursor lands just *after* the last
+    /// character of the word (i.e. on the first non-word character following
+    /// it, or at end-of-line). If already past the last word on the row the
+    /// cursor wraps to the start of the next row; at the document end it
+    /// stays put. Returns `true` if the cursor moved.
+    pub fn move_word_forward(&mut self) -> bool {
+        self.goal_col = None;
+        let row_count = self.lines.len();
+        // Skip non-word characters, then skip the word.
+        // If we exhaust the row, move to the next one (no cross-line word join).
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let len = chars.len();
+        if self.col >= len {
+            // At or past end of line — wrap to next row if possible.
+            if self.row + 1 < row_count {
+                self.row += 1;
+                self.col = 0;
+                return true;
+            }
+            return false;
+        }
+        // Skip leading non-word characters.
+        let mut col = self.col;
+        while col < len && !chars[col].is_alphanumeric() && chars[col] != '_' {
+            col += 1;
+        }
+        // Skip the word body.
+        while col < len && (chars[col].is_alphanumeric() || chars[col] == '_') {
+            col += 1;
+        }
+        let moved = col != self.col;
+        self.col = col;
+        moved
+    }
+
+    /// Moves the cursor one word backward (Emacs/readline `Alt-B` / `Ctrl-Left`).
+    ///
+    /// The cursor lands at the *start* of the word to the left. If already
+    /// before the first word on the row the cursor wraps to the end of the
+    /// previous row; at the document start it stays put. Returns `true` if
+    /// the cursor moved.
+    pub fn move_word_backward(&mut self) -> bool {
+        self.goal_col = None;
+        if self.col == 0 {
+            if self.row == 0 {
+                return false;
+            }
+            self.row -= 1;
+            self.col = self.line_char_len(self.row);
+            return true;
+        }
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let mut col = self.col;
+        // Skip trailing non-word characters.
+        while col > 0 && !chars[col - 1].is_alphanumeric() && chars[col - 1] != '_' {
+            col -= 1;
+        }
+        // Skip the word body.
+        while col > 0 && (chars[col - 1].is_alphanumeric() || chars[col - 1] == '_') {
+            col -= 1;
+        }
+        let moved = col != self.col;
+        self.col = col;
+        moved
+    }
+
+    /// Deletes from the cursor to the end of the current line (Emacs `Ctrl-K`).
+    ///
+    /// At end-of-line this joins the next line onto the current one (the
+    /// standard readline/Emacs kill-line behaviour for an empty remainder).
+    /// Returns whether anything changed.
+    pub fn kill_line(&mut self) -> bool {
+        self.goal_col = None;
+        let end_col = self.line_char_len(self.row);
+        if self.col < end_col {
+            // Delete from cursor to end of this line.
+            let start = self.byte_at(self.row, self.col);
+            self.lines[self.row].truncate(start);
+            self.line_lens[self.row] = self.col;
+            true
+        } else if self.row + 1 < self.lines.len() {
+            // Already at end-of-line: join the next line (second kill).
+            let next = self.lines.remove(self.row + 1);
+            self.line_lens.remove(self.row + 1);
+            self.lines[self.row].push_str(&next);
+            self.line_lens[self.row] = self.lines[self.row].chars().count();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Deletes from the cursor to the start of the current line (Emacs `Ctrl-U`).
+    ///
+    /// Returns whether anything changed.
+    pub fn kill_line_backward(&mut self) -> bool {
+        self.goal_col = None;
+        if self.col == 0 {
+            return false;
+        }
+        let end = self.byte_at(self.row, self.col);
+        self.lines[self.row].replace_range(..end, "");
+        self.line_lens[self.row] -= self.col;
+        self.col = 0;
+        true
+    }
+
+    /// Deletes the word immediately before the cursor (Emacs/readline `Alt-Backspace`).
+    ///
+    /// Skips any leading whitespace/punctuation before the word. Returns
+    /// whether anything changed.
+    pub fn delete_word_backward(&mut self) -> bool {
+        self.goal_col = None;
+        if self.col == 0 {
+            // At line start: join with the previous line (same as Backspace).
+            return self.delete_backward();
+        }
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let mut col = self.col;
+        // Skip trailing non-word characters before the cursor.
+        while col > 0 && !chars[col - 1].is_alphanumeric() && chars[col - 1] != '_' {
+            col -= 1;
+        }
+        // Skip the word body.
+        while col > 0 && (chars[col - 1].is_alphanumeric() || chars[col - 1] == '_') {
+            col -= 1;
+        }
+        if col == self.col {
+            return false;
+        }
+        let start = self.byte_at(self.row, col);
+        let end = self.byte_at(self.row, self.col);
+        let removed = self.col - col;
+        self.lines[self.row].replace_range(start..end, "");
+        self.line_lens[self.row] -= removed;
+        self.col = col;
+        true
+    }
+
+    /// Deletes the word immediately after the cursor (Emacs/readline `Alt-D`).
+    ///
+    /// Skips any leading whitespace/punctuation after the cursor. Returns
+    /// whether anything changed.
+    pub fn delete_word_forward(&mut self) -> bool {
+        self.goal_col = None;
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let len = chars.len();
+        if self.col >= len {
+            return self.delete_forward();
+        }
+        let mut col = self.col;
+        // Skip leading non-word characters after the cursor.
+        while col < len && !chars[col].is_alphanumeric() && chars[col] != '_' {
+            col += 1;
+        }
+        // Skip the word body.
+        while col < len && (chars[col].is_alphanumeric() || chars[col] == '_') {
+            col += 1;
+        }
+        if col == self.col {
+            return false;
+        }
+        let start = self.byte_at(self.row, self.col);
+        let end = self.byte_at(self.row, col);
+        let removed = col - self.col;
+        self.lines[self.row].replace_range(start..end, "");
+        self.line_lens[self.row] -= removed;
+        true
+    }
+
     /// Moves the cursor to `target_row`, clamping the column to that row's
     /// length while preserving the sticky goal column so a sequence of
     /// vertical moves aims at the same column throughout.

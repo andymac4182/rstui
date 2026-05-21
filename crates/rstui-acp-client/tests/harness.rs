@@ -2519,6 +2519,224 @@ fn picker_custom_command_entry_launches_without_a_flag() {
     );
 }
 
+// ---- Bug fixes: readline/emacs bindings + composer expand/scroll ----
+
+/// Helper: send a key with modifiers.
+fn key_mod(h: &mut Harness<ChatApp>, code: KeyCode, mods: KeyModifiers) {
+    h.message(Msg::Key(KeyEvent::new(code, mods)));
+}
+
+/// Ctrl-A moves the cursor to the beginning of the line.
+#[test]
+fn ctrl_a_moves_to_line_start() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello");
+    assert_eq!(h.app().composer().cursor(), (0, 5), "cursor after typing");
+    key_mod(&mut h, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(h.app().composer().cursor(), (0, 0), "Ctrl-A → column 0");
+}
+
+/// Ctrl-E moves the cursor to the end of the line.
+#[test]
+fn ctrl_e_moves_to_line_end() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello");
+    key_mod(&mut h, KeyCode::Char('a'), KeyModifiers::CONTROL); // go to start
+    assert_eq!(h.app().composer().cursor(), (0, 0));
+    key_mod(&mut h, KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert_eq!(h.app().composer().cursor(), (0, 5), "Ctrl-E → column 5");
+}
+
+/// Ctrl-B moves the cursor one character backward.
+#[test]
+fn ctrl_b_moves_backward_one_char() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "abc");
+    key_mod(&mut h, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    assert_eq!(h.app().composer().cursor(), (0, 2), "Ctrl-B ← one char");
+}
+
+/// Ctrl-F moves the cursor one character forward.
+#[test]
+fn ctrl_f_moves_forward_one_char() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "abc");
+    key_mod(&mut h, KeyCode::Char('a'), KeyModifiers::CONTROL); // go to start
+    key_mod(&mut h, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert_eq!(
+        h.app().composer().cursor(),
+        (0, 1),
+        "Ctrl-F → one char right"
+    );
+}
+
+/// Alt-B moves the cursor one word backward.
+#[test]
+fn alt_b_moves_word_backward() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    // cursor is at col 11; Alt-B should jump back to start of "world" (col 6)
+    key_mod(&mut h, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(h.app().composer().cursor(), (0, 6), "Alt-B → start of word");
+}
+
+/// Alt-F moves the cursor one word forward.
+#[test]
+fn alt_f_moves_word_forward() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    key_mod(&mut h, KeyCode::Char('a'), KeyModifiers::CONTROL); // go to start
+    // cursor at col 0; Alt-F should jump to end of "hello" (col 5)
+    key_mod(&mut h, KeyCode::Char('f'), KeyModifiers::ALT);
+    assert_eq!(h.app().composer().cursor(), (0, 5), "Alt-F → end of word");
+}
+
+/// Ctrl-Left moves the cursor one word backward.
+#[test]
+fn ctrl_left_moves_word_backward() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "foo bar");
+    key_mod(&mut h, KeyCode::Left, KeyModifiers::CONTROL);
+    assert_eq!(
+        h.app().composer().cursor(),
+        (0, 4),
+        "Ctrl-Left → start of 'bar'"
+    );
+}
+
+/// Ctrl-Right moves the cursor one word forward.
+#[test]
+fn ctrl_right_moves_word_forward() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "foo bar");
+    key_mod(&mut h, KeyCode::Char('a'), KeyModifiers::CONTROL); // go to start
+    key_mod(&mut h, KeyCode::Right, KeyModifiers::CONTROL);
+    assert_eq!(
+        h.app().composer().cursor(),
+        (0, 3),
+        "Ctrl-Right → end of 'foo'"
+    );
+}
+
+/// Ctrl-U kills from cursor to start of line.
+#[test]
+fn ctrl_u_kills_to_start_of_line() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    key_mod(&mut h, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert_eq!(composer_text(&h), "", "Ctrl-U killed the whole line");
+    assert_eq!(h.app().composer().cursor(), (0, 0));
+}
+
+/// Alt-Backspace deletes the word immediately before the cursor.
+#[test]
+fn alt_backspace_deletes_word_backward() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    key_mod(&mut h, KeyCode::Backspace, KeyModifiers::ALT);
+    assert_eq!(composer_text(&h), "hello ", "Alt-Backspace deleted 'world'");
+}
+
+/// Alt-D deletes the word immediately after the cursor.
+#[test]
+fn alt_d_deletes_word_forward() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    key_mod(&mut h, KeyCode::Char('a'), KeyModifiers::CONTROL); // col 0
+    key_mod(&mut h, KeyCode::Char('d'), KeyModifiers::ALT);
+    assert_eq!(composer_text(&h), " world", "Alt-D deleted 'hello'");
+}
+
+/// Readline bindings (Ctrl-U, Alt-Backspace, Alt-D) do not fire as global
+/// shell commands or propagate as printable characters — they must be consumed
+/// and mutate only the composer. (Ctrl-K is deliberately reserved for the
+/// global keymap drawer and is not a composer binding.)
+#[test]
+fn readline_bindings_do_not_leak_to_global_commands_or_print() {
+    let mut h = chatting(100, 30);
+    // Ctrl-U must not open any overlay; it kills the line in the composer.
+    typ(&mut h, "abc def");
+    key_mod(&mut h, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert!(!h.app().help_visible());
+    assert!(!h.app().keymap_panel_open());
+    assert_eq!(
+        composer_text(&h),
+        "",
+        "Ctrl-U clears the line without opening overlays"
+    );
+
+    // Alt-D must not print 'd' or trigger a command; it deletes word forward.
+    typ(&mut h, "hello world");
+    key_mod(&mut h, KeyCode::Char('a'), KeyModifiers::CONTROL); // col 0
+    key_mod(&mut h, KeyCode::Char('d'), KeyModifiers::ALT);
+    assert!(!h.app().help_visible());
+    assert!(!h.app().keymap_panel_open());
+    assert_eq!(
+        composer_text(&h),
+        " world",
+        "Alt-D deleted 'hello' without leaking"
+    );
+}
+
+/// Composer box expands to accommodate multiple lines (up to the cap),
+/// and the composer_scroll offset tracks the cursor into the overflow.
+///
+/// This is a headless structural test — it checks the model state
+/// (composer.row_count(), composer_scroll()) that the view reads.
+/// The view's actual rendered height is a pure function of those values
+/// so we don't need a terminal.
+#[test]
+fn composer_expands_and_scrolls_when_draft_exceeds_visible_height() {
+    use rstui_acp_client::app::composer_inner_height;
+
+    let mut h = chatting(100, 40);
+    assert_eq!(
+        h.app().composer().row_count(),
+        1,
+        "empty composer is one row"
+    );
+    assert_eq!(h.app().composer_scroll(), 0);
+
+    // The max inner height for a 40-row terminal.
+    let max_inner = composer_inner_height(40) as usize;
+    // Add enough lines to overflow the visible area.
+    let overflow = max_inner + 3;
+    for _ in 0..overflow {
+        h.message(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+    }
+    let row_count = h.app().composer().row_count();
+    assert!(
+        row_count > max_inner,
+        "draft must exceed visible height: got {row_count} rows, max_inner={max_inner}"
+    );
+    // The scroll offset must be > 0 so the cursor (on the last row) stays visible.
+    assert!(
+        h.app().composer_scroll() > 0,
+        "composer_scroll must be non-zero when draft overflows visible area; got {}",
+        h.app().composer_scroll()
+    );
+    // The cursor row must be within the visible window.
+    let (cursor_row, _) = h.app().composer().cursor();
+    let scroll = h.app().composer_scroll() as usize;
+    let visible_end = scroll + max_inner;
+    assert!(
+        cursor_row >= scroll && cursor_row < visible_end,
+        "cursor row {cursor_row} must be in [{scroll}, {visible_end})"
+    );
+
+    // Type something so the draft isn't just whitespace — submit_composer
+    // trims and returns early for an empty payload, which wouldn't reset
+    // the scroll. A real submission clears the composer and resets scroll.
+    typ(&mut h, "send");
+    key(&mut h, KeyCode::Enter);
+    assert_eq!(h.app().composer_scroll(), 0, "scroll resets after submit");
+    assert_eq!(
+        h.app().composer().row_count(),
+        1,
+        "composer cleared after submit"
+    );
+}
+
 // ---- CC-5: live ACP wire console (raw stdio) ----
 
 /// Raw stdio chunks are captured into a bounded ring (split per line,
