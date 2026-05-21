@@ -443,7 +443,8 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         frame.render_widget(
             Paragraph::new(comp_lines)
                 .wrap(Wrap { trim: false })
-                .scroll((v_scroll, 0)),
+                // `Paragraph::scroll` is `(x, y)` — vertical is `.1`.
+                .scroll((0, v_scroll)),
             cinner,
         );
     }
@@ -1311,12 +1312,7 @@ fn render_ask(ask: &crate::app::AskState, frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
-    let rect = centered(area, area.width.min(74), area.height.clamp(10, 20));
-    let block = Block::bordered().title(" Help — keys & commands ");
-    let inner = block.inner(rect);
-    clear(frame, rect);
-    frame.render_widget(block, rect);
-
+    // Build the help content first, so the overlay can size itself to it.
     let mut lines = vec![
         kv("Enter", "send message (Shift+Enter = newline)"),
         kv("/ then ↑↓", "slash autocomplete · Tab complete · Enter run"),
@@ -1366,7 +1362,30 @@ fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
             lines.push(kv(chord, &format!("{desc} → /{command} (⚙ {plugin})")));
         }
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+
+    // Expand the overlay to fit all of its content — capped to the screen
+    // (a one-row margin top & bottom so it still reads as an overlay) —
+    // then scroll if even a full screen is not enough.
+    let width = area.width.clamp(4, 74);
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let content_h = para.line_count(width - 2) as u16;
+    let max_h = area.height.saturating_sub(2).max(3);
+    let height = (content_h + 2).min(max_h);
+    let max_scroll = content_h.saturating_sub(height - 2);
+    let scroll = app.help_scroll().min(max_scroll);
+
+    let title = if max_scroll > 0 {
+        " Help — ↑↓ PgUp/PgDn scroll · Esc close "
+    } else {
+        " Help — keys & commands "
+    };
+    let rect = centered(area, width, height);
+    let block = Block::bordered().title(title);
+    let inner = block.inner(rect);
+    clear(frame, rect);
+    frame.render_widget(block, rect);
+    // `Paragraph::scroll` is `(x, y)` — the vertical offset is `.1`.
+    frame.render_widget(para.scroll((0, scroll)), inner);
 }
 
 /// The keymap settings panel — the shared [`KeymapView`] widget (the exact

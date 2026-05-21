@@ -830,6 +830,10 @@ pub struct ChatApp {
     log: Vec<String>,
     show_log: bool,
     show_help: bool,
+    /// Vertical scroll offset of the help overlay (wrapped rows). The
+    /// renderer clamps it to the content; reset to 0 whenever the
+    /// overlay closes, so it always opens at the top.
+    help_scroll: u16,
     /// `/status` overlay open.
     show_status: bool,
     /// Latest ACP `usage_update`: `(tokens_in_context, context_window_size)`.
@@ -950,6 +954,7 @@ impl ChatApp {
             log: Vec::new(),
             show_log: false,
             show_help: false,
+            help_scroll: 0,
             show_status: false,
             usage: None,
             models: Vec::new(),
@@ -1175,6 +1180,12 @@ impl ChatApp {
     #[must_use]
     pub fn help_visible(&self) -> bool {
         self.show_help
+    }
+    /// The help overlay's vertical scroll offset (wrapped rows; the
+    /// renderer clamps it to the content height).
+    #[must_use]
+    pub fn help_scroll(&self) -> u16 {
+        self.help_scroll
     }
 
     /// The keymap settings panel is open (rendered by `ui::render`).
@@ -2674,15 +2685,32 @@ impl ChatApp {
             return self.theme_picker_key(key);
         }
         if self.show_help {
-            // The help overlay doubles as the discoverable gateway into
-            // the keymap editor: `k` (the same key in every app) opens it.
-            if key.code == KeyCode::Char('k') {
-                self.show_help = false;
-                self.keymap_panel = true;
-                self.km_sel = 0;
-                self.km_rebind = None;
-            } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1)) {
-                self.show_help = false;
+            // A page step for PageUp/PageDown through a long help screen.
+            let page = self.last_size.height.saturating_sub(4).max(1);
+            match key.code {
+                // The help overlay doubles as the discoverable gateway
+                // into the keymap editor: `k` (the same key everywhere).
+                KeyCode::Char('k') => {
+                    self.show_help = false;
+                    self.help_scroll = 0;
+                    self.keymap_panel = true;
+                    self.km_sel = 0;
+                    self.km_rebind = None;
+                }
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1) => {
+                    self.show_help = false;
+                    self.help_scroll = 0;
+                }
+                // Scroll a help screen taller than the terminal — the
+                // overlay expands to fit when it can, and scrolls when it
+                // cannot. `u16::MAX` is clamped to the real max on render.
+                KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+                KeyCode::Down => self.help_scroll = self.help_scroll.saturating_add(1),
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(page),
+                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(page),
+                KeyCode::Home | KeyCode::Char('g') => self.help_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.help_scroll = u16::MAX,
+                _ => {}
             }
             return Cmd::none();
         }
@@ -3704,7 +3732,15 @@ impl App for ChatApp {
                 Cmd::none()
             }
             Msg::Scroll(delta) => {
-                if delta > 0 {
+                // The wheel scrolls whichever surface is in front: a help
+                // overlay taller than the screen, else the transcript.
+                if self.show_help {
+                    if delta > 0 {
+                        self.help_scroll = self.help_scroll.saturating_sub(delta as u16);
+                    } else {
+                        self.help_scroll = self.help_scroll.saturating_add((-delta) as u16);
+                    }
+                } else if delta > 0 {
                     self.follow = false;
                     self.scroll = self.scroll.saturating_sub(delta as u16);
                 } else {

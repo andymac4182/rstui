@@ -2891,4 +2891,70 @@ fn a_tall_composer_renders_without_breaking_the_layout() {
         s.contains("Message"),
         "the composer block still renders:\n{s}"
     );
+    // The draft outgrew the capped box, so the composer must scroll
+    // *vertically* to keep the caret line — and its text — on screen.
+    assert!(
+        s.contains("deep inside a very long draft"),
+        "the composer scrolled down to the caret line:\n{s}"
+    );
+}
+
+// ---- help overlay expands to fit, and scrolls when it cannot ----
+
+#[test]
+fn the_help_overlay_expands_to_show_every_command() {
+    // On a tall terminal the overlay grows to fit all of its content, so
+    // even the alphabetically-last slash command (`/wire`) is on screen —
+    // the old fixed 20-row box clipped everything past the first command.
+    let mut h = chatting(100, 70);
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::F(1))));
+    assert!(h.app().help_visible(), "F1 opens the help overlay");
+    let s = h.snapshot();
+    assert!(
+        s.contains("send message"),
+        "the top of the help shows:\n{s}"
+    );
+    assert!(
+        s.contains("/wire"),
+        "the overlay expanded far enough to show the last command:\n{s}"
+    );
+}
+
+#[test]
+fn a_long_help_overlay_scrolls_on_a_short_terminal() {
+    // A short terminal cannot fit every command at once...
+    let mut h = chatting(100, 24);
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::F(1))));
+    let top = h.snapshot();
+    assert!(
+        top.contains("send message"),
+        "help opens at the top:\n{top}"
+    );
+    assert!(
+        !top.contains("/wire"),
+        "the last command is below the fold at first:\n{top}"
+    );
+    // ...but End scrolls to the bottom and reveals it.
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::End)));
+    let bottom = h.snapshot();
+    assert!(
+        bottom.contains("/wire"),
+        "End scrolled the help down to the last command:\n{bottom}"
+    );
+    assert!(h.is_running());
+}
+
+#[test]
+fn closing_the_help_overlay_resets_its_scroll() {
+    let mut h = chatting(100, 24);
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::F(1))));
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::End)));
+    assert!(h.app().help_scroll() > 0, "End scrolled the help down");
+    h.message(Msg::Key(KeyEvent::from_code(KeyCode::Esc)));
+    assert!(!h.app().help_visible(), "Esc closes the help overlay");
+    assert_eq!(
+        h.app().help_scroll(),
+        0,
+        "the scroll resets so the help re-opens at the top"
+    );
 }
