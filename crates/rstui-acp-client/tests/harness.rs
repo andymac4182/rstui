@@ -1056,17 +1056,18 @@ fn plugin_modal_escape_cancels() {
 }
 
 #[test]
-fn keymap_panel_opens_with_ctrl_k_navigates_rebinds_and_closes() {
+fn keymap_panel_opens_with_ctrl_x_navigates_rebinds_and_closes() {
     let mut h = booted(100, 30);
     assert!(!h.app().keymap_panel_open(), "panel starts closed");
 
-    // Ctrl+K is the global Action::Drawer binding — resolved through the
-    // keymap on any screen, after the plugin-chord layer.
+    // Ctrl+X is the global Action::Drawer binding — resolved through the
+    // keymap on any screen, after the plugin-chord layer. (It moved off
+    // Ctrl+K so the composer can claim that for readline kill-line.)
     h.message(Msg::Key(KeyEvent::new(
-        KeyCode::Char('k'),
+        KeyCode::Char('x'),
         KeyModifiers::CONTROL,
     )));
-    assert!(h.app().keymap_panel_open(), "Ctrl+K opens the keymap panel");
+    assert!(h.app().keymap_panel_open(), "Ctrl+X opens the keymap panel");
     let s = h.snapshot();
     assert!(
         s.contains("Keymap") && s.contains("Quit"),
@@ -2583,5 +2584,161 @@ fn wire_console_captures_stdio_and_toggles_with_f2() {
             .text
             .contains("wire console: pinned")
     );
+    assert!(h.is_running());
+}
+
+// ---- readline / emacs composer keybindings ----
+//
+// The editing logic itself is unit-tested in `readline.rs`; these assert the
+// key → operation *wiring* in `chat_key` and that the moved keymap binding
+// (Ctrl+X, not Ctrl+K) leaves the composer's readline keys unshadowed.
+
+/// Sends a `Ctrl`-modified character chord.
+fn ctrl_key(h: &mut Harness<ChatApp>, c: char) {
+    h.message(Msg::Key(KeyEvent::new(
+        KeyCode::Char(c),
+        KeyModifiers::CONTROL,
+    )));
+}
+
+/// Sends an `Alt`-modified (meta) character chord.
+fn alt_key(h: &mut Harness<ChatApp>, c: char) {
+    h.message(Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)));
+}
+
+#[test]
+fn ctrl_a_and_ctrl_e_jump_to_the_line_ends() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    assert_eq!(h.app().composer().cursor(), (0, 11));
+    ctrl_key(&mut h, 'a');
+    assert_eq!(h.app().composer().cursor(), (0, 0), "Ctrl+A → line start");
+    ctrl_key(&mut h, 'e');
+    assert_eq!(h.app().composer().cursor(), (0, 11), "Ctrl+E → line end");
+    // The chord moved the caret — it did not type a literal 'a' / 'e'.
+    assert_eq!(composer_text(&h), "hello world");
+}
+
+#[test]
+fn ctrl_b_and_ctrl_f_move_one_character() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "abc");
+    ctrl_key(&mut h, 'b');
+    assert_eq!(h.app().composer().cursor(), (0, 2));
+    ctrl_key(&mut h, 'f');
+    assert_eq!(h.app().composer().cursor(), (0, 3));
+}
+
+#[test]
+fn alt_b_and_alt_f_move_by_whole_words() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "foo bar baz");
+    alt_key(&mut h, 'b');
+    assert_eq!(
+        h.app().composer().cursor(),
+        (0, 8),
+        "Alt+B → start of 'baz'"
+    );
+    alt_key(&mut h, 'b');
+    assert_eq!(
+        h.app().composer().cursor(),
+        (0, 4),
+        "Alt+B → start of 'bar'"
+    );
+    alt_key(&mut h, 'f');
+    assert_eq!(h.app().composer().cursor(), (0, 7), "Alt+F → end of 'bar'");
+}
+
+#[test]
+fn ctrl_w_kills_a_word_and_ctrl_y_yanks_it_back() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "keep this");
+    ctrl_key(&mut h, 'w');
+    assert_eq!(composer_text(&h), "keep ", "Ctrl+W kills the word behind");
+    ctrl_key(&mut h, 'y');
+    assert_eq!(composer_text(&h), "keep this", "Ctrl+Y yanks it back");
+}
+
+#[test]
+fn ctrl_k_kills_to_end_of_line_without_opening_the_drawer() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    ctrl_key(&mut h, 'a');
+    ctrl_key(&mut h, 'k');
+    assert_eq!(composer_text(&h), "", "Ctrl+K kills the whole line");
+    assert!(
+        !h.app().keymap_panel_open(),
+        "Ctrl+K now edits the composer — it must not open the keymap drawer"
+    );
+}
+
+#[test]
+fn ctrl_u_kills_back_to_the_start_of_the_line() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello world");
+    ctrl_key(&mut h, 'u');
+    assert_eq!(composer_text(&h), "");
+}
+
+#[test]
+fn alt_backspace_kills_the_word_behind_the_cursor() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "alpha beta");
+    h.message(Msg::Key(KeyEvent::new(
+        KeyCode::Backspace,
+        KeyModifiers::ALT,
+    )));
+    assert_eq!(composer_text(&h), "alpha ");
+}
+
+#[test]
+fn ctrl_t_transposes_the_characters_around_the_cursor() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "ab");
+    ctrl_key(&mut h, 't');
+    assert_eq!(composer_text(&h), "ba");
+}
+
+#[test]
+fn alt_u_upcases_the_following_word() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello");
+    ctrl_key(&mut h, 'a'); // caret back to the line start
+    alt_key(&mut h, 'u');
+    assert_eq!(composer_text(&h), "HELLO");
+}
+
+#[test]
+fn ctrl_underscore_undoes_the_last_composer_edit() {
+    let mut h = chatting(100, 30);
+    typ(&mut h, "hello");
+    ctrl_key(&mut h, 'w'); // kill the word "hello"
+    assert_eq!(composer_text(&h), "");
+    ctrl_key(&mut h, '_'); // undo the kill
+    assert_eq!(
+        composer_text(&h),
+        "hello",
+        "Ctrl+_ restores the killed text"
+    );
+}
+
+#[test]
+fn ctrl_d_on_an_empty_composer_does_not_quit() {
+    let mut h = chatting(100, 30);
+    assert!(h.app().composer().is_empty());
+    ctrl_key(&mut h, 'd');
+    assert!(
+        h.is_running(),
+        "Ctrl+D is delete-char-forward in the composer, never EOF/quit"
+    );
+    assert!(h.app().composer().is_empty());
+}
+
+#[test]
+fn an_unbound_control_chord_does_not_type_a_literal_character() {
+    let mut h = chatting(100, 30);
+    // Ctrl+Z has no readline binding — it is ignored, never inserted as 'z'.
+    ctrl_key(&mut h, 'z');
+    assert_eq!(composer_text(&h), "", "an unbound Ctrl chord is not typing");
     assert!(h.is_running());
 }

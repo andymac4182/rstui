@@ -179,7 +179,7 @@ fn render_footer(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         }
     }
     // Right-aligned hint when there is room.
-    let hint = "F1 help · Ctrl+K keymap · Esc cancel · Ctrl+C quit";
+    let hint = "F1 help · Ctrl+X keymap · Esc cancel · Ctrl+C quit";
     let hw = hint.chars().count() as u16;
     if area.x + area.width > x + hw + 2 {
         let hx = area.x + area.width - hw;
@@ -1199,10 +1199,19 @@ fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         kv("Esc", "cancel a streaming turn / close overlay"),
         kv("F1", "toggle this help"),
         kv(
-            "Ctrl+K  ·  or k",
+            "Ctrl+X  ·  or k",
             "customise these keybindings (keymap editor)",
         ),
         kv("Ctrl+C / F10", "quit"),
+        Line::raw(""),
+        Line::styled(
+            "Composer editing — readline / emacs keys:",
+            Style::new().fg(Color::Yellow),
+        ),
+        kv("Ctrl+A / E", "jump to line start / end"),
+        kv("Alt+B / F", "move back / forward one word"),
+        kv("Ctrl+W · Ctrl+K", "kill the word back · kill to line end"),
+        kv("Ctrl+Y · Ctrl+_", "yank (paste killed text) · undo"),
         Line::raw(""),
         Line::styled(
             "Slash commands  (⚙ plugin · ◆ agent):",

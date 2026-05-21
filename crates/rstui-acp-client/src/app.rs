@@ -41,13 +41,17 @@ const COMMANDS: &[(Action, &str)] = &[
 ];
 
 /// acp-client's own keymap (no kitchen-sink leftovers): one named map of
-/// the global commands, via [`Keymaps::from_maps`]. Bindings are
-/// non-text chords (Fn/Ctrl) so they never shadow the composer.
+/// the global commands, via [`Keymaps::from_maps`]. Bindings are non-text
+/// chords (Fn/Ctrl) so they never shadow the composer — in particular the
+/// keymap editor is on `Ctrl+X` (a readline *prefix*, never a one-key
+/// composer binding) rather than `Ctrl+K`, which the composer now claims
+/// for readline `kill-line` (see [`crate::readline`]). All three remain
+/// remappable from a `RSTUI_KEYMAP` file or the in-app editor.
 fn acp_keymaps() -> Keymaps {
     let mut km = Keymap::new("acp-client");
     km.bind(Action::Quit, &["ctrl+c", "ctrl+q", "f10"]);
     km.bind(Action::Help, &["f1"]);
-    km.bind(Action::Drawer, &["ctrl+k"]);
+    km.bind(Action::Drawer, &["ctrl+x"]);
     Keymaps::from_maps(vec![km])
 }
 
@@ -749,6 +753,11 @@ pub struct ChatApp {
     /// Submitted-prompt history, recalled with ↑/↓ on the composer and
     /// persisted across runs (readline / Codex-CLI ergonomics).
     history: InputHistory,
+    /// Readline / emacs-style editing companion of the
+    /// [`composer`](Self::composer): the kill ring, the undo stack, and the
+    /// last-command bookkeeping behind the `Ctrl+A/E/W/K/U/Y`, `Alt+B/F/D`,
+    /// `Ctrl+_`, … composer keys (see [`crate::readline`]).
+    rl: crate::readline::ReadlineState,
     status_line: String,
     agent_label: String,
     /// The last terminal title emitted via OSC 2; the next refresh only
@@ -879,6 +888,7 @@ impl ChatApp {
             pager: PagerState::default(),
             composer: TextArea::new(),
             history: InputHistory::load(),
+            rl: crate::readline::ReadlineState::new(),
             status_line: "starting…".to_owned(),
             agent_label: String::new(),
             last_title: String::new(),
@@ -1733,6 +1743,7 @@ impl ChatApp {
             return Cmd::none();
         }
         self.composer.clear();
+        self.rl.reset_line();
         self.follow = true;
         // Record every submission (slash commands included, like Codex) so
         // ↑ recalls it; this also ends any in-progress history browse.
@@ -2975,6 +2986,47 @@ impl ChatApp {
         if let Some(text) = recalled {
             self.composer.set_value(text);
             self.composer.move_doc_end();
+            // A recalled entry is a fresh editing context: undo starts over
+            // for this line (the kill ring, being global, is kept).
+            self.rl.reset_line();
+        }
+    }
+
+    /// Moves the composer caret up one row, or — when it is already on the
+    /// first row — recalls the previous history entry. Shared by the `↑`
+    /// arrow and readline `Ctrl+P` (previous-history).
+    fn composer_up(&mut self) {
+        if self.composer.cursor().0 == 0 {
+            self.recall_history(true);
+        } else {
+            self.rl.move_up(&mut self.composer);
+        }
+    }
+
+    /// Moves the composer caret down one row, or — when it is already on the
+    /// last row — recalls the next history entry. Shared by the `↓` arrow
+    /// and readline `Ctrl+N` (next-history).
+    fn composer_down(&mut self) {
+        let last_row = self.composer.row_count().saturating_sub(1);
+        if self.composer.cursor().0 >= last_row {
+            self.recall_history(false);
+        } else {
+            self.rl.move_down(&mut self.composer);
+        }
+    }
+
+    /// Inserts the last whitespace-separated word of the most recent history
+    /// entry at the cursor — readline `yank-last-arg` (`Alt+.`). A no-op
+    /// when the history is empty.
+    fn yank_last_arg(&mut self) {
+        let last_arg = self
+            .history
+            .entries()
+            .last()
+            .and_then(|e| e.split_whitespace().next_back())
+            .map(str::to_owned);
+        if let Some(arg) = last_arg {
+            self.rl.insert_str(&mut self.composer, &arg);
         }
     }
 
@@ -3098,8 +3150,28 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Runs a composer **edit** `f`, first ending any history browse: once
+    /// you edit a recalled entry it becomes your draft, so the next `↑`
+    /// starts over from the newest (the readline rule). Cursor *moves* do
+    /// not go through here — they keep the browse position.
+    fn compose<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut crate::readline::ReadlineState, &mut TextArea),
+    {
+        self.history.reset();
+        f(&mut self.rl, &mut self.composer);
+    }
+
     fn chat_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // A genuine Ctrl-/Alt- chord vs an AltGr-composed character: AltGr
+        // arrives as CONTROL+ALT *together* and must still type its
+        // character, so a readline chord requires *exactly one* of the two
+        // (`ctl` / `meta`) and plain typing is `ctrl == alt` (neither set,
+        // or the AltGr pair).
+        let ctl = ctrl && !alt;
+        let meta = alt && !ctrl;
 
         // When the interactive form pane owns focus, every key drives
         // the rendered A2UI/json-render doc, not the composer.
@@ -3186,8 +3258,9 @@ impl ChatApp {
         }
 
         match key.code {
-            KeyCode::Char('c') if ctrl => return self.begin_quit(),
-            KeyCode::Char('q') if ctrl => return self.begin_quit(),
+            // -- quit / overlays (the always-on global chords) ------------
+            KeyCode::Char('c') if ctl => return self.begin_quit(),
+            KeyCode::Char('q') if ctl => return self.begin_quit(),
             KeyCode::F(1) => {
                 self.show_help = true;
             }
@@ -3197,45 +3270,122 @@ impl ChatApp {
                     driver.send(DriverCmd::Cancel);
                 }
             }
+
+            // -- accept-line / newline ------------------------------------
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.history.reset();
-                self.composer.insert_newline();
+                self.compose(|rl, ta| rl.insert_newline(ta));
             }
+            // readline accept-line is Ctrl+J as well as Enter.
+            KeyCode::Char('j') if ctl => return self.submit_composer(),
             KeyCode::Enter => return self.submit_composer(),
-            KeyCode::Backspace => {
+
+            // -- readline cursor motion -----------------------------------
+            KeyCode::Char('a') if ctl => self.rl.move_home(&mut self.composer),
+            KeyCode::Char('e') if ctl => self.rl.move_end(&mut self.composer),
+            KeyCode::Char('b') if ctl => self.rl.move_left(&mut self.composer),
+            KeyCode::Char('f') if ctl => self.rl.move_right(&mut self.composer),
+            KeyCode::Char('p') if ctl => self.composer_up(),
+            KeyCode::Char('n') if ctl => self.composer_down(),
+            KeyCode::Char('b') if meta => self.rl.word_left(&mut self.composer),
+            KeyCode::Char('f') if meta => self.rl.word_right(&mut self.composer),
+            KeyCode::Char('<') if meta => self.rl.move_doc_start(&mut self.composer),
+            KeyCode::Char('>') if meta => self.rl.move_doc_end(&mut self.composer),
+            KeyCode::Left if ctrl || alt => self.rl.word_left(&mut self.composer),
+            KeyCode::Right if ctrl || alt => self.rl.word_right(&mut self.composer),
+
+            // -- readline kill ring ---------------------------------------
+            KeyCode::Char('k') if ctl => self.compose(|rl, ta| {
+                rl.kill_line(ta);
+            }),
+            KeyCode::Char('u') if ctl => self.compose(|rl, ta| {
+                rl.kill_line_backward(ta);
+            }),
+            KeyCode::Char('w') if ctl => self.compose(|rl, ta| {
+                rl.unix_word_rubout(ta);
+            }),
+            KeyCode::Char('d') if meta => self.compose(|rl, ta| {
+                rl.kill_word_forward(ta);
+            }),
+            KeyCode::Char('y') if ctl => self.compose(|rl, ta| {
+                rl.yank(ta);
+            }),
+            KeyCode::Char('y') if meta => self.compose(|rl, ta| {
+                rl.yank_pop(ta);
+            }),
+            KeyCode::Char('\\') if meta => self.compose(|rl, ta| {
+                rl.delete_horizontal_space(ta);
+            }),
+            // Alt+Backspace / Ctrl+Backspace → kill the word behind the
+            // cursor; Alt+Delete / Ctrl+Delete → kill the word ahead.
+            KeyCode::Backspace if ctrl || alt => self.compose(|rl, ta| {
+                rl.kill_word_backward(ta);
+            }),
+            KeyCode::Delete if ctrl || alt => self.compose(|rl, ta| {
+                rl.kill_word_forward(ta);
+            }),
+
+            // -- readline transpose / change-case -------------------------
+            KeyCode::Char('t') if ctl => self.compose(|rl, ta| {
+                rl.transpose_chars(ta);
+            }),
+            KeyCode::Char('t') if meta => self.compose(|rl, ta| {
+                rl.transpose_words(ta);
+            }),
+            KeyCode::Char('u') if meta => self.compose(|rl, ta| {
+                rl.upcase_word(ta);
+            }),
+            KeyCode::Char('l') if meta => self.compose(|rl, ta| {
+                rl.downcase_word(ta);
+            }),
+            KeyCode::Char('c') if meta => self.compose(|rl, ta| {
+                rl.capitalize_word(ta);
+            }),
+
+            // -- readline undo + misc -------------------------------------
+            // Undo is bound to Ctrl+_ ; Ctrl+/ and Ctrl+- are the variants
+            // terminals emit for the same physical key.
+            KeyCode::Char('_' | '/' | '-') if ctl => self.compose(|rl, ta| {
+                rl.undo(ta);
+            }),
+            KeyCode::Char('r') if meta => self.compose(|rl, ta| {
+                rl.revert_line(ta);
+            }),
+            // Alt+. / Alt+_ — yank-last-arg (insert the previous prompt's
+            // final word). An edit, so it ends the history browse first.
+            KeyCode::Char('.' | '_') if meta => {
                 self.history.reset();
-                self.composer.delete_backward();
+                self.yank_last_arg();
             }
-            KeyCode::Delete => {
-                self.history.reset();
-                self.composer.delete_forward();
+            // Ctrl+L (clear-screen) → snap back to following the newest
+            // transcript output, the closest TUI analogue of a redraw.
+            KeyCode::Char('l') if ctl => {
+                self.follow = true;
+                self.scroll = 0;
+                self.rl.break_sequence();
             }
-            KeyCode::Left => {
-                self.composer.move_left();
+            // Ctrl+G (abort) → dismiss the autocomplete / mention popup.
+            KeyCode::Char('g') if ctl => {
+                self.completion = None;
+                self.mention = None;
+                self.rl.break_sequence();
             }
-            KeyCode::Right => {
-                self.composer.move_right();
-            }
+
+            // -- plain editing + cursor motion ----------------------------
+            KeyCode::Char('h') if ctl => self.compose(|rl, ta| rl.delete_backward(ta)),
+            KeyCode::Char('d') if ctl => self.compose(|rl, ta| rl.delete_forward(ta)),
+            KeyCode::Backspace => self.compose(|rl, ta| rl.delete_backward(ta)),
+            KeyCode::Delete => self.compose(|rl, ta| rl.delete_forward(ta)),
+            KeyCode::Left => self.rl.move_left(&mut self.composer),
+            KeyCode::Right => self.rl.move_right(&mut self.composer),
             // ↑/↓ recall history when the cursor can go no further in that
             // direction (first / last composer row), else move within the
-            // draft — the readline / Codex-CLI rule.
-            KeyCode::Up => {
-                if self.composer.cursor().0 == 0 {
-                    self.recall_history(true);
-                } else {
-                    self.composer.move_up();
-                }
-            }
-            KeyCode::Down => {
-                let last_row = self.composer.row_count().saturating_sub(1);
-                if self.composer.cursor().0 >= last_row {
-                    self.recall_history(false);
-                } else {
-                    self.composer.move_down();
-                }
-            }
-            KeyCode::Home => self.composer.move_home(),
-            KeyCode::End => self.composer.move_end(),
+            // draft — the readline / Codex-CLI rule (Ctrl+P/N do the same).
+            KeyCode::Up => self.composer_up(),
+            KeyCode::Down => self.composer_down(),
+            KeyCode::Home if ctrl => self.rl.move_doc_start(&mut self.composer),
+            KeyCode::End if ctrl => self.rl.move_doc_end(&mut self.composer),
+            KeyCode::Home => self.rl.move_home(&mut self.composer),
+            KeyCode::End => self.rl.move_end(&mut self.composer),
             KeyCode::PageUp => {
                 self.follow = false;
                 self.scroll = self.scroll.saturating_sub(self.page_rows());
@@ -3243,9 +3393,9 @@ impl ChatApp {
             KeyCode::PageDown => {
                 self.scroll = self.scroll.saturating_add(self.page_rows());
             }
-            KeyCode::Char(c) => {
-                self.history.reset();
-                self.composer.insert_char(c);
+            // Plain typing: neither modifier, or the AltGr pair (CTRL+ALT).
+            KeyCode::Char(c) if ctrl == alt => {
+                self.compose(|rl, ta| rl.insert_char(ta, c));
             }
             _ => {}
         }
@@ -3343,7 +3493,7 @@ impl App for ChatApp {
             Msg::Paste(text) => {
                 if self.screen == Screen::Chat || self.screen == Screen::Connecting {
                     self.history.reset();
-                    self.composer.insert_str(&text);
+                    self.rl.insert_str(&mut self.composer, &text);
                     self.refresh_completion();
                     self.refresh_mention();
                 }

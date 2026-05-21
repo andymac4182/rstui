@@ -114,6 +114,9 @@ The client was built in iterations, each a merged slice on `main`:
 | 7 | [Codex-CLI parity](acp-client-codex-parity.md) Wave 2 (ACP-wired) — **W2-1** `/status` overlay: session config (agent, cwd, connection, model, theme, keymap, history, bell) + **token usage** folded from the ACP `usage_update` notification (tokens in context + % of the window); **W2-2** `/model` picker — the agent's `NewSessionResponse.models` catalogue, Enter issues `session/set_model`, the `ModelSelected` ack updates the active model; **W2-3** `/mode` picker — the agent's `NewSessionResponse.modes` (how Codex's plan/approval modes reach a generic client); Enter issues typed `session/set_mode`, and an agent-initiated `current_mode_update` is reflected too; **W2-4** `/resume` — every started session is persisted to `~/.config/rstui/acp-client.sessions`; the picker lists them newest-first and Enter issues typed `session/load` (the agent replays its history through the normal notification path); **W2-5** `@`-mention **fuzzy file completion** — typing `@token` opens a bounded-cwd-scan popup (basename-prefix > substring > path), Tab/Enter inserts the path; mutually exclusive with the slash popup; `user@host` is not a mention; **W2-6** **sign-in** — when the agent rejects `session/new` and advertises auth methods the driver runs the ACP `authenticate` handshake (retrying `session/new` after); a sign-in picker auto-opens, `/login` reopens it |
 | 8 | [Codex-CLI parity](acp-client-codex-parity.md) Wave 3 — **W3-2** `/diff`: a captured `git diff HEAD` (+ untracked) in a scrollable, unified-coloured overlay (shelled out via `Cmd::perform`, the registry pattern). W3-1 (external `$EDITOR`) and W3-3 (image paste) are deliberately scoped out — see the parity doc for the rationale |
 | 9 | Custom ACP commands — **CC-1** first-class custom-command switch (`--cmd`/`--command` synonyms for `--agent`, `RSTUI_ACP_AGENT` env, `default-run` so `cargo run -p rstui-acp-client -- …` is unambiguous); **CC-3** named **agent profiles** (`--profile <name>` → a `command`+`plugin` recipe from `~/.config/rstui/acp-client.agents`, a dependency-free INI); **CC-2** an in-app **"Custom command…"** picker entry (`c` opens an inline input — launch any local-stdio ACP server with no flag/restart, even while the registry is still loading). Precedence: `--cmd` › `--profile` › `RSTUI_ACP_AGENT` › the picker. Persistence is the user-owned profiles file (no extra ad-hoc store). **CC-4** robust launch: the command is shell-split (quotes/escapes) and the ACP handshake is bounded by `RSTUI_ACP_CONNECT_TIMEOUT` (default 30 s) with an actionable error instead of an eternal "spawning…". **CC-5** a live **ACP wire console**: the raw client↔agent stdio (tee'd transparently), auto-shown while connecting and auto-closed once ready, pinnable any time with **F2** / `/wire` — the tool for debugging a custom server that won't connect |
+| 10 | Composer **readline / emacs editing** — the message composer answers the full GNU-readline key vocabulary every shell user already has in their fingers. Caret motion: `Ctrl+A`/`Ctrl+E` line start/end, `Ctrl+B`/`Ctrl+F` by character, `Alt+B`/`Alt+F` (and `Ctrl`/`Alt`+`←`/`→`) by word, `Alt+<`/`Alt+>` to the composer ends. A **kill ring**: `Ctrl+W` (whitespace-word) / `Alt+⌫` (word) / `Ctrl+U` kill backward, `Ctrl+K` / `Alt+D` kill forward — consecutive kills coalesce, `Ctrl+Y` yanks, `Alt+Y` yank-pops through the ring. `Ctrl+T` / `Alt+T` transpose characters / words; `Alt+U`/`Alt+L`/`Alt+C` upper/lower/capitalize the word; `Alt+\` deletes surrounding whitespace. **Per-line undo** on `Ctrl+_` (a typing run is one step; the kill ring is global, undo is reset per recalled line) and `Alt+R` revert-line. Plus `Ctrl+P`/`Ctrl+N` history, `Ctrl+D`/`Ctrl+H` delete, `Alt+.` yank-last-arg, `Ctrl+L` redraw, `Ctrl+G` dismiss-popup, `Ctrl+J` accept-line. The editing logic lives in the unit-tested `readline` module ([`ReadlineState`] — kill ring + undo + last-command bookkeeping); the keys are wired raw in `chat_key` (ADR 0015). The keymap editor moved off `Ctrl+K` (which the composer now claims for `kill-line`) to **`Ctrl+X`** |
+
+[`ReadlineState`]: ../crates/rstui-acp-client/src/readline.rs
 
 ## The plugin layer
 
@@ -140,13 +143,13 @@ kitchen sink uses for its shell bindings.
 ### Customisable keymap
 
 The client's **global commands** — quit (`Ctrl+C`/`Ctrl+Q`/`F10`), the
-help overlay (`F1`), and the keymap settings panel (`Ctrl+K`) — are
+help overlay (`F1`), and the keymap settings panel (`Ctrl+X`) — are
 semantic `Action`s resolved through the shared
 [`rstui-keymap`](keymaps.md) engine, *after* the plugin-chord layer (a
 plugin binding still wins) and before the screen dispatch. So they are
 remappable two ways: in-app — open help with `F1` and press **`k`** (the
 universal gateway, the same two keystrokes in every rstui app), or the
-`Ctrl+K` shortcut directly (surfaced in the footer and the help sheet) —
+`Ctrl+X` shortcut directly (surfaced in the footer and the help sheet) —
 opening the shared
 [`KeymapView`](widgets/overlays-and-control.md#keymapview) widget (the
 exact one the kitchen sink and git-review use): select a row, `r`/`Enter`
@@ -154,10 +157,13 @@ to capture a new key, `x` to disable; or a `RSTUI_KEYMAP=/path/to/keymap`
 config file (mirrors `RSTUI_THEME`, applied in `run()` — see
 [keymaps.md](keymaps.md)).
 
-The deeply contextual keys — the composer's text entry, the
+The deeply contextual keys — the composer's text entry (a full
+**readline / emacs** editing surface, see iteration 10 above), the
 modal/permission/ask dialogs, the slash-completion popup — stay raw *by
 design*: ADR 0015 keeps the keymap shell-level, the same boundary the
-kitchen sink and git-review draw for text/motion keys.
+kitchen sink and git-review draw for text/motion keys. That is also why
+the keymap editor sits on `Ctrl+X`, never `Ctrl+K`: a global binding must
+not shadow a composer readline key.
 
 ### Reference plugins
 

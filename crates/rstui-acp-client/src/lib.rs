@@ -30,6 +30,7 @@ pub mod history;
 pub mod input;
 pub mod plugin;
 pub mod profiles;
+pub(crate) mod readline;
 pub mod registry;
 pub mod sessions;
 pub mod theme;
