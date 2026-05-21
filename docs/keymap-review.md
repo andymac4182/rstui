@@ -145,8 +145,10 @@ Focus `Tab` · Edit `e` · Split `s` · Orient `t` · Shrink `-` · Grow
 arrows, `[`/`]`, page) by design.
 
 **acp-client** (global map; plugin-chord layer wins first): Quit
-`Ctrl+C`/`Ctrl+Q`/`F10` · Help `F1` · Drawer `Ctrl+K`. Composer text,
-modals, completion stay raw (bespoke cascade).
+`Ctrl+C`/`Ctrl+Q`/`F10` · Help `F1` · Drawer `Ctrl+X`. Composer text
+(full readline/emacs editing), modals, completion stay raw (bespoke
+cascade) — the Drawer is on `Ctrl+X`, not `Ctrl+K`, precisely so it
+cannot shadow the composer's readline `kill-line`.
 
 All three: **help (`?`/`F1`) → `k`** opens the `KeymapView` editor — the
 one universal, discoverable path; bindings remap via the editor or

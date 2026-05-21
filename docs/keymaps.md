@@ -303,7 +303,8 @@ lists this line itself ("Customise these keybindings"), so it is
 self-documenting; the always-visible footer/status of each app also
 surfaces the keymap key. The direct shortcut still works for power users
 (the kitchen sink's `Drawer` key — shown live in its footer; `Ctrl+K` in
-git-review and acp-client). The rule: *if you can find help, you can find
+git-review, `Ctrl+X` in acp-client — the latter keeps `Ctrl+K` free for
+the composer's readline `kill-line`). The rule: *if you can find help, you can find
 — and change — every binding*, the same two keystrokes everywhere.
 
 ## How the consumers use it
