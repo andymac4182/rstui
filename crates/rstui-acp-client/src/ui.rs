@@ -279,6 +279,106 @@ fn render_picker(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(list, body);
 }
 
+// ---- composer sizing ----
+//
+// The composer block **grows with its content and shrinks back** rather
+// than being a fixed 5-row box. Every measure below is a pure function of
+// the composer's logical lines + cursor and the available rect, so the
+// renderer and the click hit-test (`rich_hit`) derive the identical
+// layout (ADR 0012 — no stored geometry).
+
+/// The composer block's border rows (top + bottom).
+const COMPOSER_BORDERS: u16 = 2;
+/// The composer never shrinks below one text row.
+const COMPOSER_MIN_ROWS: u16 = 1;
+/// The transcript above the composer always keeps at least this many
+/// rows, so a long draft can never swallow the conversation entirely.
+const TRANSCRIPT_MIN_H: u16 = 6;
+
+/// How many wrapped rows `lines` occupy at content width `inner_w` —
+/// measured with the very `Paragraph` wrap the renderer uses, so the
+/// height can never disagree with what is drawn.
+fn composer_content_rows(lines: &[String], inner_w: u16) -> u16 {
+    let para: Vec<Line> = lines.iter().map(|l| Line::raw(l.clone())).collect();
+    Paragraph::new(para)
+        .wrap(Wrap { trim: false })
+        .line_count(inner_w.max(1)) as u16
+}
+
+/// The composer block height for a chat `main` rect: two borders plus the
+/// wrapped content (at least one row), capped so the transcript always
+/// keeps a minimum number of rows. This is the single measure that makes
+/// the input box grow and shrink — `render_chat` and the click hit-test
+/// both size the vertical split with it.
+pub fn composer_box_height(lines: &[String], main: Rect) -> u16 {
+    let inner_w = main.width.saturating_sub(COMPOSER_BORDERS);
+    let content = composer_content_rows(lines, inner_w).max(COMPOSER_MIN_ROWS);
+    let desired = content + COMPOSER_BORDERS;
+    let cap = main
+        .height
+        .saturating_sub(TRANSCRIPT_MIN_H)
+        .max(COMPOSER_MIN_ROWS + COMPOSER_BORDERS);
+    desired.min(cap)
+}
+
+/// The wrapped-row index the caret sits on — the rows occupied by every
+/// line above the cursor plus the caret's own line truncated at the
+/// cursor, measured with the renderer's own [`Paragraph`] wrap.
+fn composer_caret_row(lines: &[String], cursor: (usize, usize), inner_w: u16) -> u16 {
+    let (crow, ccol) = cursor;
+    let mut prefix: Vec<Line> = lines
+        .iter()
+        .take(crow)
+        .map(|l| Line::raw(l.clone()))
+        .collect();
+    let head: String = lines
+        .get(crow)
+        .map_or(String::new(), |l| l.chars().take(ccol).collect());
+    prefix.push(Line::raw(head));
+    (Paragraph::new(prefix)
+        .wrap(Wrap { trim: false })
+        .line_count(inner_w.max(1)) as u16)
+        .saturating_sub(1)
+}
+
+/// The composer's vertical scroll (wrapped rows): zero until the draft
+/// outgrows the visible `inner_h`, then just enough to keep the caret in
+/// view. Stateless — a pure function of the document, so no reducer field.
+fn composer_v_scroll(lines: &[String], cursor: (usize, usize), inner_w: u16, inner_h: u16) -> u16 {
+    let total = composer_content_rows(lines, inner_w);
+    if inner_h == 0 || total <= inner_h {
+        return 0;
+    }
+    composer_caret_row(lines, cursor, inner_w).min(total - inner_h)
+}
+
+/// The screen `(x, y)` of the composer caret inside content rect `cinner`,
+/// accounting for word-wrap and the composer's vertical scroll — so the
+/// caret tracks the box as it grows and stays visible once it scrolls.
+fn composer_caret_pos(lines: &[String], cursor: (usize, usize), cinner: Rect) -> (u16, u16) {
+    let inner_w = cinner.width.max(1);
+    let (crow, ccol) = cursor;
+    let caret_row = composer_caret_row(lines, cursor, inner_w);
+    let rows_above = if crow == 0 {
+        0
+    } else {
+        composer_content_rows(&lines[..crow.min(lines.len())], inner_w)
+    };
+    let head: String = lines
+        .get(crow)
+        .map_or(String::new(), |l| l.chars().take(ccol).collect());
+    let head_w = Line::raw(head).width() as u16;
+    let seg = caret_row.saturating_sub(rows_above);
+    let scroll = composer_v_scroll(lines, cursor, inner_w, cinner.height);
+    let x = head_w
+        .saturating_sub(seg.saturating_mul(inner_w))
+        .min(inner_w.saturating_sub(1));
+    let y = caret_row
+        .saturating_sub(scroll)
+        .min(cinner.height.saturating_sub(1));
+    (cinner.x + x, cinner.y + y)
+}
+
 fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     // The interactive form pane (priority) or the read-only todo
     // sidebar docks on the right. `body_split` is the shared, pure
@@ -290,8 +390,11 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         RightSlot::Sidebar(side) => render_sidebar(app, frame, side),
         RightSlot::None => {}
     }
+    // The composer block grows with the draft (see `composer_box_height`);
+    // the transcript fills whatever is left above it.
+    let comp_h = composer_box_height(app.composer().lines(), main);
     let [transcript_area, composer_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(comp_h)]).areas(main);
 
     // ---- transcript ----
     let block = Block::bordered().title(transcript_title(app));
@@ -309,7 +412,7 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
     };
     frame.render_widget(para.scroll((0, scroll)), inner);
 
-    // ---- composer ----
+    // ---- composer (height tracks the draft) ----
     let cblock = Block::bordered().title(composer_title(app));
     let cinner = cblock.inner(composer_area);
     frame.render_widget(cblock, composer_area);
@@ -330,17 +433,25 @@ fn render_chat(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
             cinner,
         );
     } else {
+        // Scroll vertically only once the draft outgrows the (capped) box.
+        let v_scroll = composer_v_scroll(
+            app.composer().lines(),
+            app.composer().cursor(),
+            cinner.width,
+            cinner.height,
+        );
         frame.render_widget(
-            Paragraph::new(comp_lines).wrap(Wrap { trim: false }),
+            Paragraph::new(comp_lines)
+                .wrap(Wrap { trim: false })
+                .scroll((v_scroll, 0)),
             cinner,
         );
     }
 
-    // Park the caret in the composer when it owns focus.
+    // Park the caret in the composer when it owns focus — at its real
+    // wrapped, scrolled position so it tracks the box as it grows.
     if app.pending_permission().is_none() && app.ask().is_none() && !app.help_visible() {
-        let (row, col) = app.composer().cursor();
-        let cx = cinner.x + (col as u16).min(cinner.width.saturating_sub(1));
-        let cy = cinner.y + (row as u16).min(cinner.height.saturating_sub(1));
+        let (cx, cy) = composer_caret_pos(app.composer().lines(), app.composer().cursor(), cinner);
         frame.set_cursor_position(Position::new(cx, cy));
     }
 
@@ -863,11 +974,13 @@ pub(crate) fn form_pane_inner(app: &ChatApp, size: Size) -> Option<Rect> {
     }
 }
 
-/// The bordered transcript content rect inside `main` (above the
-/// 5-row composer) — the other half of the shared split.
-fn transcript_inner_for_main(main: Rect) -> Rect {
+/// The bordered transcript content rect inside `main` — the half above
+/// the composer, whose height tracks the draft via [`composer_box_height`]
+/// so a click hit-test re-derives the exact split `render_chat` drew.
+fn transcript_inner_for_main(app: &ChatApp, main: Rect) -> Rect {
+    let comp_h = composer_box_height(app.composer().lines(), main);
     let [transcript_area, _composer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(main);
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(comp_h)]).areas(main);
     Block::bordered().inner(transcript_area)
 }
 
@@ -897,7 +1010,7 @@ pub(crate) fn rich_hit(
     ])
     .areas(area);
     let main = transcript_main_rect(app, body);
-    let inner = transcript_inner_for_main(main);
+    let inner = transcript_inner_for_main(app, main);
     if inner.width < MD_WIDTH + 2 || inner.width == 0 || inner.height == 0 {
         return None; // too narrow — RichUi rows would wrap; don't mis-hit
     }
@@ -1784,5 +1897,81 @@ fn color_by_name(name: &str) -> Color {
         "black" => Color::Black,
         "gray" | "grey" => Color::Gray,
         _ => Color::White,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn composer_box_grows_one_row_per_added_line() {
+        let main = Rect::new(0, 0, 80, 40);
+        // An empty / one-line draft is the 3-row minimum (two borders + a row).
+        assert_eq!(composer_box_height(&doc(&[""]), main), 3);
+        assert_eq!(composer_box_height(&doc(&["hello"]), main), 3);
+        // Each extra logical line adds exactly one row.
+        assert_eq!(composer_box_height(&doc(&["a", "b"]), main), 4);
+        assert_eq!(composer_box_height(&doc(&["a", "b", "c", "d"]), main), 6);
+    }
+
+    #[test]
+    fn composer_box_shrinks_back_to_the_minimum() {
+        let main = Rect::new(0, 0, 80, 40);
+        // The height is a pure function of the current draft, so removing
+        // lines shrinks the box right back to the one-row minimum.
+        assert_eq!(
+            composer_box_height(&doc(&["a", "b", "c", "d", "e"]), main),
+            7
+        );
+        assert_eq!(composer_box_height(&doc(&["one line again"]), main), 3);
+    }
+
+    #[test]
+    fn composer_box_grows_when_a_long_line_wraps() {
+        let long = "x".repeat(90);
+        // A 30-col rect (~28 content cols) wraps a 90-char line over
+        // several rows, so the box is taller than the minimum...
+        let narrow = composer_box_height(std::slice::from_ref(&long), Rect::new(0, 0, 30, 40));
+        assert!(narrow > 3, "a wrapped line grows the box (got {narrow})");
+        // ...but the same text in a wide rect does not wrap.
+        assert_eq!(
+            composer_box_height(std::slice::from_ref(&long), Rect::new(0, 0, 200, 40)),
+            3
+        );
+    }
+
+    #[test]
+    fn composer_box_is_capped_to_leave_the_transcript_room() {
+        let main = Rect::new(0, 0, 80, 24);
+        let many: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
+        let h = composer_box_height(&many, main);
+        assert_eq!(h, main.height - TRANSCRIPT_MIN_H, "capped, not unbounded");
+    }
+
+    #[test]
+    fn caret_row_follows_the_cursor_down_the_lines() {
+        let d = doc(&["one", "two", "three"]);
+        assert_eq!(composer_caret_row(&d, (0, 0), 78), 0);
+        assert_eq!(composer_caret_row(&d, (1, 1), 78), 1);
+        assert_eq!(composer_caret_row(&d, (2, 5), 78), 2);
+    }
+
+    #[test]
+    fn composer_scroll_is_zero_until_the_draft_overflows_the_box() {
+        // A short draft that fits never scrolls.
+        assert_eq!(composer_v_scroll(&doc(&["a", "b", "c"]), (2, 1), 78, 5), 0);
+        // A draft taller than the visible window scrolls just enough to
+        // keep the caret in view, never past the final screenful.
+        let many: Vec<String> = (0..20).map(|i| i.to_string()).collect();
+        let s = composer_v_scroll(&many, (19, 1), 78, 6);
+        assert!(
+            s > 0 && s <= 20 - 6,
+            "scrolls to reveal the caret (got {s})"
+        );
     }
 }

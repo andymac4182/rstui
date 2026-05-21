@@ -10,7 +10,8 @@
 use rstui_acp_client::Config;
 use rstui_acp_client::app::{ChatApp, Msg, Screen};
 use rstui_acp_client::registry::Registry;
-use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Position, Size};
+use rstui_acp_client::ui;
+use rstui_core::{Event, KeyCode, KeyEvent, KeyModifiers, Position, Rect, Size};
 use rstui_runtime::Harness;
 
 /// Builds a harness over a freshly constructed `ChatApp`. `Harness::new` runs
@@ -2846,4 +2847,48 @@ fn enter_during_isearch_accepts_the_match_and_submits_it() {
         "Enter accepted the found line and submitted it"
     );
     assert!(h.is_running());
+}
+
+// ---- composer input box grows / shrinks with the draft ----
+
+#[test]
+fn the_composer_box_grows_and_shrinks_with_the_draft() {
+    let mut h = chatting(80, 24);
+    // The chat body — the terminal minus the 1-row header and footer.
+    let main = Rect::new(0, 0, 80, 22);
+    let one_line = ui::composer_box_height(h.app().composer().lines(), main);
+    assert_eq!(one_line, 3, "an empty composer is the 3-row minimum");
+
+    // Shift+Enter adds composer lines; the box grows with each.
+    for _ in 0..5 {
+        h.message(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+    }
+    let grown = ui::composer_box_height(h.app().composer().lines(), main);
+    assert!(
+        grown > one_line,
+        "the box grows as lines are added (got {grown})"
+    );
+
+    // Removing the newlines shrinks it right back to the minimum.
+    for _ in 0..5 {
+        key(&mut h, KeyCode::Backspace);
+    }
+    let shrunk = ui::composer_box_height(h.app().composer().lines(), main);
+    assert_eq!(shrunk, one_line, "the box shrinks back as text is removed");
+}
+
+#[test]
+fn a_tall_composer_renders_without_breaking_the_layout() {
+    let mut h = chatting(80, 24);
+    // A draft far taller than the old fixed 5-row box.
+    for _ in 0..30 {
+        h.message(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+    }
+    typ(&mut h, "deep inside a very long draft");
+    let s = h.snapshot();
+    assert!(h.is_running(), "a tall composer must not crash the app");
+    assert!(
+        s.contains("Message"),
+        "the composer block still renders:\n{s}"
+    );
 }
