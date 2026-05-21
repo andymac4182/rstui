@@ -545,6 +545,35 @@ pub struct Completion {
     pub selected: usize,
 }
 
+/// State of an in-progress **incremental history search** — readline's
+/// `reverse-i-search`, entered with `Ctrl+R` (reverse) or `Ctrl+S`
+/// (forward).
+///
+/// While this is `Some`, every composer key routes to [`ChatApp`]'s
+/// `isearch_key` handler: a typed character extends the query,
+/// `Ctrl+R`/`Ctrl+S` step to the next match, `Ctrl+G` aborts. The
+/// composer mirrors the current match live and the block title shows the
+/// `` (reverse-i-search)`query': `` prompt; any other key accepts the
+/// match and is re-dispatched as a normal command, so `Enter` accepts
+/// *and* submits exactly as it does in a shell.
+#[derive(Debug)]
+pub struct ISearch {
+    /// The substring typed so far.
+    pub query: String,
+    /// `true` while searching **older** entries (`Ctrl+R`), `false` for
+    /// **newer** (`Ctrl+S`).
+    pub reverse: bool,
+    /// `false` once the query matches nothing — the prompt shows
+    /// "failing" and the composer keeps the last good match.
+    pub matched: bool,
+    /// Index into the history entries of the current match, `None`
+    /// before the first one is found.
+    match_idx: Option<usize>,
+    /// The composer text + cursor when the search began, restored
+    /// verbatim if it is aborted with `Ctrl+G`.
+    saved: (String, (usize, usize)),
+}
+
 /// The live `@`-mention file-completion popup (Codex's `@` file mention):
 /// fuzzy-matched workspace paths for the `@token` at the cursor.
 #[derive(Debug, Clone)]
@@ -780,6 +809,8 @@ pub struct ChatApp {
     completion: Option<Completion>,
     /// The `@`-mention file-completion popup, if active.
     mention: Option<MentionState>,
+    /// The in-progress incremental history search (`Ctrl+R`), if active.
+    isearch: Option<ISearch>,
     todos: Vec<TodoEntry>,
     sidebar: SidebarMode,
     tool_calls: Vec<ToolCallInfo>,
@@ -905,6 +936,7 @@ impl ChatApp {
             agent_commands: BTreeMap::new(),
             completion: None,
             mention: None,
+            isearch: None,
             todos: Vec::new(),
             sidebar: SidebarMode::Auto,
             tool_calls: Vec::new(),
@@ -1351,6 +1383,11 @@ impl ChatApp {
     #[must_use]
     pub fn mention(&self) -> Option<&MentionState> {
         self.mention.as_ref()
+    }
+    /// The in-progress incremental history search (`Ctrl+R`), if active.
+    #[must_use]
+    pub fn isearch(&self) -> Option<&ISearch> {
+        self.isearch.as_ref()
     }
     /// The agent's current execution plan (todos), newest plan wins.
     #[must_use]
@@ -3150,6 +3187,152 @@ impl ChatApp {
         Cmd::none()
     }
 
+    /// Enters incremental history search (`Ctrl+R` reverse / `Ctrl+S`
+    /// forward), snapshotting the composer so `Ctrl+G` can restore it.
+    fn start_isearch(&mut self, reverse: bool) {
+        self.completion = None;
+        self.mention = None;
+        self.isearch = Some(ISearch {
+            query: String::new(),
+            reverse,
+            matched: true,
+            match_idx: None,
+            saved: (self.composer.to_string(), self.composer.cursor()),
+        });
+    }
+
+    /// The history index a search for `query` finds, scanning from `from`
+    /// in the `reverse` (older) or forward (newer) direction. `None` when
+    /// nothing contains `query`.
+    fn isearch_find(&self, query: &str, from: usize, reverse: bool) -> Option<usize> {
+        let entries = self.history.entries();
+        if query.is_empty() || entries.is_empty() {
+            return None;
+        }
+        if reverse {
+            let start = from.min(entries.len() - 1);
+            (0..=start).rev().find(|&i| entries[i].contains(query))
+        } else {
+            (from..entries.len()).find(|&i| entries[i].contains(query))
+        }
+    }
+
+    /// Re-runs the active search after the query or direction changed
+    /// (`repeat = false`) or a `Ctrl+R`/`Ctrl+S` step (`repeat = true`),
+    /// updating the match and mirroring the found entry into the composer.
+    fn isearch_step(&mut self, repeat: bool) {
+        let Some((query, reverse, match_idx, saved)) = self
+            .isearch
+            .as_ref()
+            .map(|is| (is.query.clone(), is.reverse, is.match_idx, is.saved.clone()))
+        else {
+            return;
+        };
+        // An empty query shows the original line — nothing is "failing".
+        if query.is_empty() {
+            let (text, (r, c)) = saved;
+            self.composer.set_value(text);
+            self.composer.set_cursor(r, c);
+            if let Some(is) = self.isearch.as_mut() {
+                is.match_idx = None;
+                is.matched = true;
+            }
+            return;
+        }
+        let len = self.history.entries().len();
+        let from = if repeat {
+            match match_idx {
+                // At the oldest match already — nothing older to step to.
+                Some(0) if reverse => {
+                    if let Some(is) = self.isearch.as_mut() {
+                        is.matched = false;
+                    }
+                    return;
+                }
+                Some(i) if reverse => i - 1,
+                Some(i) => i + 1,
+                None if reverse => len.saturating_sub(1),
+                None => 0,
+            }
+        } else {
+            match_idx.unwrap_or(if reverse { len.saturating_sub(1) } else { 0 })
+        };
+        match self.isearch_find(&query, from, reverse) {
+            Some(i) => {
+                let text = self.history.entries()[i].clone();
+                self.composer.set_value(text);
+                if let Some(is) = self.isearch.as_mut() {
+                    is.match_idx = Some(i);
+                    is.matched = true;
+                }
+            }
+            None => {
+                if let Some(is) = self.isearch.as_mut() {
+                    is.matched = false;
+                }
+            }
+        }
+    }
+
+    /// Routes a key while an incremental history search is active. The
+    /// search keys (typing, `Backspace`, `Ctrl+R/S/G`) are handled here;
+    /// anything else accepts the found line and is **re-dispatched** as a
+    /// normal composer command — so `Enter` accepts *and* submits and an
+    /// arrow accepts *and* moves, exactly as a shell's i-search does.
+    fn isearch_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            // A typed character (plain, or the AltGr pair) extends the query.
+            KeyCode::Char(c) if ctrl == alt => {
+                if let Some(is) = self.isearch.as_mut() {
+                    is.query.push(c);
+                }
+                self.isearch_step(false);
+            }
+            // Backspace shortens the query and re-searches from scratch.
+            KeyCode::Backspace => {
+                if let Some(is) = self.isearch.as_mut() {
+                    is.query.pop();
+                    is.match_idx = None;
+                    is.matched = true;
+                }
+                self.isearch_step(false);
+            }
+            // Ctrl+R / Ctrl+S step to the next older / newer match.
+            KeyCode::Char('r') if ctrl => {
+                if let Some(is) = self.isearch.as_mut() {
+                    is.reverse = true;
+                }
+                self.isearch_step(true);
+            }
+            KeyCode::Char('s') if ctrl => {
+                if let Some(is) = self.isearch.as_mut() {
+                    is.reverse = false;
+                }
+                self.isearch_step(true);
+            }
+            // Ctrl+G aborts — restore the composer to its pre-search state.
+            KeyCode::Char('g') if ctrl => {
+                if let Some(is) = self.isearch.take() {
+                    let (text, (r, c)) = is.saved;
+                    self.composer.set_value(text);
+                    self.composer.set_cursor(r, c);
+                    self.rl.reset_line();
+                }
+            }
+            // Anything else accepts the found line and is re-dispatched as
+            // a normal composer command (Enter therefore accepts + submits).
+            _ => {
+                self.isearch = None;
+                self.rl.reset_line();
+                self.history.reset();
+                return self.chat_key(key);
+            }
+        }
+        Cmd::none()
+    }
+
     /// Runs a composer **edit** `f`, first ending any history browse: once
     /// you edit a recalled entry it becomes your draft, so the next `↑`
     /// starts over from the newest (the readline rule). Cursor *moves* do
@@ -3172,6 +3355,11 @@ impl ChatApp {
         // or the AltGr pair).
         let ctl = ctrl && !alt;
         let meta = alt && !ctrl;
+
+        // An active incremental history search (Ctrl+R) owns every key.
+        if self.isearch.is_some() {
+            return self.isearch_key(key);
+        }
 
         // When the interactive form pane owns focus, every key drives
         // the rendered A2UI/json-render doc, not the composer.
@@ -3350,6 +3538,16 @@ impl ChatApp {
             KeyCode::Char('r') if meta => self.compose(|rl, ta| {
                 rl.revert_line(ta);
             }),
+            // Ctrl+R / Ctrl+S — incremental history search (reverse /
+            // forward). Returns early so the popup re-filter is skipped.
+            KeyCode::Char('r') if ctl => {
+                self.start_isearch(true);
+                return Cmd::none();
+            }
+            KeyCode::Char('s') if ctl => {
+                self.start_isearch(false);
+                return Cmd::none();
+            }
             // Alt+. / Alt+_ — yank-last-arg (insert the previous prompt's
             // final word). An edit, so it ends the history browse first.
             KeyCode::Char('.' | '_') if meta => {
@@ -3491,7 +3689,9 @@ impl App for ChatApp {
             }
             Msg::Key(key) => self.on_key(key),
             Msg::Paste(text) => {
-                if self.screen == Screen::Chat || self.screen == Screen::Connecting {
+                if (self.screen == Screen::Chat || self.screen == Screen::Connecting)
+                    && self.isearch.is_none()
+                {
                     self.history.reset();
                     self.rl.insert_str(&mut self.composer, &text);
                     self.refresh_completion();

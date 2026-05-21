@@ -2742,3 +2742,108 @@ fn an_unbound_control_chord_does_not_type_a_literal_character() {
     assert_eq!(composer_text(&h), "", "an unbound Ctrl chord is not typing");
     assert!(h.is_running());
 }
+
+// ---- readline incremental history search (Ctrl+R / Ctrl+S) ----
+
+/// Submits `s` as a prompt so it is recorded in the searchable history.
+fn submit(h: &mut Harness<ChatApp>, s: &str) {
+    typ(h, s);
+    key(h, KeyCode::Enter);
+}
+
+#[test]
+fn ctrl_r_starts_an_incremental_search_and_finds_a_match() {
+    let mut h = chatting(100, 30);
+    submit(&mut h, "deploy the server");
+    submit(&mut h, "run the tests");
+
+    ctrl_key(&mut h, 'r');
+    assert!(h.app().isearch().is_some(), "Ctrl+R enters i-search");
+    // Typing the query substring-matches a past prompt, shown live.
+    typ(&mut h, "deploy");
+    assert_eq!(composer_text(&h), "deploy the server");
+    assert!(h.app().isearch().expect("still searching").matched);
+}
+
+#[test]
+fn ctrl_r_steps_back_through_older_matches() {
+    let mut h = chatting(100, 30);
+    submit(&mut h, "alpha first");
+    submit(&mut h, "beta");
+    submit(&mut h, "alpha second");
+
+    ctrl_key(&mut h, 'r');
+    typ(&mut h, "alpha");
+    assert_eq!(composer_text(&h), "alpha second", "the newest match first");
+    ctrl_key(&mut h, 'r');
+    assert_eq!(
+        composer_text(&h),
+        "alpha first",
+        "Ctrl+R again steps to the older match"
+    );
+}
+
+#[test]
+fn the_isearch_prompt_is_shown_in_the_composer_title() {
+    let mut h = chatting(100, 30);
+    submit(&mut h, "searchable entry");
+    ctrl_key(&mut h, 'r');
+    typ(&mut h, "search");
+    let s = h.snapshot();
+    assert!(
+        s.contains("reverse-i-search"),
+        "the i-search prompt renders in the composer title:\n{s}"
+    );
+}
+
+#[test]
+fn a_query_with_no_match_marks_the_search_failing() {
+    let mut h = chatting(100, 30);
+    submit(&mut h, "the only entry");
+    ctrl_key(&mut h, 'r');
+    typ(&mut h, "zzzzz");
+    assert!(
+        !h.app().isearch().expect("still searching").matched,
+        "an unmatched query marks the search failing"
+    );
+}
+
+#[test]
+fn ctrl_g_aborts_the_search_and_restores_the_draft() {
+    let mut h = chatting(100, 30);
+    submit(&mut h, "history one");
+    typ(&mut h, "my draft");
+
+    ctrl_key(&mut h, 'r');
+    typ(&mut h, "one");
+    assert_eq!(
+        composer_text(&h),
+        "history one",
+        "the match replaces the draft"
+    );
+    ctrl_key(&mut h, 'g');
+    assert!(h.app().isearch().is_none(), "Ctrl+G ends the search");
+    assert_eq!(
+        composer_text(&h),
+        "my draft",
+        "Ctrl+G restores the pre-search draft"
+    );
+}
+
+#[test]
+fn enter_during_isearch_accepts_the_match_and_submits_it() {
+    let mut h = chatting(100, 30);
+    submit(&mut h, "build everything");
+    typ(&mut h, "scratch");
+
+    ctrl_key(&mut h, 'r');
+    typ(&mut h, "build");
+    assert_eq!(composer_text(&h), "build everything");
+    key(&mut h, KeyCode::Enter);
+    assert!(h.app().isearch().is_none(), "Enter ends the search");
+    assert!(
+        h.app().composer().is_empty(),
+        "Enter accepted the found line and submitted it"
+    );
+    assert!(h.is_running());
+}

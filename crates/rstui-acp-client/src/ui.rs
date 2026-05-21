@@ -669,6 +669,19 @@ fn transcript_title(app: &ChatApp) -> String {
 }
 
 fn composer_title(app: &ChatApp) -> String {
+    if let Some(is) = app.isearch() {
+        // readline's `(reverse-i-search)`query': ` prompt, in the block title.
+        let label = if is.reverse {
+            "reverse-i-search"
+        } else {
+            "i-search"
+        };
+        let failing = if is.matched { "" } else { "failing " };
+        return format!(
+            " ({failing}{label})`{}': Ctrl+R next · Ctrl+G cancel ",
+            is.query
+        );
+    }
     if app.is_streaming() {
         " Message — Esc cancels the streaming turn ".to_owned()
     } else {
@@ -1212,6 +1225,7 @@ fn render_help(app: &ChatApp, frame: &mut Frame<'_>, area: Rect) {
         kv("Alt+B / F", "move back / forward one word"),
         kv("Ctrl+W · Ctrl+K", "kill the word back · kill to line end"),
         kv("Ctrl+Y · Ctrl+_", "yank (paste killed text) · undo"),
+        kv("Ctrl+R", "search the prompt history incrementally"),
         Line::raw(""),
         Line::styled(
             "Slash commands  (⚙ plugin · ◆ agent):",
